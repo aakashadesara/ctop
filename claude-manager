@@ -1,0 +1,1241 @@
+#!/usr/bin/env node
+
+const { spawn, execSync } = require('child_process');
+const fs = require('fs');
+const path = require('path');
+
+// ANSI escape codes
+const ESC = '\x1b';
+const CLEAR = `${ESC}[2J${ESC}[H`;
+const HOME = `${ESC}[H`;
+const CLR_LINE = `${ESC}[K`;
+const CLR_DOWN = `${ESC}[J`;
+const HIDE_CURSOR = `${ESC}[?25l`;
+const SHOW_CURSOR = `${ESC}[?25h`;
+const BOLD = `${ESC}[1m`;
+const DIM = `${ESC}[2m`;
+const RESET = `${ESC}[0m`;
+const RED = `${ESC}[31m`;
+const GREEN = `${ESC}[32m`;
+const YELLOW = `${ESC}[33m`;
+const BLUE = `${ESC}[34m`;
+const CYAN = `${ESC}[36m`;
+const WHITE = `${ESC}[37m`;
+const BG_BLUE = `${ESC}[44m`;
+const BG_RED = `${ESC}[41m`;
+const ORANGE = `${ESC}[38;5;208m`;
+const BG_ORANGE = `${ESC}[48;5;130m`;
+
+let selectedIndex = 0;
+let processes = [];
+let lastRefresh = new Date();
+let statusMessage = '';
+let viewMode = 'list';
+let paneCol = 0;
+let paneRow = 0;
+
+function getClaudeProcesses() {
+  try {
+    // Get all claude processes with elapsed time for sorting
+    // Using lstart for actual start time sorting
+    const psOutput = execSync(
+      `ps -eo pid,user,pcpu,pmem,stat,lstart,command | grep 'claude' | grep -v 'claude-manager' | grep -v 'Claude.app' | grep -v 'grep'`,
+      { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }
+    ).trim();
+
+    if (!psOutput) return [];
+
+    const lines = psOutput.split('\n').filter(Boolean);
+    const procs = [];
+
+    for (const line of lines) {
+      // Parse the line - lstart takes 5 fields (e.g., "Sun Feb 23 15:44:00 2025")
+      const parts = line.trim().split(/\s+/);
+      const pid = parts[0];
+      const user = parts[1];
+      const cpu = parts[2];
+      const mem = parts[3];
+      const stat = parts[4];
+      // lstart is parts[5] through parts[9] (e.g., "Sun Feb 23 15:44:00 2025")
+      const lstartStr = parts.slice(5, 10).join(' ');
+      const command = parts.slice(10).join(' ');
+
+      // Parse start time
+      const startDate = new Date(lstartStr);
+      const startTime = formatStartTime(startDate);
+
+      // Get working directory
+      const cwd = getProcessCwd(pid);
+
+      // Determine process state
+      const isActive = !stat.includes('Z') && !stat.includes('T');
+      const isZombie = stat.includes('Z');
+      const isStopped = stat.includes('T');
+
+      procs.push({
+        pid,
+        cpu: parseFloat(cpu) || 0,
+        mem: parseFloat(mem) || 0,
+        stat,
+        startDate,
+        startTime,
+        command,
+        cwd,
+        title: 'Claude Code',
+        contextPct: null,
+        model: null,
+        stopReason: null,
+        gitBranch: null,
+        slug: null,
+        sessionId: null,
+        version: null,
+        userType: null,
+        inputTokens: null,
+        cacheCreateTokens: null,
+        cacheReadTokens: null,
+        outputTokens: null,
+        serviceTier: null,
+        timestamp: null,
+        requestId: null,
+        lastTurnMs: null,
+        isActive,
+        isZombie,
+        isStopped,
+        status: isZombie ? 'ZOMBIE' : isStopped ? 'STOPPED' : isActive ? 'ACTIVE' : 'SLEEPING'
+      });
+    }
+
+    // Sort by start time (oldest first = created first at top)
+    procs.sort((a, b) => a.startDate - b.startDate);
+
+    // Assign session data (title + context) by matching sessions to processes per cwd
+    assignSessionsToProcesses(procs);
+
+    return procs;
+  } catch (e) {
+    return [];
+  }
+}
+
+function formatStartTime(date) {
+  const now = new Date();
+  const diffMs = now - date;
+  const diffMins = Math.floor(diffMs / 60000);
+  const diffHours = Math.floor(diffMs / 3600000);
+  const diffDays = Math.floor(diffMs / 86400000);
+
+  if (diffDays > 0) {
+    return `${diffDays}d ago`;
+  } else if (diffHours > 0) {
+    return `${diffHours}h ago`;
+  } else if (diffMins > 0) {
+    return `${diffMins}m ago`;
+  } else {
+    return 'just now';
+  }
+}
+
+function getProcessCwd(pid) {
+  try {
+    return execSync(`lsof -p ${pid} 2>/dev/null | grep cwd | awk '{print $NF}'`, {
+      encoding: 'utf8',
+      stdio: ['pipe', 'pipe', 'pipe']
+    }).trim();
+  } catch (e) {
+    return '';
+  }
+}
+
+function getSessionData(filePath) {
+  const result = {
+    title: null, contextPct: null, model: null, stopReason: null,
+    gitBranch: null, slug: null, sessionId: null, version: null,
+    userType: null, inputTokens: null, cacheCreateTokens: null,
+    cacheReadTokens: null, outputTokens: null, serviceTier: null,
+    timestamp: null, requestId: null,
+  };
+
+  try {
+    const fd = fs.openSync(filePath, 'r');
+    const stat = fs.fstatSync(fd);
+
+    // Read first 64KB for title
+    const headSize = Math.min(65536, stat.size);
+    const headBuf = Buffer.alloc(headSize);
+    fs.readSync(fd, headBuf, 0, headSize, 0);
+    const headLines = headBuf.toString('utf8').split('\n');
+    for (const line of headLines) {
+      if (!line.trim()) continue;
+      try {
+        const data = JSON.parse(line);
+        if (data.summary) {
+          result.title = data.summary.substring(0, 50);
+          break;
+        } else if (data.type === 'user' && data.message && data.message.role === 'user' && data.message.content) {
+          const msg = typeof data.message.content === 'string'
+            ? data.message.content
+            : (data.message.content.find(c => c.type === 'text') || {}).text || '';
+          if (!msg || msg.startsWith('<') || msg.trim() === '') continue;
+          result.title = msg.substring(0, 80).replace(/\n/g, ' ').trim();
+          break;
+        }
+      } catch (e) {}
+    }
+
+    // Read last 64KB for usage + metadata
+    const tailSize = Math.min(65536, stat.size);
+    const tailBuf = Buffer.alloc(tailSize);
+    fs.readSync(fd, tailBuf, 0, tailSize, stat.size - tailSize);
+    fs.closeSync(fd);
+    const tailLines = tailBuf.toString('utf8').split('\n').reverse();
+
+    // Find turn_duration
+    for (const line of tailLines) {
+      if (!line.trim()) continue;
+      try {
+        const data = JSON.parse(line);
+        if (data.subtype === 'turn_duration') {
+          result.lastTurnMs = data.durationMs || null;
+          break;
+        }
+      } catch (e) {}
+    }
+
+    // Find last assistant message with usage
+    for (const line of tailLines) {
+      if (!line.trim()) continue;
+      try {
+        const data = JSON.parse(line);
+        if (data.message && data.message.usage) {
+          const u = data.message.usage;
+          const used = (u.input_tokens || 0) + (u.cache_creation_input_tokens || 0) + (u.cache_read_input_tokens || 0);
+          result.contextPct = Math.round((200000 - used) / 200000 * 100);
+          if (result.contextPct < 0) result.contextPct = 0;
+          if (result.contextPct > 100) result.contextPct = 100;
+          result.model = data.message.model || null;
+          result.stopReason = data.message.stop_reason || null;
+          result.gitBranch = data.gitBranch || null;
+          result.slug = data.slug || null;
+          result.sessionId = data.sessionId || null;
+          result.version = data.version || null;
+          result.userType = data.userType || null;
+          result.timestamp = data.timestamp || null;
+          result.requestId = data.requestId || null;
+          result.inputTokens = u.input_tokens || 0;
+          result.cacheCreateTokens = u.cache_creation_input_tokens || 0;
+          result.cacheReadTokens = u.cache_read_input_tokens || 0;
+          result.outputTokens = u.output_tokens || 0;
+          result.serviceTier = u.service_tier || null;
+          break;
+        }
+      } catch (e) {}
+    }
+  } catch (e) {}
+
+  return result;
+}
+
+// Cache of sorted session files per project path
+let sessionFileCache = new Map();
+let sessionFileCacheTime = 0;
+
+function getSessionFilesForProject(projectPath) {
+  // Cache session file listings for 3 seconds to avoid repeated readdirs
+  const now = Date.now();
+  if (now - sessionFileCacheTime > 3000) {
+    sessionFileCache.clear();
+    sessionFileCacheTime = now;
+  }
+
+  if (sessionFileCache.has(projectPath)) return sessionFileCache.get(projectPath);
+
+  try {
+    const files = fs.readdirSync(projectPath)
+      .filter(f => f.endsWith('.jsonl'))
+      .map(f => {
+        const fp = path.join(projectPath, f);
+        return { name: f, path: fp, mtime: fs.statSync(fp).mtime };
+      })
+      .sort((a, b) => b.mtime - a.mtime);
+    sessionFileCache.set(projectPath, files);
+    return files;
+  } catch (e) {
+    return [];
+  }
+}
+
+function assignSessionsToProcesses(procs) {
+  // Group processes by cwd
+  const groups = new Map();
+  for (const proc of procs) {
+    if (!proc.cwd) continue;
+    if (!groups.has(proc.cwd)) groups.set(proc.cwd, []);
+    groups.get(proc.cwd).push(proc);
+  }
+
+  for (const [cwd, groupProcs] of groups) {
+    const projectDirName = cwd.replace(/\//g, '-');
+    const projectPath = path.join(process.env.HOME, '.claude', 'projects', projectDirName);
+
+    if (!fs.existsSync(projectPath)) continue;
+
+    const files = getSessionFilesForProject(projectPath);
+    // Take the N most recently modified session files for N processes
+    const n = groupProcs.length;
+    const topFiles = files.slice(0, n);
+
+    // Sort processes by startDate descending (most recent first)
+    // so most recent process gets most recently modified session
+    const sorted = [...groupProcs].sort((a, b) => b.startDate - a.startDate);
+
+    for (let i = 0; i < sorted.length; i++) {
+      if (i < topFiles.length) {
+        const data = getSessionData(topFiles[i].path);
+        if (data.title) sorted[i].title = data.title;
+        for (const key of ['contextPct', 'model', 'stopReason', 'gitBranch', 'slug',
+          'sessionId', 'version', 'userType', 'inputTokens', 'cacheCreateTokens',
+          'cacheReadTokens', 'outputTokens', 'serviceTier', 'timestamp', 'requestId', 'lastTurnMs']) {
+          if (data[key] !== null && data[key] !== undefined) sorted[i][key] = data[key];
+        }
+      }
+    }
+  }
+
+  // Set fallback titles for processes that still have default
+  for (const proc of procs) {
+    if (proc.title === 'Claude Code' && proc.cwd) {
+      const parts = proc.cwd.split('/').filter(Boolean);
+      proc.title = parts.length >= 2
+        ? parts[parts.length - 2] + '/' + parts[parts.length - 1]
+        : parts[parts.length - 1] || proc.cwd;
+    }
+  }
+}
+
+function ctxColor(pct) {
+  // pct = remaining %
+  if (pct < 10) return RED;
+  if (pct < 40) return ORANGE;
+  if (pct < 70) return YELLOW;
+  return GREEN;
+}
+
+function renderHeader(columns) {
+  const title = ' CLAUDE PROCESS MANAGER ';
+  let h = '';
+
+  // Thin dim top border
+  h += `${DIM}${'─'.repeat(columns)}${RESET}${CLR_LINE}\n`;
+
+  // Orange row with centered title
+  const pad = Math.max(0, Math.floor((columns - title.length) / 2));
+  const rightPad = Math.max(0, columns - pad - title.length);
+  h += `${BG_ORANGE}${WHITE}${BOLD}${' '.repeat(pad)}${title}${' '.repeat(rightPad)}${RESET}${CLR_LINE}\n`;
+
+  // Thin dim bottom border
+  h += `${DIM}${'─'.repeat(columns)}${RESET}${CLR_LINE}\n`;
+
+  return h;
+}
+
+function getCardsPerRow() {
+  const { columns } = process.stdout;
+  const cardWidth = 34;
+  const gap = 1;
+  const detailPaneWidth = 42;
+  const showDetail = columns >= 140;
+  const availWidth = showDetail ? columns - detailPaneWidth - 1 : columns;
+  return Math.max(1, Math.floor((availWidth + gap) / (cardWidth + gap)));
+}
+
+function renderPaneMode() {
+  const { columns, rows } = process.stdout;
+  const cardWidth = 34;
+  const cardHeight = 8;
+  const cardGapX = 1;
+  const cardGapY = 1;
+  const cardsPerRow = getCardsPerRow();
+  let output = HOME + HIDE_CURSOR;
+
+  // Header
+  output += renderHeader(columns);
+
+  // Stats bar
+  const activeCount = processes.filter(p => p.isActive).length;
+  const deadCount = processes.filter(p => !p.isActive).length;
+  output += `${DIM} Active: ${RESET}${GREEN}${activeCount}${RESET}${DIM} | Dead/Stopped: ${RESET}${RED}${deadCount}${RESET}${DIM} | Last refresh: ${lastRefresh.toLocaleTimeString()} ${RESET}${CLR_LINE}\n`;
+
+  // Status message if any
+  if (statusMessage) {
+    output += `${YELLOW} ${statusMessage}${RESET}${CLR_LINE}\n`;
+    statusMessage = '';
+  }
+
+  output += `${DIM}${'─'.repeat(columns)}${RESET}${CLR_LINE}\n`;
+
+  // Calculate grid
+  const totalRows = Math.ceil(processes.length / cardsPerRow);
+  const headerLines = 6; // header box (3) + stats + separator + status
+  const footerLines = 2; // separator + keys (pinned to bottom)
+  const availableSpace = rows - headerLines - footerLines;
+  // Last card row doesn't need gap after it, so add cardGapY back once
+  const maxVisibleCardRows = Math.max(1, Math.floor((availableSpace + cardGapY) / (cardHeight + cardGapY)));
+
+  // Scroll offset to keep selected row visible
+  const scrollRow = Math.max(0, paneRow - Math.floor(maxVisibleCardRows / 2));
+  const endRow = Math.min(totalRows, scrollRow + maxVisibleCardRows);
+
+  if (processes.length === 0) {
+    output += `${CLR_LINE}\n${DIM}  No Claude Code processes found.${RESET}${CLR_LINE}\n`;
+  }
+
+  for (let r = scrollRow; r < endRow; r++) {
+    // Build each line of the card row
+    const rowCards = [];
+    for (let c = 0; c < cardsPerRow; c++) {
+      const idx = r * cardsPerRow + c;
+      if (idx < processes.length) {
+        rowCards.push({ proc: processes[idx], idx });
+      }
+    }
+
+    // Render 5 lines for this row of cards
+    for (let line = 0; line < cardHeight; line++) {
+      let lineStr = '';
+      for (let ci = 0; ci < rowCards.length; ci++) {
+        const { proc, idx } = rowCards[ci];
+        const isSelected = idx === selectedIndex;
+        const selStart = isSelected ? `${BG_ORANGE}${WHITE}${BOLD}` : '';
+        const selEnd = isSelected ? RESET : RESET;
+
+        let cell = '';
+        if (line === 0) {
+          // Top border
+          cell = `${selStart}┌${'─'.repeat(cardWidth - 2)}┐${selEnd}`;
+        } else if (line === cardHeight - 1) {
+          // Bottom border
+          cell = `${selStart}└${'─'.repeat(cardWidth - 2)}┘${selEnd}`;
+        } else {
+          // Content lines
+          let content = '';
+          const inner = cardWidth - 4; // 2 for borders, 2 for padding
+          if (line === 1) {
+            // PID + Status
+            let statusColor = isSelected ? '' : GREEN;
+            if (proc.isZombie) statusColor = isSelected ? '' : RED;
+            else if (proc.isStopped) statusColor = isSelected ? '' : YELLOW;
+            else if (!proc.isActive) statusColor = isSelected ? '' : DIM;
+            const statusDot = proc.isActive ? '●' : proc.isZombie ? '✗' : '○';
+            const pidPart = `PID:${proc.pid}`;
+            const statusPart = `${statusDot} ${proc.status}`;
+            const gap = inner - pidPart.length - proc.status.length - 2; // 2 for dot+space
+            content = `${selStart}│ ${pidPart}${' '.repeat(Math.max(1, gap))}${isSelected ? '' : statusColor}${statusPart}${isSelected ? '' : RESET}${selStart} │${selEnd}`;
+          } else if (line === 2) {
+            // CPU + MEM
+            const cpuStr = `CPU:${proc.cpu.toFixed(1)}%`;
+            const memStr = `MEM:${proc.mem.toFixed(1)}%`;
+            const gap = inner - cpuStr.length - memStr.length;
+            content = `${selStart}│ ${cpuStr}${' '.repeat(Math.max(1, gap))}${memStr} │${selEnd}`;
+          } else if (line === 3) {
+            // Context window
+            const ctxPct = proc.contextPct !== null ? proc.contextPct : 100;
+            const cc = isSelected ? '' : ctxColor(ctxPct);
+            const ctxLabel = `CTX: ${ctxPct}%`;
+            const ctxStr = `${cc}${ctxLabel}${isSelected ? '' : RESET}`;
+            content = `${selStart}│ ${ctxStr}${' '.repeat(Math.max(0, inner - ctxLabel.length))} │${selEnd}`;
+          } else if (line === 4) {
+            // Model + Branch
+            const m = proc.model ? proc.model.replace(/^claude-/, '') : '--';
+            const b = proc.gitBranch || '--';
+            const mLen = Math.min(m.length, Math.floor(inner / 2));
+            const bLen = Math.min(b.length, inner - mLen - 1);
+            const mStr = m.substring(0, mLen);
+            const bStr = b.substring(0, bLen);
+            const mbGap = inner - mStr.length - bStr.length;
+            const mc = isSelected ? '' : CYAN;
+            const bc = isSelected ? '' : YELLOW;
+            content = `${selStart}│ ${mc}${mStr}${isSelected ? '' : RESET}${selStart}${' '.repeat(Math.max(1, mbGap))}${bc}${bStr}${isSelected ? '' : RESET}${selStart} │${selEnd}`;
+          } else if (line === 5) {
+            // Slug
+            let slugStr = proc.slug || '--';
+            if (slugStr.length > inner) slugStr = slugStr.substring(0, inner - 1) + '…';
+            content = `${selStart}│ ${isSelected ? '' : DIM}${slugStr.padEnd(inner)}${isSelected ? '' : RESET}${selStart} │${selEnd}`;
+          } else if (line === 6) {
+            // Title (truncated)
+            let title = proc.title;
+            if (title.length > inner) {
+              title = title.substring(0, inner - 1) + '…';
+            }
+            content = `${selStart}│ ${title.padEnd(inner)} │${selEnd}`;
+          }
+          cell = content;
+        }
+        lineStr += cell;
+        if (ci < rowCards.length - 1) lineStr += ' '.repeat(cardGapX);
+      }
+      output += lineStr + `${CLR_LINE}\n`;
+    }
+    // Gap between card rows
+    if (r < endRow - 1) output += `${CLR_LINE}\n`;
+  }
+
+  // Scrollbar indicator if needed
+  if (totalRows > maxVisibleCardRows) {
+    output += `${CLR_LINE}\n${DIM}  Showing rows ${scrollRow + 1}-${endRow} of ${totalRows}${RESET}${CLR_LINE}`;
+  }
+
+  // Clear any leftover lines between content and footer
+  output += CLR_DOWN;
+
+  // Detail pane on the right in pane view too
+  const paneDetailWidth = 42;
+  const showPaneDetail = columns >= 140;
+  if (showPaneDetail && processes[selectedIndex]) {
+    const paneStartRow = 5;
+    const footerLines = 2;
+    const availDetailRows = rows - paneStartRow - footerLines;
+    const paneStartCol = columns - paneDetailWidth;
+    output += renderDetailPane(processes[selectedIndex], paneStartRow, paneStartCol, paneDetailWidth, availDetailRows);
+  }
+
+  // Bottom detail pane for narrow pane view
+  if (!showPaneDetail && processes[selectedIndex]) {
+    const cardRows = Math.ceil(processes.length / cardsPerRow);
+    const visibleCardRows = Math.min(cardRows, Math.max(1, Math.floor((rows - 6 - 2 + cardGapY) / (cardHeight + cardGapY))));
+    const contentEnd = 6 + visibleCardRows * (cardHeight + cardGapY);
+    const footerLines = 2;
+    const bottomPaneStart = contentEnd + 1;
+    const availBottomRows = rows - footerLines - bottomPaneStart;
+    if (availBottomRows >= 8) {
+      const bottomPaneWidth = Math.min(columns, 80);
+      const bottomPaneCol = Math.max(1, Math.floor((columns - bottomPaneWidth) / 2) + 1);
+      output += renderDetailPane(processes[selectedIndex], bottomPaneStart, bottomPaneCol, bottomPaneWidth, availBottomRows);
+    }
+  }
+
+  // Footer pinned to bottom
+  output += `${ESC}[${rows - 1};1H`; // move cursor to second-to-last row
+  output += `${DIM}${'─'.repeat(columns)}${RESET}${CLR_LINE}`;
+  output += `${ESC}[${rows};1H`; // move cursor to last row
+  output += `${BOLD} KEYS:${RESET} `;
+  output += `${CYAN}←/h${RESET} Left  ${CYAN}→/l${RESET} Right  ${CYAN}↑/k${RESET} Up  ${CYAN}↓/j${RESET} Down  `;
+  output += `${RED}x${RESET} Kill  ${RED}X${RESET} Force  ${RED}A${RESET} Kill Stopped  `;
+  output += `${CYAN}P${RESET} List View  ${CYAN}r${RESET} Refresh  ${CYAN}q${RESET} Quit  ${CYAN}?${RESET} Help${CLR_LINE}`;
+
+  process.stdout.write(output);
+}
+
+function renderDetailPane(proc, startRow, paneCol, paneWidth, availRows) {
+  if (!proc) return '';
+  let output = '';
+  const inner = paneWidth - 2; // inside borders
+
+  const drawLine = (row, content) => `${ESC}[${row};${paneCol}H${content}`;
+
+  // Two-column pair row: left label+value and right label+value
+  const colW = Math.floor((inner - 2) / 2); // each column width (with 1 padding each side)
+  const truncVal = (v, maxLen) => {
+    const s = (v || '--').toString();
+    return s.length > maxLen ? s.substring(0, maxLen - 1) + '…' : s;
+  };
+  const pairRow = (row, lbl1, val1, c1, lbl2, val2, c2) => {
+    const maxV1 = colW - lbl1.length - 1;
+    const maxV2 = lbl2 ? colW - lbl2.length - 1 : 0;
+    const v1 = truncVal(val1, Math.max(2, maxV1));
+    const v2 = lbl2 ? truncVal(val2, Math.max(2, maxV2)) : '';
+    const l1 = `${DIM}${lbl1}${RESET} ${c1 || ''}${v1}${c1 ? RESET : ''}`;
+    const l2 = lbl2 ? `${DIM}${lbl2}${RESET} ${c2 || ''}${v2}${c2 ? RESET : ''}` : '';
+    const vis1 = lbl1.length + 1 + v1.length;
+    const vis2 = lbl2 ? lbl2.length + 1 + v2.length : 0;
+    const pad1 = Math.max(1, colW - vis1);
+    const pad2 = Math.max(0, colW - vis2);
+    return drawLine(row, `${DIM}│${RESET} ${l1}${' '.repeat(pad1)}${l2}${' '.repeat(pad2)} ${DIM}│${RESET}`);
+  };
+
+  // Single full-width row
+  const fullRow = (row, lbl, val, c) => {
+    const maxV = inner - 2 - lbl.length - 1;
+    const tv = truncVal(val, Math.max(2, maxV));
+    const vis = lbl.length + 1 + tv.length;
+    const pad = Math.max(0, inner - 2 - vis);
+    return drawLine(row, `${DIM}│${RESET} ${DIM}${lbl}${RESET} ${c || ''}${tv}${c ? RESET : ''}${' '.repeat(pad)} ${DIM}│${RESET}`);
+  };
+
+  let r = startRow;
+
+  // Top border
+  const heading = ' Session Detail ';
+  const bLen = paneWidth - 2 - heading.length;
+  output += drawLine(r++, `${DIM}┌${'─'.repeat(Math.floor(bLen / 2))}${RESET}${BOLD}${CYAN}${heading}${RESET}${DIM}${'─'.repeat(bLen - Math.floor(bLen / 2))}┐${RESET}`);
+
+  // Status color
+  let sc = GREEN;
+  if (proc.isZombie) sc = RED;
+  else if (proc.isStopped) sc = YELLOW;
+  else if (!proc.isActive) sc = DIM;
+
+  // CTX
+  const ctxPct = proc.contextPct !== null ? proc.contextPct : 100;
+  const cc = ctxColor(ctxPct);
+
+  // Token counts
+  const inTok = proc.inputTokens != null ? proc.inputTokens.toLocaleString() : '--';
+  const cachCreate = proc.cacheCreateTokens != null ? proc.cacheCreateTokens.toLocaleString() : '--';
+  const cachRead = proc.cacheReadTokens != null ? proc.cacheReadTokens.toLocaleString() : '--';
+  const outTok = proc.outputTokens != null ? proc.outputTokens.toLocaleString() : '--';
+  const turnMs = proc.lastTurnMs != null ? (proc.lastTurnMs / 1000).toFixed(1) + 's' : '--';
+
+  // Directory shortened
+  let dir = proc.cwd || '--';
+  if (dir.startsWith(process.env.HOME)) dir = '~' + dir.substring(process.env.HOME.length);
+
+  // Row pairs
+  if (r < startRow + availRows - 1)
+    output += pairRow(r++, 'PID:', proc.pid, CYAN, 'Status:', proc.status, sc);
+  if (r < startRow + availRows - 1)
+    output += pairRow(r++, 'CTX:', ctxPct + '%', cc, 'Model:', (proc.model || '--').replace(/^claude-/, ''), CYAN);
+  if (r < startRow + availRows - 1)
+    output += fullRow(r++, 'Branch:', proc.gitBranch || '--', YELLOW);
+  if (r < startRow + availRows - 1)
+    output += pairRow(r++, 'Started:', proc.startTime, '', 'CPU:', proc.cpu.toFixed(1) + '%', proc.cpu > 50 ? RED : proc.cpu > 20 ? YELLOW : '');
+  if (r < startRow + availRows - 1)
+    output += pairRow(r++, 'MEM:', proc.mem.toFixed(1) + '%', '', 'Stat:', proc.stat, DIM);
+
+  // Separator
+  if (r < startRow + availRows - 1)
+    output += drawLine(r++, `${DIM}├${'─'.repeat(paneWidth - 2)}┤${RESET}`);
+
+  // Token details
+  if (r < startRow + availRows - 1)
+    output += pairRow(r++, 'In:', inTok, '', 'Out:', outTok, GREEN);
+  if (r < startRow + availRows - 1)
+    output += pairRow(r++, 'Cache W:', cachCreate, '', 'Cache R:', cachRead, '');
+  if (r < startRow + availRows - 1)
+    output += pairRow(r++, 'Turn:', turnMs, '', 'Stop:', proc.stopReason || '--', DIM);
+
+  // Context bar
+  const CTX_LIMIT = 200000;
+  const hasTokens = proc.inputTokens != null;
+  if (hasTokens && r + 5 < startRow + availRows - 1) {
+    const barHeading = ' Context Window ';
+    const bhLen = paneWidth - 2 - barHeading.length;
+    output += drawLine(r++, `${DIM}├${'─'.repeat(Math.floor(bhLen / 2))}${RESET}${BOLD}${CYAN}${barHeading}${RESET}${DIM}${'─'.repeat(bhLen - Math.floor(bhLen / 2))}┤${RESET}`);
+
+    const barW = inner - 2;
+    const inp = proc.inputTokens || 0;
+    const cw = proc.cacheCreateTokens || 0;
+    const cr = proc.cacheReadTokens || 0;
+    const out = proc.outputTokens || 0;
+    const used = inp + cw + cr;
+    const free = Math.max(0, CTX_LIMIT - used);
+
+    // Segment widths proportional to CTX_LIMIT
+    const seg = (v) => Math.max(v > 0 ? 1 : 0, Math.round(v / CTX_LIMIT * barW));
+    let sInp = seg(inp);
+    let sCw = seg(cw);
+    let sCr = seg(cr);
+    let sOut = seg(out);
+    let sFree = seg(free);
+    // Adjust to exactly barW
+    let total = sInp + sCw + sCr + sOut + sFree;
+    if (total > barW) sFree = Math.max(0, sFree - (total - barW));
+    else if (total < barW) sFree += (barW - total);
+
+    const MAGENTA = `${ESC}[35m`;
+    const bar = `${GREEN}${'█'.repeat(sInp)}${RESET}` +
+                `${BLUE}${'█'.repeat(sCw)}${RESET}` +
+                `${CYAN}${'█'.repeat(sCr)}${RESET}` +
+                `${YELLOW}${'█'.repeat(sOut)}${RESET}` +
+                `${DIM}${'░'.repeat(sFree)}${RESET}`;
+    output += drawLine(r++, `${DIM}│${RESET} ${bar} ${DIM}│${RESET}`);
+
+    // Legend rows
+    const pct = (v) => (v / CTX_LIMIT * 100).toFixed(0) + '%';
+    const lPad = (s, w) => s.length >= w ? s.substring(0, w) : s + ' '.repeat(w - s.length);
+    const legendW = Math.floor((inner - 2) / 2);
+    // Row 1: input + cache write
+    const l1a = `${GREEN}█${RESET} ${DIM}Input${RESET} ${pct(inp)}`;
+    const l1b = `${BLUE}█${RESET} ${DIM}Cache W${RESET} ${pct(cw)}`;
+    const l1aVis = 8 + pct(inp).length;
+    const l1bVis = 10 + pct(cw).length;
+    output += drawLine(r++, `${DIM}│${RESET} ${l1a}${' '.repeat(Math.max(1, inner - 2 - l1aVis - l1bVis))}${l1b} ${DIM}│${RESET}`);
+    // Row 2: cache read + output
+    const l2a = `${CYAN}█${RESET} ${DIM}Cache R${RESET} ${pct(cr)}`;
+    const l2b = `${YELLOW}█${RESET} ${DIM}Output${RESET} ${pct(out)}`;
+    const l2aVis = 10 + pct(cr).length;
+    const l2bVis = 9 + pct(out).length;
+    output += drawLine(r++, `${DIM}│${RESET} ${l2a}${' '.repeat(Math.max(1, inner - 2 - l2aVis - l2bVis))}${l2b} ${DIM}│${RESET}`);
+    // Row 3: free
+    const l3 = `${DIM}░ Free ${pct(free)}${RESET}`;
+    const l3Vis = 7 + pct(free).length;
+    output += drawLine(r++, `${DIM}│${RESET} ${l3}${' '.repeat(Math.max(0, inner - 2 - l3Vis))} ${DIM}│${RESET}`);
+  }
+
+  // Separator
+  if (r < startRow + availRows - 1)
+    output += drawLine(r++, `${DIM}├${'─'.repeat(paneWidth - 2)}┤${RESET}`);
+
+  // Full-width rows for longer values
+  if (r < startRow + availRows - 1)
+    output += fullRow(r++, 'Slug:', proc.slug || '--', DIM);
+  if (r < startRow + availRows - 1)
+    output += fullRow(r++, 'Session:', proc.sessionId ? proc.sessionId.substring(0, inner - 12) : '--', DIM);
+  if (r < startRow + availRows - 1) {
+    const maxDir = inner - 6;
+    const dirDisplay = dir.length > maxDir ? '...' + dir.substring(dir.length - maxDir + 3) : dir;
+    output += fullRow(r++, 'Dir:', dirDisplay, DIM);
+  }
+  if (r < startRow + availRows - 1)
+    output += pairRow(r++, 'Ver:', proc.version || '--', DIM, 'Tier:', proc.serviceTier || '--', DIM);
+  if (r < startRow + availRows - 1)
+    output += fullRow(r++, 'Time:', proc.timestamp || '--', DIM);
+  if (r < startRow + availRows - 1)
+    output += pairRow(r++, 'Stat:', proc.stat, DIM, 'Type:', proc.userType || '--', DIM);
+
+  // Fill remaining
+  while (r < startRow + availRows - 1) {
+    output += drawLine(r++, `${DIM}│${' '.repeat(paneWidth - 2)}│${RESET}`);
+  }
+
+  // Bottom border
+  output += drawLine(r, `${DIM}└${'─'.repeat(paneWidth - 2)}┘${RESET}`);
+
+  return output;
+}
+
+function render() {
+  if (viewMode === 'pane') return renderPaneMode();
+  const { columns, rows } = process.stdout;
+  const detailPaneWidth = 42;
+  const showDetailPane = columns >= 140;
+  const listWidth = showDetailPane ? columns - detailPaneWidth - 1 : columns;
+  let output = HOME + HIDE_CURSOR;
+
+  // Header
+  output += renderHeader(columns);
+
+  // Stats bar
+  const activeCount = processes.filter(p => p.isActive).length;
+  const deadCount = processes.filter(p => !p.isActive).length;
+  output += `${DIM} Active: ${RESET}${GREEN}${activeCount}${RESET}${DIM} | Dead/Stopped: ${RESET}${RED}${deadCount}${RESET}${DIM} | Last refresh: ${lastRefresh.toLocaleTimeString()} ${RESET}${CLR_LINE}\n`;
+
+  // Status message if any
+  if (statusMessage) {
+    output += `${YELLOW} ${statusMessage}${RESET}${CLR_LINE}\n`;
+    statusMessage = '';
+  }
+
+  output += `${DIM}${'─'.repeat(listWidth)}${RESET}${CLR_LINE}\n`;
+
+  // Column headers - responsive based on width
+  const ctxBarMode = listWidth >= 160;
+  const ctxColW = ctxBarMode ? 16 : 6;
+  const isNarrow = listWidth < 120;
+  // In narrow mode: PID(8) + STATUS(10) + CTX(6) + STARTED(12) + MODEL(14) + CPU%(7) + MEM%(5) + pad(2) = 64
+  // In wide mode: full columns with BRANCH, SLUG, DIRECTORY
+  const fixedColsTotal = isNarrow
+    ? 8 + 10 + ctxColW + 12 + 14 + 7 + 7 + 2
+    : 8 + 10 + ctxColW + 12 + 32 + 22 + 14 + 7 + 7 + 2;
+  output += `${BOLD}${CYAN}`;
+  if (isNarrow) {
+    output += `  ${'PID'.padEnd(8)}${'STATUS'.padEnd(10)}${'CTX'.padEnd(ctxColW)}${'STARTED'.padEnd(12)}${'MODEL'.padEnd(14)}${'CPU%'.padEnd(7)}MEM%`;
+  } else {
+    output += `  ${'PID'.padEnd(8)}${'STATUS'.padEnd(10)}${'CTX'.padEnd(ctxColW)}${'STARTED'.padEnd(12)}${'BRANCH'.padEnd(32)}${'SLUG'.padEnd(22)}${'MODEL'.padEnd(14)}${'DIRECTORY'.padEnd(Math.max(0, listWidth - fixedColsTotal))}${'CPU%'.padEnd(7)}MEM%`;
+  }
+  output += `${RESET}${CLR_LINE}\n`;
+  output += `${DIM}${'─'.repeat(listWidth)}${RESET}${CLR_LINE}\n`;
+
+  // Process list
+  // Header: 3 (header box) + 1 (stats) + 1 (separator) + 1 (col headers) + 1 (separator) = 7
+  // Footer: 2 (separator + keys, pinned to bottom)
+  // Reserve 1 extra for selected item detail line
+  const maxVisible = rows - 10;
+  const startIdx = Math.max(0, selectedIndex - Math.floor(maxVisible / 2));
+  const endIdx = Math.min(processes.length, startIdx + maxVisible);
+
+  if (processes.length === 0) {
+    output += `${CLR_LINE}\n${DIM}  No Claude Code processes found.${RESET}${CLR_LINE}\n`;
+  }
+
+  for (let i = startIdx; i < endIdx; i++) {
+    const proc = processes[i];
+    const isSelected = i === selectedIndex;
+
+    // Selection indicator and styling
+    if (isSelected) {
+      output += `${BG_ORANGE}${WHITE}${BOLD}> `;
+    } else {
+      output += '  ';
+    }
+
+    // PID
+    output += `${isSelected ? '' : CYAN}${proc.pid.padEnd(8)}`;
+
+    // Status
+    let statusColor = GREEN;
+    if (proc.isZombie) statusColor = RED;
+    else if (proc.isStopped) statusColor = YELLOW;
+    else if (!proc.isActive) statusColor = DIM;
+    output += `${isSelected ? '' : statusColor}${proc.status.padEnd(10)}${isSelected ? '' : RESET}`;
+
+    // CTX LEFT
+    const ctxPct = proc.contextPct !== null ? proc.contextPct : 100;
+    if (ctxBarMode) {
+      // Loading bar mode: 10-char bar + space + 4-char pct + 1 space = 16
+      const barLen = 10;
+      const filled = Math.round(ctxPct / 100 * barLen);
+      const empty = barLen - filled;
+      if (isSelected) {
+        output += `${'█'.repeat(filled)}${'░'.repeat(empty)} ${(ctxPct + '%').padStart(4)} `;
+      } else {
+        const cc = ctxColor(ctxPct);
+        output += `${cc}${'█'.repeat(filled)}${RESET}${DIM}${'░'.repeat(empty)}${RESET} ${cc}${(ctxPct + '%').padStart(4)}${RESET} `;
+      }
+    } else {
+      if (!isSelected) output += ctxColor(ctxPct);
+      output += `${(ctxPct + '%').padEnd(6)}`;
+      if (!isSelected) output += RESET;
+    }
+
+    // Started
+    output += `${proc.startTime.padEnd(12)}`;
+
+    if (!isNarrow) {
+      // Branch
+      const branchStr = proc.gitBranch || '--';
+      output += `${isSelected ? '' : YELLOW}${branchStr.substring(0, 31).padEnd(32)}${isSelected ? '' : RESET}`;
+
+      // Slug
+      const slugStr = proc.slug || '--';
+      output += `${isSelected ? '' : DIM}${slugStr.substring(0, 21).padEnd(22)}${isSelected ? '' : RESET}`;
+    }
+
+    // Model
+    const modelStr = proc.model ? proc.model.replace(/^claude-/, '') : '--';
+    output += `${isSelected ? '' : CYAN}${modelStr.substring(0, 13).padEnd(14)}${isSelected ? '' : RESET}`;
+
+    if (!isNarrow) {
+      // Directory
+      const dirMaxLen = listWidth - fixedColsTotal;
+      let dir = proc.cwd || '';
+      if (dir.startsWith(process.env.HOME)) {
+        dir = '~' + dir.substring(process.env.HOME.length);
+      }
+      if (dir.length > dirMaxLen) {
+        dir = '...' + dir.substring(dir.length - dirMaxLen + 3);
+      }
+      output += `${isSelected ? '' : DIM}${dir.padEnd(Math.max(0, dirMaxLen))}${isSelected ? '' : RESET}`;
+    }
+
+    // CPU%
+    const cpuStr = proc.cpu.toFixed(1);
+    if (!isSelected) {
+      if (proc.cpu > 50) output += RED;
+      else if (proc.cpu > 20) output += YELLOW;
+    }
+    output += `${cpuStr.padEnd(7)}`;
+    if (!isSelected) output += RESET;
+
+    // MEM%
+    output += `${proc.mem.toFixed(1)}`;
+
+    output += `${isSelected ? RESET : ''}${CLR_LINE}\n`;
+
+    // Show model + stopReason on detail line for selected item (only when no detail pane)
+    if (!showDetailPane && isSelected && (proc.model || proc.stopReason)) {
+      let detail = '   ';
+      if (proc.model) detail += ` ${CYAN}${proc.model}${RESET}`;
+      if (proc.stopReason) detail += `  ${DIM}stop: ${proc.stopReason}${RESET}`;
+      output += `${detail}${CLR_LINE}\n`;
+    }
+  }
+
+  // Scrollbar indicator if needed
+  if (processes.length > maxVisible) {
+    output += `${CLR_LINE}\n${DIM}  Showing ${startIdx + 1}-${endIdx} of ${processes.length} processes${RESET}${CLR_LINE}`;
+  }
+
+  // Clear any leftover lines between content and footer
+  output += CLR_DOWN;
+
+  // Render detail pane on the right if terminal is wide enough
+  if (showDetailPane && processes[selectedIndex]) {
+    const paneStartRow = 5; // right after header box (3 lines) + stats line
+    const footerLines = 2;
+    const availRows = rows - paneStartRow - footerLines;
+    const paneStartCol = listWidth + 2;
+    output += renderDetailPane(processes[selectedIndex], paneStartRow, paneStartCol, detailPaneWidth, availRows);
+  }
+
+  // Bottom detail pane for narrow terminals
+  if (!showDetailPane && processes[selectedIndex]) {
+    // Calculate how many content lines we used
+    const headerLines = 8; // header(3) + stats(1) + status?(0-1) + separator(1) + colheader(1) + separator(1)
+    const listLines = endIdx - startIdx + (processes.length > maxVisible ? 1 : 0);
+    // Account for the inline detail line
+    let extraLines = 0;
+    for (let i = startIdx; i < endIdx; i++) {
+      if (i === selectedIndex && (processes[i].model || processes[i].stopReason)) extraLines++;
+    }
+    const contentEnd = headerLines + listLines + extraLines;
+    const footerLines = 2;
+    const bottomPaneStart = contentEnd + 1;
+    const availBottomRows = rows - footerLines - bottomPaneStart;
+    if (availBottomRows >= 8) {
+      // Render a full-width bottom detail pane
+      const bottomPaneWidth = Math.min(columns, 80);
+      const bottomPaneCol = Math.max(1, Math.floor((columns - bottomPaneWidth) / 2) + 1);
+      output += renderDetailPane(processes[selectedIndex], bottomPaneStart, bottomPaneCol, bottomPaneWidth, availBottomRows);
+    }
+  }
+
+  // Footer pinned to bottom
+  output += `${ESC}[${rows - 1};1H`;
+  output += `${DIM}${'─'.repeat(columns)}${RESET}${CLR_LINE}`;
+  output += `${ESC}[${rows};1H`;
+  output += `${BOLD} KEYS:${RESET} `;
+  output += `${CYAN}↑/k${RESET} Up  ${CYAN}↓/j${RESET} Down  `;
+  output += `${RED}x${RESET} Kill  ${RED}X${RESET} Force Kill  ${RED}A${RESET} Kill Stopped  `;
+  output += `${CYAN}P${RESET} Pane View  ${CYAN}r${RESET} Refresh  ${CYAN}q${RESET} Quit  ${CYAN}?${RESET} Help${CLR_LINE}`;
+
+  process.stdout.write(output);
+}
+
+function killProcess(pid, force = false) {
+  try {
+    // Use numeric signals for better compatibility
+    const signal = force ? 9 : 15;  // SIGKILL=9, SIGTERM=15
+    execSync(`kill -${signal} ${pid} 2>&1`, { encoding: 'utf8' });
+    statusMessage = `${force ? 'Force killed' : 'Killed'} process ${pid}`;
+    return true;
+  } catch (e) {
+    // Check if process still exists
+    try {
+      execSync(`kill -0 ${pid} 2>&1`);
+      statusMessage = `Failed to kill process ${pid}: ${e.message}`;
+      return false;
+    } catch (e2) {
+      // Process doesn't exist anymore, consider it killed
+      statusMessage = `Process ${pid} already terminated`;
+      return true;
+    }
+  }
+}
+
+function killAllProcesses(force = false) {
+  let killed = 0;
+  for (const proc of processes) {
+    if (killProcess(proc.pid, force)) {
+      killed++;
+    }
+  }
+  return killed;
+}
+
+function showHelp() {
+  const { columns } = process.stdout;
+  let output = CLEAR;
+
+  output += renderHeader(columns);
+  output += '\n';
+
+  output += `${BOLD}NAVIGATION:${RESET}\n`;
+  output += `  ${CYAN}↑ / k${RESET}     Move selection up\n`;
+  output += `  ${CYAN}↓ / j${RESET}     Move selection down\n`;
+  output += `  ${CYAN}← / h${RESET}     Move selection left (pane mode)\n`;
+  output += `  ${CYAN}→ / l${RESET}     Move selection right (pane mode)\n`;
+  output += `  ${CYAN}g${RESET}         Jump to first process\n`;
+  output += `  ${CYAN}G${RESET}         Jump to last process\n`;
+  output += `  ${CYAN}P${RESET}         Toggle pane/grid view\n\n`;
+
+  output += `${BOLD}ACTIONS:${RESET}\n`;
+  output += `  ${CYAN}x${RESET}         Kill selected process (SIGTERM - graceful)\n`;
+  output += `  ${CYAN}X${RESET}         Force kill selected process (SIGKILL)\n`;
+  output += `  ${CYAN}K${RESET}         Kill ALL Claude processes (with confirmation)\n`;
+  output += `  ${CYAN}A${RESET}         Kill ALL stopped/dead processes (with confirmation)\n`;
+  output += `  ${CYAN}r${RESET}         Refresh process list\n\n`;
+
+  output += `${BOLD}OTHER:${RESET}\n`;
+  output += `  ${CYAN}q / ESC${RESET}   Quit the manager\n`;
+  output += `  ${CYAN}?${RESET}         Show this help\n\n`;
+
+  output += `${BOLD}PROCESS STATUS:${RESET}\n`;
+  output += `  ${GREEN}ACTIVE${RESET}    Process is running normally\n`;
+  output += `  ${YELLOW}STOPPED${RESET}   Process is suspended (can be resumed)\n`;
+  output += `  ${RED}ZOMBIE${RESET}    Process has terminated but not reaped\n`;
+  output += `  ${DIM}SLEEPING${RESET}  Process is idle/waiting\n\n`;
+
+  output += `${BOLD}SORTING:${RESET}\n`;
+  output += `  Processes are sorted by creation time (oldest first)\n\n`;
+
+  output += `${DIM}Press any key to return...${RESET}`;
+
+  process.stdout.write(output);
+}
+
+let showingHelp = false;
+let confirmKillAll = false;
+let confirmKillStopped = false;
+
+function handleInput(key) {
+  if (showingHelp) {
+    showingHelp = false;
+    render();
+    return;
+  }
+
+  if (confirmKillAll) {
+    if (key === 'y' || key === 'Y') {
+      const killed = killAllProcesses();
+      statusMessage = `Killed ${killed} processes`;
+      confirmKillAll = false;
+      setTimeout(() => {
+        processes = getClaudeProcesses();
+        lastRefresh = new Date();
+        render();
+      }, 500);
+    } else {
+      confirmKillAll = false;
+      render();
+    }
+    return;
+  }
+
+  if (confirmKillStopped) {
+    if (key === 'y' || key === 'Y') {
+      const stoppedProcs = processes.filter(p => !p.isActive);
+      let killed = 0;
+      for (const proc of stoppedProcs) {
+        if (killProcess(proc.pid, true)) killed++;
+      }
+      statusMessage = `Killed ${killed} stopped processes`;
+      confirmKillStopped = false;
+      setTimeout(() => {
+        processes = getClaudeProcesses();
+        lastRefresh = new Date();
+        if (selectedIndex >= processes.length) {
+          selectedIndex = Math.max(0, processes.length - 1);
+        }
+        render();
+      }, 500);
+    } else {
+      confirmKillStopped = false;
+      render();
+    }
+    return;
+  }
+
+  switch (key) {
+    case 'P':
+      if (viewMode === 'list') {
+        viewMode = 'pane';
+        const cardsPerRow = getCardsPerRow();
+        paneRow = Math.floor(selectedIndex / cardsPerRow);
+        paneCol = selectedIndex % cardsPerRow;
+      } else {
+        viewMode = 'list';
+      }
+      render();
+      break;
+
+    case '\x1b[A': // Up arrow
+    case 'k':
+      if (viewMode === 'pane') {
+        if (paneRow > 0) {
+          paneRow--;
+          const cardsPerRow = getCardsPerRow();
+          selectedIndex = paneRow * cardsPerRow + paneCol;
+          if (selectedIndex >= processes.length) {
+            selectedIndex = processes.length - 1;
+            paneCol = selectedIndex % cardsPerRow;
+          }
+        }
+      } else {
+        if (selectedIndex > 0) selectedIndex--;
+      }
+      render();
+      break;
+
+    case '\x1b[B': // Down arrow
+    case 'j':
+      if (viewMode === 'pane') {
+        const cardsPerRow = getCardsPerRow();
+        const totalRows = Math.ceil(processes.length / cardsPerRow);
+        if (paneRow < totalRows - 1) {
+          paneRow++;
+          selectedIndex = paneRow * cardsPerRow + paneCol;
+          if (selectedIndex >= processes.length) {
+            selectedIndex = processes.length - 1;
+            paneCol = selectedIndex % cardsPerRow;
+          }
+        }
+      } else {
+        if (selectedIndex < processes.length - 1) selectedIndex++;
+      }
+      render();
+      break;
+
+    case '\x1b[D': // Left arrow
+    case 'h':
+      if (viewMode === 'pane') {
+        if (paneCol > 0) {
+          paneCol--;
+          const cardsPerRow = getCardsPerRow();
+          selectedIndex = paneRow * cardsPerRow + paneCol;
+        }
+        render();
+      }
+      break;
+
+    case '\x1b[C': // Right arrow
+    case 'l':
+      if (viewMode === 'pane') {
+        const cardsPerRow = getCardsPerRow();
+        const maxColInRow = Math.min(cardsPerRow - 1, processes.length - 1 - paneRow * cardsPerRow);
+        if (paneCol < maxColInRow) {
+          paneCol++;
+          selectedIndex = paneRow * cardsPerRow + paneCol;
+        }
+        render();
+      }
+      break;
+
+    case 'g':
+      selectedIndex = 0;
+      if (viewMode === 'pane') { paneRow = 0; paneCol = 0; }
+      render();
+      break;
+
+    case 'G':
+      selectedIndex = Math.max(0, processes.length - 1);
+      if (viewMode === 'pane') {
+        const cardsPerRow = getCardsPerRow();
+        paneRow = Math.floor(selectedIndex / cardsPerRow);
+        paneCol = selectedIndex % cardsPerRow;
+      }
+      render();
+      break;
+
+    case 'x':
+      if (processes[selectedIndex]) {
+        const pid = processes[selectedIndex].pid;
+        killProcess(pid, false);
+        setTimeout(() => {
+          processes = getClaudeProcesses();
+          lastRefresh = new Date();
+          if (selectedIndex >= processes.length) {
+            selectedIndex = Math.max(0, processes.length - 1);
+          }
+          render();
+        }, 300);
+      }
+      break;
+
+    case 'X':
+      if (processes[selectedIndex]) {
+        const pid = processes[selectedIndex].pid;
+        killProcess(pid, true);
+        setTimeout(() => {
+          processes = getClaudeProcesses();
+          lastRefresh = new Date();
+          if (selectedIndex >= processes.length) {
+            selectedIndex = Math.max(0, processes.length - 1);
+          }
+          render();
+        }, 300);
+      }
+      break;
+
+    case 'K':
+      confirmKillAll = true;
+      process.stdout.write(`\n${BG_RED}${WHITE}${BOLD} Kill ALL ${processes.length} Claude processes? (y/N) ${RESET}`);
+      break;
+
+    case 'A': {
+      const stoppedCount = processes.filter(p => !p.isActive).length;
+      if (stoppedCount > 0) {
+        confirmKillStopped = true;
+        process.stdout.write(`\n${BG_RED}${WHITE}${BOLD} Kill ALL ${stoppedCount} stopped/dead processes? (y/N) ${RESET}`);
+      } else {
+        statusMessage = 'No stopped processes to kill';
+        render();
+      }
+      break;
+    }
+
+    case 'r':
+      processes = getClaudeProcesses();
+      lastRefresh = new Date();
+      statusMessage = 'Refreshed';
+      render();
+      break;
+
+    case '?':
+      showingHelp = true;
+      showHelp();
+      break;
+
+    case 'q':
+    case '\x1b': // ESC
+    case '\x03': // Ctrl+C
+      cleanup();
+      process.exit(0);
+      break;
+  }
+}
+
+function cleanup() {
+  process.stdout.write(SHOW_CURSOR + CLEAR);
+  process.stdin.setRawMode(false);
+}
+
+function main() {
+  // Setup terminal
+  if (!process.stdin.isTTY) {
+    console.error('This program requires an interactive terminal.');
+    process.exit(1);
+  }
+
+  process.stdin.setRawMode(true);
+  process.stdin.resume();
+  process.stdin.setEncoding('utf8');
+
+  // Handle resize
+  process.stdout.on('resize', () => {
+    render();
+  });
+
+  // Handle cleanup on exit
+  process.on('SIGINT', () => {
+    cleanup();
+    process.exit(0);
+  });
+
+  process.on('SIGTERM', () => {
+    cleanup();
+    process.exit(0);
+  });
+
+  // Initial load
+  processes = getClaudeProcesses();
+  render();
+
+  // Auto-refresh every 5 seconds
+  setInterval(() => {
+    if (!showingHelp && !confirmKillAll && !confirmKillStopped) {
+      processes = getClaudeProcesses();
+      lastRefresh = new Date();
+      if (selectedIndex >= processes.length) {
+        selectedIndex = Math.max(0, processes.length - 1);
+      }
+      render();
+    }
+  }, 5000);
+
+  // Handle input
+  process.stdin.on('data', (key) => {
+    handleInput(key);
+  });
+}
+
+main();
