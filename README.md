@@ -1,7 +1,7 @@
 # ctop
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Platform: macOS](https://img.shields.io/badge/Platform-macOS-lightgrey.svg)](#requirements)
+[![Platform: macOS | Linux](https://img.shields.io/badge/Platform-macOS%20%7C%20Linux-lightgrey.svg)](#requirements)
 [![Node.js](https://img.shields.io/badge/Node.js-18%2B-green.svg)](#requirements)
 [![Zero Dependencies](https://img.shields.io/badge/Dependencies-Zero-brightgreen.svg)](#)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](#contributing)
@@ -24,8 +24,11 @@ Track CPU, memory, token usage, context window saturation, active branches, and 
 - **Two view modes** — list view (table) and pane view (card grid)
 - **Process control** — kill individual or all sessions (graceful `SIGTERM` or force `SIGKILL`)
 - **Vim-style navigation** — `hjkl`, `g`/`G`, arrow keys
+- **Sort & filter** — sort by CPU, memory, context %; filter by branch, model, directory, or slug
+- **Configurable** — refresh interval, context limit, default view via `~/.ctoprc` or CLI flags
+- **Cross-platform** — macOS and Linux (Windows planned)
 - **Zero dependencies** — pure Node.js, no `npm install` required
-- **Auto-refresh** — updates every 5 seconds
+- **Auto-refresh** — configurable interval (default 5s)
 
 <!-- TODO: Add screenshot of list view -->
 <!-- ![List view](assets/list-view.png) -->
@@ -37,20 +40,28 @@ Track CPU, memory, token usage, context window saturation, active branches, and 
 
 ## Installation
 
-### Quick install
+### npm (recommended)
 
 ```bash
-# Clone the repo
+npm install -g ctop-claude
+ctop
+```
+
+Or run without installing:
+
+```bash
+npx ctop-claude
+```
+
+### From source
+
+```bash
 git clone https://github.com/aakashadesara/ctop.git
-
-# Make it executable (should already be, but just in case)
 chmod +x ctop/claude-manager
-
-# Symlink into your PATH
 ln -s "$(pwd)/ctop/claude-manager" /usr/local/bin/ctop
 ```
 
-### Manual install
+### One-liner
 
 ```bash
 curl -o /usr/local/bin/ctop https://raw.githubusercontent.com/aakashadesara/ctop/main/claude-manager
@@ -100,13 +111,17 @@ source ~/.zshrc
 | `g` | Jump to first process |
 | `G` | Jump to last process |
 | `P` | Toggle list / pane view |
+| `s` | Cycle sort: age → cpu → mem → context |
+| `S` | Reverse sort order |
+| `/` | Start filter (type to search, Enter to confirm) |
+| `ESC` | Clear filter (or quit if no filter active) |
 | `r` | Refresh process list |
 | `x` | Kill selected process (SIGTERM) |
 | `X` | Force kill selected process (SIGKILL) |
 | `K` | Kill ALL Claude processes |
 | `A` | Kill all stopped/zombie processes |
 | `?` | Show help |
-| `q` / `ESC` | Quit |
+| `q` | Quit |
 
 ### Context window visualization
 
@@ -133,9 +148,33 @@ On wide terminals (140+ cols), a detail pane appears showing full session info: 
 
 ---
 
+## Configuration
+
+### CLI flags
+
+```bash
+ctop --refresh 3          # Refresh every 3 seconds
+ctop --context-limit 128000  # Set context window to 128k
+ctop --pane               # Start in pane/grid view
+```
+
+### Config file (`~/.ctoprc`)
+
+```json
+{
+  "refreshInterval": 5000,
+  "contextLimit": 200000,
+  "defaultView": "list"
+}
+```
+
+CLI flags override config file values.
+
+---
+
 ## Requirements
 
-- **macOS** (uses `ps` and `lsof` — see [roadmap](#roadmap) for Linux/Windows)
+- **macOS or Linux** (uses `ps` + `lsof` on macOS, `ps` + `/proc` on Linux)
 - **Node.js 18+**
 - **Claude Code** installed and running sessions
 
@@ -149,15 +188,15 @@ On wide terminals (140+ cols), a detail pane appears showing full session info: 
 
 ## Roadmap
 
-- [ ] **Linux support** — adapt `ps`/`lsof` parsing for Linux
+- [x] **Linux support** — `ps` + `/proc` based process detection
+- [x] **npm package** — `npm install -g ctop-claude`
+- [x] **Configurable settings** — refresh interval, context limit, default view
+- [x] **Sort** — cycle through age, CPU, memory, context %
+- [x] **Filter** — search by branch, model, directory, slug, title
 - [ ] **Windows support** — PowerShell-based process detection
-- [ ] **npm package** — `npx ctop` / `npm install -g ctop`
 - [ ] **Homebrew formula** — `brew install ctop`
-- [ ] **Configurable refresh interval**
-- [ ] **Configurable context window size** (for future model changes)
 - [ ] **Process log tailing** — stream a session's output in a split pane
-- [ ] **Multi-sort** — sort by CPU, memory, context %, age
-- [ ] **Filter/search** — filter processes by branch, model, directory
+- [ ] **Color themes** — custom or preset color schemes
 
 ---
 
@@ -177,8 +216,9 @@ cd ctop
 
 A few areas where contributions would be especially helpful:
 
-- **Linux/Windows compatibility** — the biggest gap right now
+- **Windows compatibility** — the biggest gap right now
 - **Tests** — there are none yet
+- **Linux testing** — basic support is in, needs real-world validation
 - **Performance** — profiling on systems with many Claude sessions
 - **UI polish** — better responsive layouts, color themes
 
