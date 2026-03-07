@@ -447,7 +447,7 @@ function applySortAndFilter() {
 }
 
 function renderHeader(columns) {
-  const title = ' CLAUDE PROCESS MANAGER ';
+  const title = ' CTOP — Claude Terminal Operations Panel ';
   let h = '';
 
   // Thin dim top border
