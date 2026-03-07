@@ -1,0 +1,43 @@
+{
+  "name": "ctop-claude",
+  "version": "1.0.0",
+  "description": "Terminal UI for monitoring and managing Claude Code sessions",
+  "main": "claude-manager",
+  "bin": {
+    "ctop": "./claude-manager"
+  },
+  "scripts": {
+    "start": "node claude-manager"
+  },
+  "keywords": [
+    "claude",
+    "claude-code",
+    "process-manager",
+    "terminal",
+    "tui",
+    "htop",
+    "monitoring"
+  ],
+  "author": "Aakash Adesara",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/aakashadesara/ctop.git"
+  },
+  "bugs": {
+    "url": "https://github.com/aakashadesara/ctop/issues"
+  },
+  "homepage": "https://github.com/aakashadesara/ctop#readme",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "os": [
+    "darwin",
+    "linux"
+  ],
+  "files": [
+    "claude-manager",
+    "README.md",
+    "LICENSE"
+  ]
+}
