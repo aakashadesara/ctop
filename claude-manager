@@ -28,7 +28,7 @@ function loadConfig() {
       if (rc.refreshInterval) config.refreshInterval = Number(rc.refreshInterval);
       if (rc.contextLimit) config.contextLimit = Number(rc.contextLimit);
       if (rc.defaultView === 'pane' || rc.defaultView === 'list') config.defaultView = rc.defaultView;
-      if (rc.theme === 'minimal') config.theme = rc.minimal;
+      if (rc.theme === 'minimal') config.theme = 'minimal';
     }
   } catch (e) {}
   // CLI flags override
@@ -114,7 +114,7 @@ function getClaudeProcesses() {
     // Get all claude processes with elapsed time for sorting
     // Using lstart for actual start time sorting
     const psOutput = execSync(
-      `ps -eo pid,user,pcpu,pmem,stat,lstart,command | grep 'claude' | grep -v 'claude-manager' | grep -v 'Claude.app' | grep -v 'grep'`,
+      `ps -eo pid,user,pcpu,pmem,stat,lstart,command | grep 'claude' | grep -v 'claude-manager' | grep -v 'ctop' | grep -v 'Claude.app' | grep -v 'grep'`,
       { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }
     ).trim();
 
@@ -1127,12 +1127,14 @@ function handleInput(key) {
       if (filterText) statusMessage = `Filter: "${filterText}" (ESC to clear)`;
       applySortAndFilter();
       render();
-    } else if (key === '\x1b') {
-      // ESC: cancel filter
+    } else if (key === '\x1b' && key.length === 1) {
+      // ESC only (not an arrow key escape sequence)
       filterInput = false;
       filterText = '';
       applySortAndFilter();
       render();
+    } else if (key.startsWith('\x1b[')) {
+      // Arrow keys / escape sequences — ignore in filter mode
     } else if (key === '\x7f' || key === '\b') {
       // Backspace
       filterText = filterText.slice(0, -1);
@@ -1331,7 +1333,7 @@ function handleInput(key) {
       break;
     }
 
-    case 's':
+    case 's': {
       // Cycle sort mode
       const si = SORT_MODES.indexOf(sortMode);
       sortMode = SORT_MODES[(si + 1) % SORT_MODES.length];
@@ -1339,6 +1341,7 @@ function handleInput(key) {
       applySortAndFilter();
       render();
       break;
+    }
 
     case 'S':
       // Reverse sort
@@ -1424,7 +1427,7 @@ function main() {
 
   // Auto-refresh every 5 seconds
   setInterval(() => {
-    if (!showingHelp && !confirmKillAll && !confirmKillStopped) {
+    if (!showingHelp && !confirmKillAll && !confirmKillStopped && !filterInput) {
       allProcesses = getClaudeProcesses(); applySortAndFilter();
       lastRefresh = new Date();
       if (selectedIndex >= processes.length) {
@@ -1432,7 +1435,7 @@ function main() {
       }
       render();
     }
-  }, 5000);
+  }, CONFIG.refreshInterval);
 
   // Handle input
   process.stdin.on('data', (key) => {
