@@ -2,7 +2,7 @@
   "name": "ctop-claude",
   "version": "1.0.0",
   "description": "Terminal UI for monitoring and managing Claude Code sessions",
-  "main": "claude-manager",
+  "main": "src/main.js",
   "bin": {
     "ctop": "./claude-manager"
   },
@@ -39,6 +39,7 @@
   ],
   "files": [
     "claude-manager",
+    "src/",
     "README.md",
     "LICENSE"
   ]
