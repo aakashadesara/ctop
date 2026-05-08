@@ -301,6 +301,7 @@ let sortReverse = false;
 let filterText = '';
 let filterInput = false; // true when typing a filter
 let showDashboard = false; // toggled by 'd' key
+let dashboardManualToggle = false; // true once user presses 'd'
 let showHistory = false; // toggled by 'H' key
 let showTimeline = false; // toggled by 'W' key
 let timelineScrollOffset = 0; // scroll offset for event list in timeline view
@@ -1827,6 +1828,10 @@ function renderPaneMode() {
   if (!logPaneManualToggle) {
     showLogPane = rows >= 40;
   }
+  // Auto-show dashboard when terminal is tall enough
+  if (!dashboardManualToggle) {
+    showDashboard = rows >= 40;
+  }
 
   let output = HOME + HIDE_CURSOR;
 
@@ -2044,6 +2049,22 @@ function parseDiffStat(unstaged, staged, untracked) {
   };
 }
 
+function parseNumstat(output) {
+  // Parse git diff --numstat output: "45\t12\tpath/to/file.js"
+  const files = [];
+  for (const line of output.split('\n')) {
+    if (!line.trim()) continue;
+    const parts = line.split('\t');
+    if (parts.length >= 3) {
+      const ins = parts[0] === '-' ? 0 : parseInt(parts[0]) || 0;
+      const del = parts[1] === '-' ? 0 : parseInt(parts[1]) || 0;
+      const filePath = parts.slice(2).join('\t');
+      files.push({ file: filePath, insertions: ins, deletions: del });
+    }
+  }
+  return files;
+}
+
 function getGitDiffSummary(cwd) {
   if (!cwd) return null;
 
@@ -2059,7 +2080,24 @@ function getGitDiffSummary(cwd) {
     const stagedStat = execSync('git diff --cached --shortstat', { cwd, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
     const untracked = execSync('git ls-files --others --exclude-standard | wc -l', { cwd, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
 
+    // Get per-file stats
+    const numstatOutput = execSync('git diff --numstat', { cwd, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
+    const stagedNumstatOutput = execSync('git diff --cached --numstat', { cwd, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
+    const perFile = parseNumstat(numstatOutput);
+    const stagedPerFile = parseNumstat(stagedNumstatOutput);
+    // Merge staged into perFile (combine if same file)
+    for (const sf of stagedPerFile) {
+      const existing = perFile.find(f => f.file === sf.file);
+      if (existing) {
+        existing.insertions += sf.insertions;
+        existing.deletions += sf.deletions;
+      } else {
+        perFile.push(sf);
+      }
+    }
+
     const result = parseDiffStat(diffStat, stagedStat, parseInt(untracked) || 0);
+    result.files = perFile;
     gitDiffCache.set(cwd, { data: result, timestamp: Date.now() });
     return result;
   } catch (e) {
@@ -2263,7 +2301,9 @@ function renderDetailPane(proc, startRow, paneCol, paneWidth, availRows) {
   // Git diff summary
   const gitDiff = getGitDiffSummary(proc.cwd);
   if (gitDiff && r < startRow + availRows - 1) {
-    output += drawLine(r++, `${DIM}├${'─'.repeat(paneWidth - 2)}┤${RESET}`);
+    const gitHeading = ' Git Changes ';
+    const ghLen = paneWidth - 2 - gitHeading.length;
+    output += drawLine(r++, `${DIM}├${'─'.repeat(Math.floor(ghLen / 2))}${RESET}${BOLD}${CYAN}${gitHeading}${RESET}${DIM}${'─'.repeat(ghLen - Math.floor(ghLen / 2))}┤${RESET}`);
     if (r < startRow + availRows - 1) {
       const totalFiles = gitDiff.unstaged.files + gitDiff.staged.files;
       const totalIns = gitDiff.unstaged.insertions + gitDiff.staged.insertions;
@@ -2272,14 +2312,31 @@ function renderDetailPane(proc, startRow, paneCol, paneWidth, availRows) {
       if (totalFiles > 0) parts.push(`${totalFiles} file${totalFiles !== 1 ? 's' : ''}`);
       if (totalIns > 0) parts.push(`${GREEN}+${totalIns}${RESET}`);
       if (totalDel > 0) parts.push(`${RED}-${totalDel}${RESET}`);
-      if (gitDiff.untracked > 0) parts.push(`${DIM}(${gitDiff.untracked} untracked)${RESET}`);
+      if (gitDiff.untracked > 0) parts.push(`${DIM}(${gitDiff.untracked} new)${RESET}`);
       const gitStr = parts.length > 0 ? parts.join('  ') : 'clean';
-      // Calculate visible length (without ANSI codes)
       const visLen = gitStr.replace(/\x1b\[[0-9;]*m/g, '').length;
-      const gitLabel = 'Git:';
+      const gitLabel = 'Total:';
       const totalVis = gitLabel.length + 1 + visLen;
       const pad = Math.max(0, inner - 2 - totalVis);
       output += drawLine(r++, `${DIM}│${RESET} ${DIM}${gitLabel}${RESET} ${gitStr}${' '.repeat(pad)} ${DIM}│${RESET}`);
+    }
+    // Per-file table when there's room
+    if (gitDiff.files && gitDiff.files.length > 0 && r + 2 < startRow + availRows - 1) {
+      const maxFileRows = Math.min(gitDiff.files.length, startRow + availRows - 1 - r - 1);
+      for (let fi = 0; fi < maxFileRows; fi++) {
+        const f = gitDiff.files[fi];
+        const fname = f.file.length > inner - 18 ? '…' + f.file.slice(-(inner - 19)) : f.file;
+        const insStr = f.insertions > 0 ? `${GREEN}+${f.insertions}${RESET}` : `${DIM}+0${RESET}`;
+        const delStr = f.deletions > 0 ? `${RED}-${f.deletions}${RESET}` : `${DIM}-0${RESET}`;
+        const statsStr = `${insStr} ${delStr}`;
+        const statsVisLen = `+${f.insertions} -${f.deletions}`.length;
+        const gap = Math.max(1, inner - 2 - fname.length - statsVisLen);
+        output += drawLine(r++, `${DIM}│${RESET} ${DIM}${fname}${RESET}${' '.repeat(gap)}${statsStr} ${DIM}│${RESET}`);
+      }
+      if (gitDiff.files.length > maxFileRows && r < startRow + availRows - 1) {
+        const moreStr = `…${gitDiff.files.length - maxFileRows} more`;
+        output += drawLine(r++, `${DIM}│ ${moreStr}${' '.repeat(Math.max(0, inner - 2 - moreStr.length))} │${RESET}`);
+      }
     }
   }
 
@@ -2395,6 +2452,10 @@ function render() {
   // Auto-show log pane when terminal is tall enough (unless user manually toggled)
   if (!logPaneManualToggle) {
     showLogPane = rows >= 40;
+  }
+  // Auto-show dashboard when terminal is tall enough
+  if (!dashboardManualToggle) {
+    showDashboard = rows >= 40;
   }
 
   let output = HOME + HIDE_CURSOR;
@@ -2723,29 +2784,49 @@ function openDirectory(cwd, mode) {
       break;
 
     case 'editor': {
+      // Use $EDITOR if it's a GUI editor, otherwise default to 'code'
       const editor = process.env.EDITOR || 'code';
-      command = editor;
-      args = [cwd];
-      message = `Opened in editor: ${cwd}`;
+      // For GUI editors (code, cursor, subl, atom, zed, idea), spawn directly
+      // For terminal editors (vim, nvim, nano, emacs), open in a new terminal window
+      const terminalEditors = ['vim', 'nvim', 'vi', 'nano', 'emacs', 'pico', 'joe', 'micro'];
+      const editorBase = path.basename(editor);
+      if (terminalEditors.includes(editorBase) && IS_MAC) {
+        command = 'open';
+        args = ['-a', 'Terminal', cwd];
+      } else if (terminalEditors.includes(editorBase) && IS_LINUX) {
+        command = 'x-terminal-emulator';
+        args = ['-e', `${editor} ${cwd}`];
+      } else {
+        command = editor;
+        args = [cwd];
+      }
+      message = `Opened in editor (${editorBase}): ${cwd}`;
       break;
     }
 
     case 'terminal':
       if (IS_MAC) {
-        command = 'osascript';
-        args = ['-e', `tell app "Terminal" to do script "cd ${cwd}"`];
+        // Use 'open' command which works with whatever default terminal the user has
+        command = 'open';
+        args = ['-a', 'Terminal', cwd];
       } else if (IS_WIN) {
         command = 'cmd';
         args = ['/c', 'start', 'cmd', '/k', `cd /d ${cwd}`];
       } else {
-        // Try gnome-terminal first, fall back to xterm
+        // Try x-terminal-emulator (Debian/Ubuntu default), then gnome-terminal, then xterm
         try {
-          execSync('which gnome-terminal', { stdio: 'pipe' });
-          command = 'gnome-terminal';
+          execSync('which x-terminal-emulator', { stdio: 'pipe' });
+          command = 'x-terminal-emulator';
           args = ['--working-directory=' + cwd];
-        } catch (e) {
-          command = 'xterm';
-          args = ['-e', `cd ${cwd} && ${process.env.SHELL || '/bin/sh'}`];
+        } catch {
+          try {
+            execSync('which gnome-terminal', { stdio: 'pipe' });
+            command = 'gnome-terminal';
+            args = ['--working-directory=' + cwd];
+          } catch {
+            command = 'xterm';
+            args = ['-e', `cd ${cwd} && ${process.env.SHELL || '/bin/sh'}`];
+          }
         }
       }
       message = `Opened terminal in ${cwd}`;
@@ -2844,16 +2925,71 @@ function showHistoryView() {
   process.stdout.write(output);
 }
 
+function scanSessionFilesForHistory() {
+  // Scan actual Claude session JSONL files to build historical usage data
+  // This captures usage even when CTOP wasn't running
+  const results = [];
+  const claudeDir = path.join(os.homedir(), '.claude', 'projects');
+  try {
+    if (!fs.existsSync(claudeDir)) return results;
+    for (const projectDir of fs.readdirSync(claudeDir)) {
+      const projectPath = path.join(claudeDir, projectDir);
+      let stat;
+      try { stat = fs.statSync(projectPath); } catch { continue; }
+      if (!stat.isDirectory()) continue;
+      let files;
+      try { files = fs.readdirSync(projectPath).filter(f => f.endsWith('.jsonl')); } catch { continue; }
+      for (const file of files) {
+        const fp = path.join(projectPath, file);
+        try {
+          const fstat = fs.statSync(fp);
+          // Use file mtime as session date
+          const dateKey = fstat.mtime.toISOString().slice(0, 10);
+          // Read last 32KB for usage data
+          const fd = fs.openSync(fp, 'r');
+          const tailSize = Math.min(32768, fstat.size);
+          const buf = Buffer.alloc(tailSize);
+          fs.readSync(fd, buf, 0, tailSize, fstat.size - tailSize);
+          fs.closeSync(fd);
+          const lines = buf.toString('utf8').split('\n').reverse();
+          for (const line of lines) {
+            if (!line.trim()) continue;
+            try {
+              const data = JSON.parse(line);
+              if (data.message && data.message.usage) {
+                const u = data.message.usage;
+                results.push({
+                  dateKey,
+                  inputTokens: u.input_tokens || 0,
+                  outputTokens: u.output_tokens || 0,
+                  cacheTokens: (u.cache_creation_input_tokens || 0) + (u.cache_read_input_tokens || 0),
+                  model: data.message.model || null,
+                });
+                break; // Only need the last usage entry per file
+              }
+            } catch {}
+          }
+        } catch {}
+      }
+    }
+  } catch {}
+  return results;
+}
+
+let sessionScanCache = null;
+let sessionScanCacheTime = 0;
+
 function aggregateHeatmapData(history, metric = 'tokens') {
   const dayMap = new Map();
   const now = new Date();
   // Cover last 12 weeks (84 days)
   const cutoff = new Date(now.getTime() - 84 * 24 * 60 * 60 * 1000);
 
+  // Include data from CTOP history.json
   for (const entry of history) {
     const ts = new Date(entry.timestamp);
     if (ts < cutoff) continue;
-    const dateKey = ts.toISOString().slice(0, 10); // YYYY-MM-DD
+    const dateKey = ts.toISOString().slice(0, 10);
 
     const prev = dayMap.get(dateKey) || 0;
     if (metric === 'tokens') {
@@ -2862,6 +2998,27 @@ function aggregateHeatmapData(history, metric = 'tokens') {
       dayMap.set(dateKey, prev + (entry.totalCost || 0));
     } else if (metric === 'sessions') {
       dayMap.set(dateKey, prev + (entry.sessions || 0));
+    }
+  }
+
+  // Also scan actual session JSONL files for historical coverage
+  // Cache for 60 seconds since scanning is expensive
+  if (!sessionScanCache || Date.now() - sessionScanCacheTime > 60000) {
+    sessionScanCache = scanSessionFilesForHistory();
+    sessionScanCacheTime = Date.now();
+  }
+  for (const entry of sessionScanCache) {
+    const entryDate = new Date(entry.dateKey);
+    if (entryDate < cutoff) continue;
+    const prev = dayMap.get(entry.dateKey) || 0;
+    if (metric === 'tokens') {
+      dayMap.set(entry.dateKey, prev + entry.inputTokens + entry.outputTokens + entry.cacheTokens);
+    } else if (metric === 'cost') {
+      // Estimate cost from tokens using sonnet pricing as default
+      const cost = (entry.inputTokens * 3 + entry.outputTokens * 15) / 1_000_000;
+      dayMap.set(entry.dateKey, prev + cost);
+    } else if (metric === 'sessions') {
+      dayMap.set(entry.dateKey, prev + 1);
     }
   }
 
@@ -3119,6 +3276,7 @@ function executeCommand(action) {
       render();
       break;
     case 'toggle-dashboard':
+      dashboardManualToggle = true;
       showDashboard = !showDashboard;
       render();
       break;
@@ -3761,6 +3919,7 @@ function handleInput(key) {
       break;
 
     case 'd':
+      dashboardManualToggle = true;
       showDashboard = !showDashboard;
       render();
       break;
@@ -4094,6 +4253,12 @@ module.exports = {
   // Git diff summary
   getGitDiffSummary,
   parseDiffStat,
+  parseNumstat,
+  scanSessionFilesForHistory,
+  get sessionScanCache() { return sessionScanCache; },
+  set sessionScanCache(v) { sessionScanCache = v; },
+  get sessionScanCacheTime() { return sessionScanCacheTime; },
+  set sessionScanCacheTime(v) { sessionScanCacheTime = v; },
   gitDiffCache,
   GIT_DIFF_CACHE_TTL,
   // Sparklines

@@ -72,15 +72,15 @@ describe('openDirectory', () => {
   });
 
   describe('constructs correct command for macOS (editor mode)', () => {
-    it('uses $EDITOR if set', () => {
+    it('uses $EDITOR if set (GUI editor)', () => {
       const origEditor = process.env.EDITOR;
-      process.env.EDITOR = 'vim';
+      process.env.EDITOR = 'code';
       try {
         const result = openDirectory(tmpDir, 'editor');
         assert.ok(!result.error, `Unexpected error: ${result.error}`);
-        assert.strictEqual(result.command, 'vim');
+        assert.strictEqual(result.command, 'code');
         assert.deepStrictEqual(result.args, [tmpDir]);
-        assert.strictEqual(result.message, `Opened in editor: ${tmpDir}`);
+        assert.ok(result.message.includes('Opened in editor'));
       } finally {
         if (origEditor !== undefined) {
           process.env.EDITOR = origEditor;
@@ -98,7 +98,7 @@ describe('openDirectory', () => {
         assert.ok(!result.error, `Unexpected error: ${result.error}`);
         assert.strictEqual(result.command, 'code');
         assert.deepStrictEqual(result.args, [tmpDir]);
-        assert.strictEqual(result.message, `Opened in editor: ${tmpDir}`);
+        assert.ok(result.message.includes('Opened in editor'));
       } finally {
         if (origEditor !== undefined) {
           process.env.EDITOR = origEditor;
@@ -110,16 +110,15 @@ describe('openDirectory', () => {
   });
 
   describe('constructs correct command for macOS (terminal mode)', () => {
-    it('uses osascript on macOS', () => {
+    it('uses open on macOS', () => {
       if (os.platform() !== 'darwin') {
         return; // skip on non-macOS
       }
       const result = openDirectory(tmpDir, 'terminal');
       assert.ok(!result.error, `Unexpected error: ${result.error}`);
-      assert.strictEqual(result.command, 'osascript');
-      assert.strictEqual(result.args[0], '-e');
-      assert.match(result.args[1], /tell app "Terminal" to do script/);
-      assert.ok(result.args[1].includes(tmpDir));
+      assert.strictEqual(result.command, 'open');
+      assert.ok(result.args.includes('-a'));
+      assert.ok(result.args.includes('Terminal'));
       assert.strictEqual(result.message, `Opened terminal in ${tmpDir}`);
     });
   });
@@ -144,12 +143,11 @@ describe('openDirectory', () => {
       const result = openDirectory(tmpDir, 'terminal');
       assert.ok(!result.error);
       if (os.platform() === 'darwin') {
-        assert.strictEqual(result.command, 'osascript');
+        assert.strictEqual(result.command, 'open');
       } else if (os.platform() === 'linux') {
-        // Will be gnome-terminal or xterm depending on what's available
         assert.ok(
-          result.command === 'gnome-terminal' || result.command === 'xterm',
-          `Expected gnome-terminal or xterm, got ${result.command}`
+          result.command === 'x-terminal-emulator' || result.command === 'gnome-terminal' || result.command === 'xterm',
+          `Expected x-terminal-emulator, gnome-terminal or xterm, got ${result.command}`
         );
       }
       assert.ok(result.message.includes(tmpDir));
@@ -167,7 +165,7 @@ describe('openDirectory', () => {
     it('editor mode message contains "Opened in editor"', () => {
       const result = openDirectory(tmpDir, 'editor');
       assert.ok(!result.error);
-      assert.match(result.message, /^Opened in editor: /);
+      assert.match(result.message, /Opened in editor/);
       assert.ok(result.message.includes(tmpDir));
     });
 

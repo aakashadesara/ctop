@@ -137,11 +137,11 @@ describe('openDirectory Windows support', () => {
 
   it('editor mode still works on current platform', () => {
     const origEditor = process.env.EDITOR;
-    process.env.EDITOR = 'vim';
+    process.env.EDITOR = 'code';
     try {
       const result = openDirectory(tmpDir, 'editor');
       assert.ok(!result.error, `Unexpected error: ${result.error}`);
-      assert.strictEqual(result.command, 'vim');
+      assert.strictEqual(result.command, 'code');
     } finally {
       if (origEditor !== undefined) process.env.EDITOR = origEditor;
       else delete process.env.EDITOR;
