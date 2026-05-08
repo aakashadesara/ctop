@@ -1597,6 +1597,48 @@ function renderPaneMode() {
   process.stdout.write(output);
 }
 
+// Git diff summary cache and helpers
+let gitDiffCache = new Map(); // cwd -> { data, timestamp }
+const GIT_DIFF_CACHE_TTL = 10000; // 10 seconds
+
+function parseDiffStat(unstaged, staged, untracked) {
+  const parse = (str) => {
+    const files = (str.match(/(\d+) file/) || [, 0])[1];
+    const ins = (str.match(/(\d+) insertion/) || [, 0])[1];
+    const del = (str.match(/(\d+) deletion/) || [, 0])[1];
+    return { files: parseInt(files), insertions: parseInt(ins), deletions: parseInt(del) };
+  };
+  return {
+    unstaged: parse(unstaged),
+    staged: parse(staged),
+    untracked,
+  };
+}
+
+function getGitDiffSummary(cwd) {
+  if (!cwd) return null;
+
+  const cached = gitDiffCache.get(cwd);
+  if (cached && Date.now() - cached.timestamp < GIT_DIFF_CACHE_TTL) {
+    return cached.data;
+  }
+
+  try {
+    execSync('git rev-parse --is-inside-work-tree', { cwd, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] });
+
+    const diffStat = execSync('git diff --shortstat', { cwd, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
+    const stagedStat = execSync('git diff --cached --shortstat', { cwd, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
+    const untracked = execSync('git ls-files --others --exclude-standard | wc -l', { cwd, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
+
+    const result = parseDiffStat(diffStat, stagedStat, parseInt(untracked) || 0);
+    gitDiffCache.set(cwd, { data: result, timestamp: Date.now() });
+    return result;
+  } catch (e) {
+    gitDiffCache.set(cwd, { data: null, timestamp: Date.now() });
+    return null;
+  }
+}
+
 function renderDetailPane(proc, startRow, paneCol, paneWidth, availRows) {
   if (!proc) return '';
   let output = '';
@@ -1788,6 +1830,30 @@ function renderDetailPane(proc, startRow, paneCol, paneWidth, availRows) {
     const dirDisplay = dir.length > maxDir ? '...' + dir.substring(dir.length - maxDir + 3) : dir;
     output += fullRow(r++, 'Dir:', dirDisplay, DIM);
   }
+
+  // Git diff summary
+  const gitDiff = getGitDiffSummary(proc.cwd);
+  if (gitDiff && r < startRow + availRows - 1) {
+    output += drawLine(r++, `${DIM}├${'─'.repeat(paneWidth - 2)}┤${RESET}`);
+    if (r < startRow + availRows - 1) {
+      const totalFiles = gitDiff.unstaged.files + gitDiff.staged.files;
+      const totalIns = gitDiff.unstaged.insertions + gitDiff.staged.insertions;
+      const totalDel = gitDiff.unstaged.deletions + gitDiff.staged.deletions;
+      let parts = [];
+      if (totalFiles > 0) parts.push(`${totalFiles} file${totalFiles !== 1 ? 's' : ''}`);
+      if (totalIns > 0) parts.push(`${GREEN}+${totalIns}${RESET}`);
+      if (totalDel > 0) parts.push(`${RED}-${totalDel}${RESET}`);
+      if (gitDiff.untracked > 0) parts.push(`${DIM}(${gitDiff.untracked} untracked)${RESET}`);
+      const gitStr = parts.length > 0 ? parts.join('  ') : 'clean';
+      // Calculate visible length (without ANSI codes)
+      const visLen = gitStr.replace(/\x1b\[[0-9;]*m/g, '').length;
+      const gitLabel = 'Git:';
+      const totalVis = gitLabel.length + 1 + visLen;
+      const pad = Math.max(0, inner - 2 - totalVis);
+      output += drawLine(r++, `${DIM}│${RESET} ${DIM}${gitLabel}${RESET} ${gitStr}${' '.repeat(pad)} ${DIM}│${RESET}`);
+    }
+  }
+
   if (r < startRow + availRows - 1)
     output += pairRow(r++, 'Ver:', proc.version || '--', DIM, 'Tier:', proc.serviceTier || '--', DIM);
   if (r < startRow + availRows - 1)
@@ -3058,6 +3124,11 @@ module.exports = {
   IS_LINUX,
   IS_WIN,
   PLATFORM,
+  // Git diff summary
+  getGitDiffSummary,
+  parseDiffStat,
+  gitDiffCache,
+  GIT_DIFF_CACHE_TTL,
   // Sparklines
   renderSparkline,
   updateProcessHistory,
