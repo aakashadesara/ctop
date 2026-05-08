@@ -10,12 +10,84 @@ const PLATFORM = os.platform(); // 'darwin', 'linux', 'win32'
 const IS_MAC = PLATFORM === 'darwin';
 const IS_LINUX = PLATFORM === 'linux';
 
+// ANSI escape codes
+const ESC = '\x1b';
+const CLEAR = `${ESC}[2J${ESC}[H`;
+const HOME = `${ESC}[H`;
+const CLR_LINE = `${ESC}[K`;
+const CLR_DOWN = `${ESC}[J`;
+const HIDE_CURSOR = `${ESC}[?25l`;
+const SHOW_CURSOR = `${ESC}[?25h`;
+const BOLD = `${ESC}[1m`;
+const DIM = `${ESC}[2m`;
+const RESET = `${ESC}[0m`;
+const RED = `${ESC}[31m`;
+const GREEN = `${ESC}[32m`;
+const YELLOW = `${ESC}[33m`;
+const BLUE = `${ESC}[34m`;
+const CYAN = `${ESC}[36m`;
+const WHITE = `${ESC}[37m`;
+const BG_BLUE = `${ESC}[44m`;
+const BG_RED = `${ESC}[41m`;
+const ORANGE = `${ESC}[38;5;208m`;
+const BG_ORANGE = `${ESC}[48;5;130m`;
+
+// Built-in color themes
+const THEMES = {
+  default: {
+    header: ORANGE, headerBg: BG_ORANGE, selection: BG_ORANGE,
+    active: GREEN, stopped: YELLOW, zombie: RED, sleeping: DIM,
+    ctxLow: RED, ctxMed: ORANGE, ctxHigh: YELLOW, ctxOk: GREEN,
+    border: DIM, accent: CYAN, cost: GREEN,
+  },
+  minimal: {
+    header: WHITE, headerBg: `${ESC}[48;5;236m`, selection: `${ESC}[48;5;236m`,
+    active: GREEN, stopped: YELLOW, zombie: RED, sleeping: DIM,
+    ctxLow: RED, ctxMed: YELLOW, ctxHigh: DIM, ctxOk: DIM,
+    border: DIM, accent: DIM, cost: DIM,
+  },
+  dracula: {
+    header: `${ESC}[38;5;189m`, headerBg: `${ESC}[48;5;60m`, selection: `${ESC}[48;5;60m`,
+    active: `${ESC}[38;5;80m`, stopped: `${ESC}[38;5;228m`, zombie: `${ESC}[38;5;210m`, sleeping: DIM,
+    ctxLow: `${ESC}[38;5;210m`, ctxMed: `${ESC}[38;5;215m`, ctxHigh: `${ESC}[38;5;228m`, ctxOk: `${ESC}[38;5;80m`,
+    border: `${ESC}[38;5;61m`, accent: `${ESC}[38;5;141m`, cost: `${ESC}[38;5;80m`,
+  },
+  solarized: {
+    header: `${ESC}[38;5;136m`, headerBg: `${ESC}[48;5;23m`, selection: `${ESC}[48;5;23m`,
+    active: `${ESC}[38;5;64m`, stopped: `${ESC}[38;5;136m`, zombie: `${ESC}[38;5;160m`, sleeping: DIM,
+    ctxLow: `${ESC}[38;5;160m`, ctxMed: `${ESC}[38;5;166m`, ctxHigh: `${ESC}[38;5;136m`, ctxOk: `${ESC}[38;5;64m`,
+    border: `${ESC}[38;5;240m`, accent: `${ESC}[38;5;33m`, cost: `${ESC}[38;5;64m`,
+  },
+  monokai: {
+    header: `${ESC}[38;5;197m`, headerBg: `${ESC}[48;5;236m`, selection: `${ESC}[48;5;59m`,
+    active: `${ESC}[38;5;148m`, stopped: `${ESC}[38;5;228m`, zombie: `${ESC}[38;5;197m`, sleeping: DIM,
+    ctxLow: `${ESC}[38;5;197m`, ctxMed: `${ESC}[38;5;208m`, ctxHigh: `${ESC}[38;5;228m`, ctxOk: `${ESC}[38;5;148m`,
+    border: `${ESC}[38;5;242m`, accent: `${ESC}[38;5;81m`, cost: `${ESC}[38;5;148m`,
+  },
+};
+
+const THEME_NAMES = Object.keys(THEMES);
+const THEME_REQUIRED_KEYS = Object.keys(THEMES.default);
+
+function resolveTheme(value) {
+  if (typeof value === 'string') {
+    return THEMES[value] ? { ...THEMES[value] } : { ...THEMES.default };
+  }
+  if (typeof value === 'object' && value !== null) {
+    return { ...THEMES.default, ...value };
+  }
+  return { ...THEMES.default };
+}
+
+let THEME = { ...THEMES.default };
+let currentThemeName = 'default';
+
 // Config: loaded from ~/.ctoprc (JSON) or CLI flags
 const DEFAULT_CONFIG = {
   refreshInterval: 5000,
   contextLimit: 200000,
   defaultView: 'list', // 'list' or 'pane'
-  theme: 'default',    // 'default' or 'minimal'
+  theme: 'default',    // built-in name or custom color object
   notifications: { enabled: true, minDuration: 30 }, // seconds
 };
 
@@ -29,7 +101,13 @@ function loadConfig() {
       if (rc.refreshInterval) config.refreshInterval = Number(rc.refreshInterval);
       if (rc.contextLimit) config.contextLimit = Number(rc.contextLimit);
       if (rc.defaultView === 'pane' || rc.defaultView === 'list') config.defaultView = rc.defaultView;
-      if (rc.theme === 'minimal') config.theme = 'minimal';
+      if (rc.theme !== undefined) {
+        if (typeof rc.theme === 'string' && THEMES[rc.theme]) {
+          config.theme = rc.theme;
+        } else if (typeof rc.theme === 'object' && rc.theme !== null) {
+          config.theme = rc.theme;
+        }
+      }
       if (rc.notifications !== undefined && typeof rc.notifications === 'object') {
         config.notifications = { ...DEFAULT_CONFIG.notifications, ...rc.notifications };
       }
@@ -74,6 +152,8 @@ Sort keys (in TUI):
 }
 
 const CONFIG = loadConfig();
+THEME = resolveTheme(CONFIG.theme);
+currentThemeName = (typeof CONFIG.theme === 'string' && THEMES[CONFIG.theme]) ? CONFIG.theme : 'custom';
 
 // Pricing per million tokens (USD) — as of 2025
 const MODEL_PRICING = {
@@ -156,28 +236,6 @@ function calculateAggregateStats(procs) {
     total: procs.length,
   };
 }
-
-// ANSI escape codes
-const ESC = '\x1b';
-const CLEAR = `${ESC}[2J${ESC}[H`;
-const HOME = `${ESC}[H`;
-const CLR_LINE = `${ESC}[K`;
-const CLR_DOWN = `${ESC}[J`;
-const HIDE_CURSOR = `${ESC}[?25l`;
-const SHOW_CURSOR = `${ESC}[?25h`;
-const BOLD = `${ESC}[1m`;
-const DIM = `${ESC}[2m`;
-const RESET = `${ESC}[0m`;
-const RED = `${ESC}[31m`;
-const GREEN = `${ESC}[32m`;
-const YELLOW = `${ESC}[33m`;
-const BLUE = `${ESC}[34m`;
-const CYAN = `${ESC}[36m`;
-const WHITE = `${ESC}[37m`;
-const BG_BLUE = `${ESC}[44m`;
-const BG_RED = `${ESC}[41m`;
-const ORANGE = `${ESC}[38;5;208m`;
-const BG_ORANGE = `${ESC}[48;5;130m`;
 
 let selectedIndex = 0;
 let allProcesses = []; // raw unfiltered list
@@ -587,10 +645,10 @@ function assignSessionsToProcesses(procs) {
 
 function ctxColor(pct) {
   // pct = remaining %
-  if (pct < 10) return RED;
-  if (pct < 40) return ORANGE;
-  if (pct < 70) return YELLOW;
-  return GREEN;
+  if (pct < 10) return THEME.ctxLow;
+  if (pct < 40) return THEME.ctxMed;
+  if (pct < 70) return THEME.ctxHigh;
+  return THEME.ctxOk;
 }
 
 function applySortAndFilter() {
@@ -664,16 +722,16 @@ function renderHeader(columns) {
   const title = ' CTOP — Claude Terminal Operations Panel ';
   let h = '';
 
-  // Thin dim top border
-  h += `${DIM}${'─'.repeat(columns)}${RESET}${CLR_LINE}\n`;
+  // Thin top border
+  h += `${THEME.border}${'─'.repeat(columns)}${RESET}${CLR_LINE}\n`;
 
-  // Orange row with centered title
+  // Header row with centered title
   const pad = Math.max(0, Math.floor((columns - title.length) / 2));
   const rightPad = Math.max(0, columns - pad - title.length);
-  h += `${BG_ORANGE}${WHITE}${BOLD}${' '.repeat(pad)}${title}${' '.repeat(rightPad)}${RESET}${CLR_LINE}\n`;
+  h += `${THEME.headerBg}${WHITE}${BOLD}${' '.repeat(pad)}${title}${' '.repeat(rightPad)}${RESET}${CLR_LINE}\n`;
 
-  // Thin dim bottom border
-  h += `${DIM}${'─'.repeat(columns)}${RESET}${CLR_LINE}\n`;
+  // Thin bottom border
+  h += `${THEME.border}${'─'.repeat(columns)}${RESET}${CLR_LINE}\n`;
 
   return h;
 }
@@ -759,7 +817,7 @@ function renderPaneMode() {
       for (let ci = 0; ci < rowCards.length; ci++) {
         const { proc, idx } = rowCards[ci];
         const isSelected = idx === selectedIndex;
-        const selStart = isSelected ? `${BG_ORANGE}${WHITE}${BOLD}` : '';
+        const selStart = isSelected ? `${THEME.selection}${WHITE}${BOLD}` : '';
         const selEnd = isSelected ? RESET : RESET;
 
         let cell = '';
@@ -775,10 +833,10 @@ function renderPaneMode() {
           const inner = cardWidth - 4; // 2 for borders, 2 for padding
           if (line === 1) {
             // PID + Status
-            let statusColor = isSelected ? '' : GREEN;
-            if (proc.isZombie) statusColor = isSelected ? '' : RED;
-            else if (proc.isStopped) statusColor = isSelected ? '' : YELLOW;
-            else if (!proc.isActive) statusColor = isSelected ? '' : DIM;
+            let statusColor = isSelected ? '' : THEME.active;
+            if (proc.isZombie) statusColor = isSelected ? '' : THEME.zombie;
+            else if (proc.isStopped) statusColor = isSelected ? '' : THEME.stopped;
+            else if (!proc.isActive) statusColor = isSelected ? '' : THEME.sleeping;
             const statusDot = proc.isActive ? '●' : proc.isZombie ? '✗' : '○';
             const pidPart = `PID:${proc.pid}`;
             const statusPart = `${statusDot} ${proc.status}`;
@@ -806,8 +864,8 @@ function renderPaneMode() {
             const mStr = m.substring(0, mLen);
             const bStr = b.substring(0, bLen);
             const mbGap = inner - mStr.length - bStr.length;
-            const mc = isSelected ? '' : CYAN;
-            const bc = isSelected ? '' : YELLOW;
+            const mc = isSelected ? '' : THEME.accent;
+            const bc = isSelected ? '' : THEME.stopped;
             content = `${selStart}│ ${mc}${mStr}${isSelected ? '' : RESET}${selStart}${' '.repeat(Math.max(1, mbGap))}${bc}${bStr}${isSelected ? '' : RESET}${selStart} │${selEnd}`;
           } else if (line === 5) {
             // Slug
@@ -876,7 +934,7 @@ function renderPaneMode() {
   output += `${RED}x${RESET} Kill  ${RED}X${RESET} Force  `;
   output += `${CYAN}o${RESET} Open  `;
   output += `${CYAN}s${RESET} Sort  ${CYAN}/${RESET} Filter  `;
-  output += `${CYAN}d${RESET} Dash  ${CYAN}n${RESET} Notif  ${CYAN}P${RESET} List  ${CYAN}r${RESET} Refresh  ${CYAN}q${RESET} Quit  ${CYAN}?${RESET} Help${CLR_LINE}`;
+  output += `${CYAN}T${RESET} Theme  ${CYAN}d${RESET} Dash  ${CYAN}n${RESET} Notif  ${CYAN}P${RESET} List  ${CYAN}r${RESET} Refresh  ${CYAN}q${RESET} Quit  ${CYAN}?${RESET} Help${CLR_LINE}`;
 
   process.stdout.write(output);
 }
@@ -1146,20 +1204,20 @@ function render() {
 
     // Selection indicator and styling
     if (isSelected) {
-      output += `${BG_ORANGE}${WHITE}${BOLD}> `;
+      output += `${THEME.selection}${WHITE}${BOLD}> `;
     } else {
       output += '  ';
     }
 
     // PID
-    output += `${isSelected ? '' : CYAN}${proc.pid.padEnd(8)}`;
+    output += `${isSelected ? '' : THEME.accent}${proc.pid.padEnd(8)}`;
 
     // Status
-    let statusColor = GREEN;
-    if (proc.isZombie) statusColor = RED;
-    else if (proc.isStopped) statusColor = YELLOW;
-    else if (!proc.isActive) statusColor = DIM;
-    output += `${isSelected ? '' : statusColor}${proc.status.padEnd(10)}${isSelected ? '' : RESET}`;
+    let stClr = THEME.active;
+    if (proc.isZombie) stClr = THEME.zombie;
+    else if (proc.isStopped) stClr = THEME.stopped;
+    else if (!proc.isActive) stClr = THEME.sleeping;
+    output += `${isSelected ? '' : stClr}${proc.status.padEnd(10)}${isSelected ? '' : RESET}`;
 
     // CTX LEFT
     const ctxPct = proc.contextPct !== null ? proc.contextPct : 100;
@@ -1186,24 +1244,24 @@ function render() {
     if (!isNarrow) {
       // Branch
       const branchStr = proc.gitBranch || '--';
-      output += `${isSelected ? '' : YELLOW}${branchStr.substring(0, 31).padEnd(32)}${isSelected ? '' : RESET}`;
+      output += `${isSelected ? '' : THEME.stopped}${branchStr.substring(0, 31).padEnd(32)}${isSelected ? '' : RESET}`;
 
       // Slug
       const slugStr = proc.slug || '--';
-      output += `${isSelected ? '' : DIM}${slugStr.substring(0, 21).padEnd(22)}${isSelected ? '' : RESET}`;
+      output += `${isSelected ? '' : THEME.border}${slugStr.substring(0, 21).padEnd(22)}${isSelected ? '' : RESET}`;
     }
 
     // Model
     const modelStr = proc.model ? proc.model.replace(/^claude-/, '') : '--';
-    output += `${isSelected ? '' : CYAN}${modelStr.substring(0, 13).padEnd(14)}${isSelected ? '' : RESET}`;
+    output += `${isSelected ? '' : THEME.accent}${modelStr.substring(0, 13).padEnd(14)}${isSelected ? '' : RESET}`;
 
     // Cost column (wide mode only)
     if (showCostCol && !isNarrow) {
       const costStr = formatCost(proc.cost);
       if (!isSelected) {
-        if (proc.cost !== null && proc.cost > 5) output += RED;
-        else if (proc.cost !== null && proc.cost >= 1) output += YELLOW;
-        else output += GREEN;
+        if (proc.cost !== null && proc.cost > 5) output += THEME.zombie;
+        else if (proc.cost !== null && proc.cost >= 1) output += THEME.stopped;
+        else output += THEME.cost;
       }
       output += `${costStr.padEnd(costColW)}`;
       if (!isSelected) output += RESET;
@@ -1293,7 +1351,7 @@ function render() {
   output += `${RED}x${RESET} Kill  ${RED}X${RESET} Force  `;
   output += `${CYAN}o${RESET} Open  `;
   output += `${CYAN}s${RESET} Sort  ${CYAN}/${RESET} Filter  `;
-  output += `${CYAN}d${RESET} Dash  ${CYAN}n${RESET} Notif  ${CYAN}P${RESET} Pane  ${CYAN}r${RESET} Refresh  ${CYAN}q${RESET} Quit  ${CYAN}?${RESET} Help${CLR_LINE}`;
+  output += `${CYAN}T${RESET} Theme  ${CYAN}d${RESET} Dash  ${CYAN}n${RESET} Notif  ${CYAN}P${RESET} Pane  ${CYAN}r${RESET} Refresh  ${CYAN}q${RESET} Quit  ${CYAN}?${RESET} Help${CLR_LINE}`;
 
   process.stdout.write(output);
 }
@@ -1407,6 +1465,14 @@ function killAllProcesses(force = false) {
   return killed;
 }
 
+function cycleTheme() {
+  const idx = THEME_NAMES.indexOf(currentThemeName);
+  const nextIdx = (idx + 1) % THEME_NAMES.length;
+  currentThemeName = THEME_NAMES[nextIdx];
+  THEME = { ...THEMES[currentThemeName] };
+  statusMessage = `Theme: ${currentThemeName}`;
+}
+
 function showHelp() {
   const { columns } = process.stdout;
   let output = CLEAR;
@@ -1434,6 +1500,10 @@ function showHelp() {
   output += `  ${CYAN}r${RESET}         Refresh process list\n`;
   output += `  ${CYAN}d${RESET}         Toggle aggregate dashboard stats\n`;
   output += `  ${CYAN}n${RESET}         Toggle desktop notifications on/off\n\n`;
+
+  output += `${BOLD}APPEARANCE:${RESET}\n`;
+  output += `  ${CYAN}T${RESET}         Cycle color theme (${THEME_NAMES.join(', ')})\n`;
+  output += `  ${DIM}Current:${RESET}  ${currentThemeName}\n\n`;
 
   output += `${BOLD}OTHER:${RESET}\n`;
   output += `  ${CYAN}q / ESC${RESET}   Quit the manager\n`;
@@ -1683,6 +1753,11 @@ function handleInput(key) {
       } else {
         viewMode = 'list';
       }
+      render();
+      break;
+
+    case 'T':
+      cycleTheme();
       render();
       break;
 
@@ -1982,6 +2057,12 @@ module.exports = {
   listViewRowToIndex,
   paneViewClickToIndex,
   DEFAULT_CONFIG,
+  // Theme exports
+  THEMES,
+  THEME_NAMES,
+  THEME_REQUIRED_KEYS,
+  resolveTheme,
+  cycleTheme,
   // Notification helpers
   sendNotification,
   formatDuration,
@@ -1996,7 +2077,9 @@ module.exports = {
             get selectedIndex() { return selectedIndex; }, set selectedIndex(v) { selectedIndex = v; },
             get showDashboard() { return showDashboard; }, set showDashboard(v) { showDashboard = v; },
             get notificationsEnabled() { return notificationsEnabled; }, set notificationsEnabled(v) { notificationsEnabled = v; },
-            get viewMode() { return viewMode; }, set viewMode(v) { viewMode = v; } },
+            get viewMode() { return viewMode; }, set viewMode(v) { viewMode = v; },
+            get currentThemeName() { return currentThemeName; }, set currentThemeName(v) { currentThemeName = v; },
+            get THEME() { return THEME; }, set THEME(v) { THEME = v; } },
   _notif: { previousStates, processStartTimes },
-  _colors: { RED, ORANGE, YELLOW, GREEN },
+  _colors: { RED, ORANGE, YELLOW, GREEN, DIM, CYAN },
 };
