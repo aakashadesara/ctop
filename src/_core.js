@@ -3002,8 +3002,8 @@ let sessionScanCacheTime = 0;
 function aggregateHeatmapData(history, metric = 'tokens') {
   const dayMap = new Map();
   const now = new Date();
-  // Cover last 12 weeks (84 days)
-  const cutoff = new Date(now.getTime() - 84 * 24 * 60 * 60 * 1000);
+  // No cutoff — include all available history
+  const cutoff = new Date(0); // epoch — include everything
 
   // Include data from CTOP history.json
   for (const entry of history) {
@@ -3071,15 +3071,26 @@ function renderHeatmap(columns, rows) {
   output += renderHeader(columns);
   output += '\n';
 
-  output += `${BOLD}${WHITE}  Usage Heatmap \u2014 Last 12 Weeks${RESET}${CLR_LINE}\n`;
-  output += `${DIM}${'─'.repeat(columns)}${RESET}${CLR_LINE}\n`;
-
-  // Build the grid: 12 weeks of columns, 7 day-of-week rows
+  // Determine how many weeks to show based on available data
   const now = new Date();
-  const WEEKS = 12;
   const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
 
-  // Find the start: go back to the Monday of (WEEKS) weeks ago
+  // Find earliest date in data
+  let earliestDate = today;
+  for (const key of dayMap.keys()) {
+    const d = new Date(key);
+    if (d < earliestDate) earliestDate = d;
+  }
+  // Calculate weeks needed, minimum 12, cap at what fits on screen (each week = 2 chars)
+  const daysSinceEarliest = Math.ceil((today - earliestDate) / (24 * 60 * 60 * 1000));
+  const maxWeeksForScreen = Math.floor((columns - 8) / 2); // 8 chars for day labels + spacing
+  const dataWeeks = Math.ceil(daysSinceEarliest / 7) + 1;
+  const WEEKS = Math.min(maxWeeksForScreen, Math.max(12, dataWeeks));
+
+  output += `${BOLD}${WHITE}  Usage Heatmap \u2014 Last ${WEEKS} Weeks${RESET}${CLR_LINE}\n`;
+  output += `${DIM}${'─'.repeat(columns)}${RESET}${CLR_LINE}\n`;
+
+  // Build the grid: WEEKS columns, 7 day-of-week rows
   const todayDow = today.getDay(); // 0=Sun, 1=Mon, ...
   const mondayOffset = todayDow === 0 ? 6 : todayDow - 1; // days since last Monday
   const startDate = new Date(today.getTime() - (mondayOffset + (WEEKS - 1) * 7) * 24 * 60 * 60 * 1000);

@@ -144,11 +144,11 @@ describe('Heatmap', () => {
       assert.strictEqual(result.size, 2);
     });
 
-    it('covers only last 12 weeks (84 days)', () => {
+    it('includes all historical data regardless of age', () => {
       const now = new Date();
-      // Entry from 90 days ago (outside 12-week window)
-      const oldDate = new Date(now.getTime() - 90 * 24 * 60 * 60 * 1000);
-      // Entry from 10 days ago (inside window)
+      // Entry from 200 days ago
+      const oldDate = new Date(now.getTime() - 200 * 24 * 60 * 60 * 1000);
+      // Entry from 10 days ago
       const recentDate = new Date(now.getTime() - 10 * 24 * 60 * 60 * 1000);
 
       const history = [
@@ -171,10 +171,12 @@ describe('Heatmap', () => {
       ];
 
       const result = aggregateHeatmapData(history, 'tokens');
-      // Old entry should be excluded
-      assert.strictEqual(result.size, 1);
+      // Both entries should be included
+      assert.strictEqual(result.size, 2);
       const recentStr = recentDate.toISOString().slice(0, 10);
       assert.strictEqual(result.get(recentStr), 2700);
+      const oldStr = oldDate.toISOString().slice(0, 10);
+      assert.strictEqual(result.get(oldStr), 6500);
     });
 
     it('handles missing token fields gracefully', () => {
