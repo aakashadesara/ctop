@@ -18,13 +18,24 @@ Track CPU, memory, token usage, context window saturation, active branches, and 
 
 - **Real-time process monitoring** — CPU, memory, status, uptime for every Claude session
 - **Context window tracking** — visual bar showing input, cache, output, and free context (out of 200k)
+- **Cost estimation** — per-session and total API cost based on model pricing
+- **Sparkline graphs** — inline CPU/memory trend charts using Unicode block characters
 - **Token breakdown** — input, output, cache creation, and cache read token counts per session
 - **Session metadata** — model, branch, slug, session ID, service tier, version
 - **Two view modes** — list view (table) and pane view (card grid)
+- **Live log tailing** — stream session conversation in a split pane (`L`)
+- **Session search** — full-text search across conversation content (`F`)
+- **Aggregate dashboard** — total tokens, cost, and context stats across all sessions (`d`)
+- **Historical tracking** — 24-hour usage charts persisted to disk (`H`)
 - **Process control** — kill individual or all sessions (graceful `SIGTERM` or force `SIGKILL`)
-- **Vim-style navigation** — `hjkl`, `g`/`G`, arrow keys
+- **Quick-jump** — open project directory in Finder (`o`), editor (`e`), or terminal (`t`)
+- **Desktop notifications** — get notified when a session completes (macOS/Linux)
+- **Vim-style navigation** — `hjkl`, `g`/`G`, arrow keys, plus mouse support
 - **Sort & filter** — sort by CPU, memory, context %; filter by branch, model, directory, or slug
-- **Configurable** — refresh interval, context limit, default view via `~/.ctoprc` or CLI flags
+- **Color themes** — 5 built-in themes (default, minimal, dracula, solarized, monokai) + custom
+- **Braille context bars** — sub-character precision context visualization (configurable)
+- **Plugin system** — extend with custom columns via `~/.ctop/plugins/`
+- **Configurable** — refresh interval, context limit, default view, themes via `~/.ctoprc` or CLI flags
 - **Cross-platform** — macOS, Linux, and Windows
 - **Zero dependencies** — pure Node.js, no `npm install` required
 - **Auto-refresh** — configurable interval (default 5s)
@@ -118,14 +129,25 @@ source ~/.zshrc
 | `s` | Cycle sort: age → cpu → mem → context |
 | `S` | Reverse sort order |
 | `/` | Start filter (type to search, Enter to confirm) |
-| `ESC` | Clear filter (or quit if no filter active) |
+| `F` | Full-text search session conversation content |
+| `ESC` | Clear filter/search (or quit if none active) |
 | `r` | Refresh process list |
 | `x` | Kill selected process (SIGTERM) |
 | `X` | Force kill selected process (SIGKILL) |
 | `K` | Kill ALL Claude processes |
 | `A` | Kill all stopped/zombie processes |
+| `o` | Open project directory in file manager |
+| `e` | Open project directory in editor |
+| `t` | Open new terminal in project directory |
+| `d` | Toggle aggregate dashboard |
+| `L` | Toggle live log tailing split pane |
+| `H` | Toggle 24-hour usage history view |
+| `T` | Cycle color theme |
+| `n` | Toggle desktop notifications |
 | `?` | Show help |
 | `q` | Quit |
+
+Mouse support: click to select, scroll wheel to navigate.
 
 ![CTOP Help Screen](assets/help-screen.svg)
 
@@ -169,9 +191,25 @@ ctop --pane               # Start in pane/grid view
 {
   "refreshInterval": 5000,
   "contextLimit": 200000,
-  "defaultView": "list"
+  "defaultView": "list",
+  "theme": "default",
+  "contextBarStyle": "block",
+  "notifications": {
+    "enabled": true,
+    "minDuration": 30
+  }
 }
 ```
+
+| Option | Values | Description |
+|--------|--------|-------------|
+| `refreshInterval` | milliseconds | How often to refresh (default: 5000) |
+| `contextLimit` | tokens | Context window size (default: 200000) |
+| `defaultView` | `"list"` / `"pane"` | Starting view mode |
+| `theme` | `"default"` / `"minimal"` / `"dracula"` / `"solarized"` / `"monokai"` | Color theme |
+| `contextBarStyle` | `"block"` / `"braille"` | Context bar rendering style |
+| `notifications.enabled` | boolean | Desktop notifications on session completion |
+| `notifications.minDuration` | seconds | Minimum session duration to trigger notification |
 
 CLI flags override config file values.
 
@@ -195,40 +233,73 @@ On Windows, ctop uses PowerShell to detect Claude processes and retrieve process
 
 ---
 
+## Plugins
+
+Extend CTOP with custom columns and detail rows. Create `.js` files in `~/.ctop/plugins/`:
+
+```js
+// ~/.ctop/plugins/my-plugin.js
+module.exports = {
+  name: 'my-plugin',
+  column: {
+    header: 'CUSTOM',
+    width: 10,
+    getValue: (proc) => proc.cwd ? 'yes' : 'no',
+  },
+};
+```
+
+See `examples/plugins/uptime.js` for a complete example.
+
+---
+
 ## Roadmap
 
 - [x] **Linux support** — `ps` + `/proc` based process detection
 - [x] **npm package** — `npm install -g ctop-claude`
 - [x] **Configurable settings** — refresh interval, context limit, default view
-- [x] **Sort** — cycle through age, CPU, memory, context %
-- [x] **Filter** — search by branch, model, directory, slug, title
+- [x] **Sort & filter** — sort by age/CPU/memory/context, filter by branch/model/dir
 - [x] **Windows support** — PowerShell-based process detection
 - [x] **Homebrew formula** — `brew install ctop-claude`
-- [ ] **Process log tailing** — stream a session's output in a split pane
-- [ ] **Color themes** — custom or preset color schemes
+- [x] **Cost estimation** — per-session and aggregate API cost tracking
+- [x] **Sparkline graphs** — inline CPU/memory trend visualization
+- [x] **Live log tailing** — stream session conversation in split pane
+- [x] **Session search** — full-text search across conversation content
+- [x] **Aggregate dashboard** — totals across all sessions
+- [x] **Historical tracking** — 24-hour usage charts
+- [x] **Desktop notifications** — notify on session completion
+- [x] **Quick-jump** — open project in Finder/editor/terminal
+- [x] **Mouse support** — click to select, scroll to navigate
+- [x] **Color themes** — 5 built-in + custom theme support
+- [x] **Braille context bars** — sub-character precision rendering
+- [x] **Plugin system** — custom columns via `~/.ctop/plugins/`
+- [x] **Modular codebase** — split into `src/` modules
 
 ---
 
 ## Contributing
 
-PRs are welcome! This is a young project and there's plenty to improve.
+PRs are welcome!
 
 ```bash
 # Fork & clone
 git clone https://github.com/<your-username>/ctop.git
 cd ctop
 
-# The entire app is a single file — no build step
-# Just edit and run:
+# Run directly
 ./claude-manager
+
+# Run tests
+npm test
 ```
 
-A few areas where contributions would be especially helpful:
+The codebase is split into modules under `src/` with `claude-manager` as the entry point. Tests are in `test/` using Node.js built-in test runner.
+
+Areas where contributions would be especially helpful:
 
 - **Windows testing** — basic support is in, needs real-world validation
 - **Linux testing** — basic support is in, needs real-world validation
 - **Performance** — profiling on systems with many Claude sessions
-- **UI polish** — better responsive layouts, color themes
 
 Please open an issue first for large changes so we can discuss the approach.
 
