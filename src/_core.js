@@ -302,6 +302,7 @@ let filterText = '';
 let filterInput = false; // true when typing a filter
 let showDashboard = false; // toggled by 'd' key
 let showHistory = false; // toggled by 'H' key
+let showHeatmap = false; // toggled by 'C' key
 
 // History tracking state
 const HISTORY_DIR = path.join(os.homedir(), '.ctop');
@@ -1592,7 +1593,7 @@ function renderPaneMode() {
   output += `${CYAN}o${RESET} Open  `;
   output += `${CYAN}s${RESET} Sort  ${CYAN}/${RESET} Filter  ${CYAN}F${RESET} Search  `;
   output += `${CYAN}L${RESET} Log  `;
-  output += `${CYAN}T${RESET} Theme  ${CYAN}d${RESET} Dash  ${CYAN}H${RESET} History  ${CYAN}n${RESET} Notif  ${CYAN}P${RESET} List  ${CYAN}r${RESET} Refresh  ${CYAN}q${RESET} Quit  ${CYAN}?${RESET} Help${CLR_LINE}`;
+  output += `${CYAN}T${RESET} Theme  ${CYAN}d${RESET} Dash  ${CYAN}H${RESET} History  ${CYAN}C${RESET} Heatmap  ${CYAN}n${RESET} Notif  ${CYAN}P${RESET} List  ${CYAN}r${RESET} Refresh  ${CYAN}q${RESET} Quit  ${CYAN}?${RESET} Help${CLR_LINE}`;
 
   process.stdout.write(output);
 }
@@ -2188,7 +2189,7 @@ function render() {
   output += `${CYAN}o${RESET} Open  `;
   output += `${CYAN}s${RESET} Sort  ${CYAN}/${RESET} Filter  ${CYAN}F${RESET} Search  `;
   output += `${CYAN}L${RESET} Log  `;
-  output += `${CYAN}T${RESET} Theme  ${CYAN}d${RESET} Dash  ${CYAN}H${RESET} History  ${CYAN}n${RESET} Notif  ${CYAN}P${RESET} Pane  ${CYAN}r${RESET} Refresh  ${CYAN}q${RESET} Quit  ${CYAN}?${RESET} Help${CLR_LINE}`;
+  output += `${CYAN}T${RESET} Theme  ${CYAN}d${RESET} Dash  ${CYAN}H${RESET} History  ${CYAN}C${RESET} Heatmap  ${CYAN}n${RESET} Notif  ${CYAN}P${RESET} Pane  ${CYAN}r${RESET} Refresh  ${CYAN}q${RESET} Quit  ${CYAN}?${RESET} Help${CLR_LINE}`;
 
   process.stdout.write(output);
 }
@@ -2345,6 +2346,182 @@ function showHistoryView() {
   process.stdout.write(output);
 }
 
+function aggregateHeatmapData(history, metric = 'tokens') {
+  const dayMap = new Map();
+  const now = new Date();
+  // Cover last 12 weeks (84 days)
+  const cutoff = new Date(now.getTime() - 84 * 24 * 60 * 60 * 1000);
+
+  for (const entry of history) {
+    const ts = new Date(entry.timestamp);
+    if (ts < cutoff) continue;
+    const dateKey = ts.toISOString().slice(0, 10); // YYYY-MM-DD
+
+    const prev = dayMap.get(dateKey) || 0;
+    if (metric === 'tokens') {
+      dayMap.set(dateKey, prev + (entry.totalInputTokens || 0) + (entry.totalOutputTokens || 0) + (entry.totalCacheTokens || 0));
+    } else if (metric === 'cost') {
+      dayMap.set(dateKey, prev + (entry.totalCost || 0));
+    } else if (metric === 'sessions') {
+      dayMap.set(dateKey, prev + (entry.sessions || 0));
+    }
+  }
+
+  return dayMap;
+}
+
+function getHeatmapColorLevel(value, maxValue) {
+  if (value === 0 || maxValue === 0) return 0;
+  const ratio = value / maxValue;
+  if (ratio <= 0.05) return 0;
+  if (ratio <= 0.25) return 1;
+  if (ratio <= 0.50) return 2;
+  if (ratio <= 0.75) return 3;
+  return 4;
+}
+
+function renderHeatmap(columns, rows) {
+  const history = loadHistory();
+  const dayMap = aggregateHeatmapData(history, 'tokens');
+  const costMap = aggregateHeatmapData(history, 'cost');
+  const sessionMap = aggregateHeatmapData(history, 'sessions');
+
+  let output = CLEAR;
+  output += renderHeader(columns);
+  output += '\n';
+
+  output += `${BOLD}${WHITE}  Usage Heatmap \u2014 Last 12 Weeks${RESET}${CLR_LINE}\n`;
+  output += `${DIM}${'─'.repeat(columns)}${RESET}${CLR_LINE}\n`;
+
+  // Build the grid: 12 weeks of columns, 7 day-of-week rows
+  const now = new Date();
+  const WEEKS = 12;
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+
+  // Find the start: go back to the Monday of (WEEKS) weeks ago
+  const todayDow = today.getDay(); // 0=Sun, 1=Mon, ...
+  const mondayOffset = todayDow === 0 ? 6 : todayDow - 1; // days since last Monday
+  const startDate = new Date(today.getTime() - (mondayOffset + (WEEKS - 1) * 7) * 24 * 60 * 60 * 1000);
+
+  // Build grid[week][day] = value
+  const grid = [];
+  const dates = [];
+  let maxValue = 0;
+  for (let w = 0; w < WEEKS; w++) {
+    const weekCol = [];
+    const weekDates = [];
+    for (let d = 0; d < 7; d++) {
+      const cellDate = new Date(startDate.getTime() + (w * 7 + d) * 24 * 60 * 60 * 1000);
+      const key = cellDate.toISOString().slice(0, 10);
+      const val = dayMap.get(key) || 0;
+      if (cellDate <= today) {
+        weekCol.push(val);
+        if (val > maxValue) maxValue = val;
+      } else {
+        weekCol.push(-1); // future date
+      }
+      weekDates.push(cellDate);
+    }
+    grid.push(weekCol);
+    dates.push(weekDates);
+  }
+
+  // Color definitions for levels
+  const HEATMAP_CHARS = ['\u2591', '\u2592', '\u2593', '\u2588', '\u2588'];
+  const HEATMAP_COLORS = [
+    DIM,                           // level 0: dim (no/minimal)
+    `${ESC}[38;5;22m`,             // level 1: dark green
+    `${ESC}[38;5;28m`,             // level 2: green
+    `${ESC}[38;5;34m`,             // level 3: bright green
+    `${BOLD}${CYAN}`,              // level 4: cyan bold
+  ];
+
+  // Day labels (left side)
+  const dayLabels = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+  const dayLabelShow = [true, false, true, false, true, false, true]; // Mon, Wed, Fri, Sun
+
+  // Month labels (top)
+  const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  let monthRow = '      '; // padding for day labels
+  let lastMonth = -1;
+  for (let w = 0; w < WEEKS; w++) {
+    const firstDayOfWeek = dates[w][0];
+    const month = firstDayOfWeek.getMonth();
+    if (month !== lastMonth) {
+      monthRow += MONTHS[month].padEnd(2);
+      lastMonth = month;
+    } else {
+      monthRow += '  ';
+    }
+  }
+  output += `${DIM}${monthRow}${RESET}${CLR_LINE}\n`;
+
+  // Render grid rows (one per day of week)
+  for (let d = 0; d < 7; d++) {
+    let row = '  ';
+    if (dayLabelShow[d]) {
+      row += `${DIM}${dayLabels[d]}${RESET} `;
+    } else {
+      row += '    ';
+    }
+
+    for (let w = 0; w < WEEKS; w++) {
+      const val = grid[w][d];
+      if (val === -1) {
+        row += ' '; // future date
+      } else {
+        const level = getHeatmapColorLevel(val, maxValue);
+        row += `${HEATMAP_COLORS[level]}${HEATMAP_CHARS[level]}${RESET} `;
+      }
+    }
+    output += `${row}${CLR_LINE}\n`;
+  }
+
+  output += `${CLR_LINE}\n`;
+
+  // Legend
+  output += `  ${DIM}Less${RESET} `;
+  for (let i = 0; i < 5; i++) {
+    output += `${HEATMAP_COLORS[i]}${HEATMAP_CHARS[i]}${RESET} `;
+  }
+  output += `${DIM}More${RESET}${CLR_LINE}\n`;
+  output += `${CLR_LINE}\n`;
+
+  // Stats
+  let totalTokens = 0;
+  let totalCost = 0;
+  let totalSessions = 0;
+  let busiestDay = '';
+  let busiestValue = 0;
+  let daysWithData = 0;
+
+  for (const [dateKey, val] of dayMap) {
+    totalTokens += val;
+    if (val > busiestValue) {
+      busiestValue = val;
+      busiestDay = dateKey;
+    }
+    if (val > 0) daysWithData++;
+  }
+  for (const [, val] of costMap) totalCost += val;
+  for (const [, val] of sessionMap) totalSessions += val;
+
+  const avgDaily = daysWithData > 0 ? Math.round(totalTokens / daysWithData) : 0;
+
+  output += `  ${BOLD}${WHITE}Stats:${RESET}${CLR_LINE}\n`;
+  output += `    ${DIM}Total tokens:${RESET}  ${GREEN}${formatCompactTokens(totalTokens)}${RESET}${CLR_LINE}\n`;
+  output += `    ${DIM}Total cost:${RESET}    ${YELLOW}$${totalCost.toFixed(2)}${RESET}${CLR_LINE}\n`;
+  output += `    ${DIM}Total sessions:${RESET}${CYAN} ${totalSessions}${RESET}${CLR_LINE}\n`;
+  if (busiestDay) {
+    output += `    ${DIM}Busiest day:${RESET}   ${WHITE}${busiestDay}${RESET} ${DIM}(${formatCompactTokens(busiestValue)} tokens)${RESET}${CLR_LINE}\n`;
+  }
+  output += `    ${DIM}Avg daily:${RESET}     ${WHITE}${formatCompactTokens(avgDaily)} tokens${RESET}${CLR_LINE}\n`;
+
+  output += `\n${DIM}  Press any key to return...${RESET}`;
+
+  process.stdout.write(output);
+}
+
 function showHelp() {
   const { columns } = process.stdout;
   let output = CLEAR;
@@ -2372,6 +2549,7 @@ function showHelp() {
   output += `  ${CYAN}r${RESET}         Refresh process list\n`;
   output += `  ${CYAN}d${RESET}         Toggle aggregate dashboard stats\n`;
   output += `  ${CYAN}H${RESET}         Toggle usage history view (24h charts)\n`;
+  output += `  ${CYAN}C${RESET}         Toggle usage heatmap (12-week calendar)\n`;
   output += `  ${CYAN}n${RESET}         Toggle desktop notifications on/off\n`;
   output += `  ${CYAN}L${RESET}         Toggle live session log pane\n\n`;
 
@@ -2614,6 +2792,12 @@ function handleInput(key) {
     return;
   }
 
+  if (showHeatmap) {
+    showHeatmap = false;
+    render();
+    return;
+  }
+
   if (confirmKillAll) {
     if (key === 'y' || key === 'Y') {
       const killed = killAllProcesses();
@@ -2758,6 +2942,11 @@ function handleInput(key) {
     case 'H':
       showHistory = true;
       showHistoryView();
+      break;
+
+    case 'C':
+      showHeatmap = true;
+      renderHeatmap(process.stdout.columns || 80, process.stdout.rows || 40);
       break;
 
     case 'g':
@@ -2986,7 +3175,7 @@ function main() {
 
   // Auto-refresh every 5 seconds
   setInterval(() => {
-    if (!showingHelp && !showHistory && !confirmKillAll && !confirmKillStopped && !filterInput && !searchMode) {
+    if (!showingHelp && !showHistory && !showHeatmap && !confirmKillAll && !confirmKillStopped && !filterInput && !searchMode) {
       allProcesses = getClaudeProcesses(); applySortAndFilter();
       updateProcessHistory(allProcesses);
       checkStateTransitions(allProcesses);
@@ -3046,6 +3235,10 @@ module.exports = {
   HISTORY_FILE,
   SNAPSHOT_INTERVAL,
   HISTORY_RETENTION_DAYS,
+  // Heatmap
+  aggregateHeatmapData,
+  getHeatmapColorLevel,
+  renderHeatmap,
   // Notification helpers
   sendNotification,
   formatDuration,
@@ -3076,6 +3269,7 @@ module.exports = {
             get selectedIndex() { return selectedIndex; }, set selectedIndex(v) { selectedIndex = v; },
             get showDashboard() { return showDashboard; }, set showDashboard(v) { showDashboard = v; },
             get showHistory() { return showHistory; }, set showHistory(v) { showHistory = v; },
+            get showHeatmap() { return showHeatmap; }, set showHeatmap(v) { showHeatmap = v; },
             get lastSnapshotTime() { return lastSnapshotTime; }, set lastSnapshotTime(v) { lastSnapshotTime = v; },
             get searchQuery() { return searchQuery; }, set searchQuery(v) { searchQuery = v; },
             get searchResults() { return searchResults; }, set searchResults(v) { searchResults = v; },
