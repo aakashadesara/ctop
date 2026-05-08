@@ -308,6 +308,72 @@ let timelineCache = null; // cached timeline data for current process
 let showHeatmap = false; // toggled by 'C' key
 let exportMode = false; // true when awaiting export format key
 
+// Command palette
+const COMMANDS = [
+  { name: 'Kill selected process', shortcut: 'x', action: 'kill' },
+  { name: 'Force kill selected process', shortcut: 'X', action: 'force-kill' },
+  { name: 'Kill all processes', shortcut: 'K', action: 'kill-all' },
+  { name: 'Toggle pane view', shortcut: 'P', action: 'toggle-pane' },
+  { name: 'Toggle dashboard', shortcut: 'd', action: 'toggle-dashboard' },
+  { name: 'Toggle log pane', shortcut: 'L', action: 'toggle-log' },
+  { name: 'Toggle history view', shortcut: 'H', action: 'toggle-history' },
+  { name: 'Open directory', shortcut: 'o', action: 'open-dir' },
+  { name: 'Open in editor', shortcut: 'e', action: 'open-editor' },
+  { name: 'Open terminal', shortcut: 't', action: 'open-terminal' },
+  { name: 'Sort by age', shortcut: 's', action: 'sort-age' },
+  { name: 'Sort by CPU', shortcut: 's', action: 'sort-cpu' },
+  { name: 'Sort by memory', shortcut: 's', action: 'sort-mem' },
+  { name: 'Sort by context', shortcut: 's', action: 'sort-context' },
+  { name: 'Reverse sort', shortcut: 'S', action: 'reverse-sort' },
+  { name: 'Refresh', shortcut: 'r', action: 'refresh' },
+  { name: 'Cycle theme', shortcut: 'T', action: 'cycle-theme' },
+  { name: 'Toggle notifications', shortcut: 'n', action: 'toggle-notif' },
+  { name: 'Search sessions', shortcut: 'F', action: 'search' },
+  { name: 'Filter processes', shortcut: '/', action: 'filter' },
+  { name: 'Show help', shortcut: '?', action: 'help' },
+  { name: 'Quit', shortcut: 'q', action: 'quit' },
+];
+
+let showPalette = false;
+let paletteQuery = '';
+let paletteSelected = 0;
+
+function fuzzyMatch(query, text) {
+  const q = query.toLowerCase();
+  const t = text.toLowerCase();
+  let qi = 0;
+  for (let ti = 0; ti < t.length && qi < q.length; ti++) {
+    if (t[ti] === q[qi]) qi++;
+  }
+  return qi === q.length;
+}
+
+function fuzzyScore(query, text) {
+  const q = query.toLowerCase();
+  const t = text.toLowerCase();
+  let score = 0;
+  let qi = 0;
+  let lastMatch = -1;
+  for (let ti = 0; ti < t.length && qi < q.length; ti++) {
+    if (t[ti] === q[qi]) {
+      score += (ti === 0) ? 10 : 1;
+      score += (lastMatch === ti - 1) ? 5 : 0;
+      lastMatch = ti;
+      qi++;
+    }
+  }
+  return qi === q.length ? score : -1;
+}
+
+function filterCommands(query) {
+  if (!query) return COMMANDS.slice(0, 10);
+  return COMMANDS
+    .map(cmd => ({ ...cmd, score: fuzzyScore(query, cmd.name) }))
+    .filter(cmd => cmd.score >= 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 10);
+}
+
 // History tracking state
 const HISTORY_DIR = path.join(os.homedir(), '.ctop');
 const HISTORY_FILE = path.join(HISTORY_DIR, 'history.json');
@@ -2954,6 +3020,215 @@ function renderHeatmap(columns, rows) {
   process.stdout.write(output);
 }
 
+function renderPalette() {
+  const { columns, rows } = process.stdout;
+  const filtered = filterCommands(paletteQuery);
+  const boxWidth = Math.min(56, columns - 4);
+  const boxHeight = Math.min(filtered.length + 4, 14); // input + border + items + border
+  const startCol = Math.max(1, Math.floor((columns - boxWidth) / 2));
+  const startRow = Math.max(1, Math.floor((rows - boxHeight) / 3));
+
+  let output = '';
+
+  // Move to start position and draw top border
+  const topBorder = '\u250c' + '\u2500'.repeat(boxWidth - 2) + '\u2510';
+  output += `\x1b[${startRow};${startCol}H${BOLD}${CYAN}${topBorder}${RESET}`;
+
+  // Input row
+  const inputLabel = ' > ';
+  const cursorChar = '\u2588';
+  const inputMaxLen = boxWidth - 2 - inputLabel.length - 1;
+  const displayQuery = paletteQuery.length > inputMaxLen
+    ? paletteQuery.slice(-inputMaxLen)
+    : paletteQuery;
+  const inputPad = ' '.repeat(Math.max(0, boxWidth - 2 - inputLabel.length - displayQuery.length - 1));
+  output += `\x1b[${startRow + 1};${startCol}H${BOLD}${CYAN}\u2502${RESET}${BOLD}${WHITE}${inputLabel}${displayQuery}${cursorChar}${RESET}${inputPad}${BOLD}${CYAN}\u2502${RESET}`;
+
+  // Separator
+  const sep = '\u251c' + '\u2500'.repeat(boxWidth - 2) + '\u2524';
+  output += `\x1b[${startRow + 2};${startCol}H${BOLD}${CYAN}${sep}${RESET}`;
+
+  // Command items
+  for (let i = 0; i < filtered.length && i < 10; i++) {
+    const cmd = filtered[i];
+    const rowPos = startRow + 3 + i;
+    const isSelected = i === paletteSelected;
+    const bg = isSelected ? BG_BLUE : '';
+    const fg = isSelected ? `${WHITE}${BOLD}` : WHITE;
+    const shortcutText = `${DIM}[${cmd.shortcut}]${RESET}`;
+    const nameMaxLen = boxWidth - 2 - cmd.shortcut.length - 5; // 5 = "| " + " [" + "]|"
+    const name = cmd.name.length > nameMaxLen
+      ? cmd.name.slice(0, nameMaxLen)
+      : cmd.name;
+    const namePad = ' '.repeat(Math.max(0, nameMaxLen - name.length));
+    output += `\x1b[${rowPos};${startCol}H${BOLD}${CYAN}\u2502${RESET}${bg}${fg} ${name}${RESET}${bg}${namePad} ${shortcutText}${bg ? RESET : ''}${BOLD}${CYAN}\u2502${RESET}`;
+  }
+
+  // If no results
+  if (filtered.length === 0) {
+    const noMatch = 'No matching commands';
+    const pad = ' '.repeat(Math.max(0, boxWidth - 2 - noMatch.length));
+    output += `\x1b[${startRow + 3};${startCol}H${BOLD}${CYAN}\u2502${RESET}${DIM} ${noMatch}${pad}${RESET}${BOLD}${CYAN}\u2502${RESET}`;
+  }
+
+  // Bottom border
+  const bottomRow = startRow + 3 + Math.max(filtered.length, 1);
+  const bottomBorder = '\u2514' + '\u2500'.repeat(boxWidth - 2) + '\u2518';
+  output += `\x1b[${bottomRow};${startCol}H${BOLD}${CYAN}${bottomBorder}${RESET}`;
+
+  process.stdout.write(output);
+}
+
+function executeCommand(action) {
+  switch (action) {
+    case 'kill':
+      if (processes[selectedIndex]) {
+        killProcess(processes[selectedIndex].pid, false);
+        setTimeout(() => {
+          allProcesses = getClaudeProcesses(); applySortAndFilter();
+          lastRefresh = new Date();
+          if (selectedIndex >= processes.length) selectedIndex = Math.max(0, processes.length - 1);
+          render();
+        }, 300);
+      }
+      break;
+    case 'force-kill':
+      if (processes[selectedIndex]) {
+        killProcess(processes[selectedIndex].pid, true);
+        setTimeout(() => {
+          allProcesses = getClaudeProcesses(); applySortAndFilter();
+          lastRefresh = new Date();
+          if (selectedIndex >= processes.length) selectedIndex = Math.max(0, processes.length - 1);
+          render();
+        }, 300);
+      }
+      break;
+    case 'kill-all':
+      confirmKillAll = true;
+      process.stdout.write(`\n${BG_RED}${WHITE}${BOLD} Kill ALL ${allProcesses.length} Claude processes? (y/N) ${RESET}`);
+      break;
+    case 'toggle-pane':
+      if (viewMode === 'list') {
+        viewMode = 'pane';
+        const cardsPerRow = getCardsPerRow();
+        paneRow = Math.floor(selectedIndex / cardsPerRow);
+        paneCol = selectedIndex % cardsPerRow;
+      } else {
+        viewMode = 'list';
+      }
+      render();
+      break;
+    case 'toggle-dashboard':
+      showDashboard = !showDashboard;
+      render();
+      break;
+    case 'toggle-log':
+      logPaneManualToggle = true;
+      showLogPane = !showLogPane;
+      if (showLogPane) {
+        logScrollOffset = 0;
+        logLines = [];
+        statusMessage = 'Log pane ON (L to close)';
+      } else {
+        logLines = [];
+        logScrollOffset = 0;
+        statusMessage = 'Log pane OFF';
+      }
+      render();
+      break;
+    case 'toggle-history':
+      showHistory = true;
+      showHistoryView();
+      break;
+    case 'open-dir':
+      if (processes[selectedIndex]) {
+        execOpenDirectory(processes[selectedIndex].cwd, 'finder');
+        render();
+      }
+      break;
+    case 'open-editor':
+      if (processes[selectedIndex]) {
+        execOpenDirectory(processes[selectedIndex].cwd, 'editor');
+        render();
+      }
+      break;
+    case 'open-terminal':
+      if (processes[selectedIndex]) {
+        execOpenDirectory(processes[selectedIndex].cwd, 'terminal');
+        render();
+      }
+      break;
+    case 'sort-age':
+      sortMode = 'age';
+      statusMessage = 'Sort: age';
+      applySortAndFilter();
+      render();
+      break;
+    case 'sort-cpu':
+      sortMode = 'cpu';
+      statusMessage = 'Sort: cpu';
+      applySortAndFilter();
+      render();
+      break;
+    case 'sort-mem':
+      sortMode = 'mem';
+      statusMessage = 'Sort: mem';
+      applySortAndFilter();
+      render();
+      break;
+    case 'sort-context':
+      sortMode = 'context';
+      statusMessage = 'Sort: context';
+      applySortAndFilter();
+      render();
+      break;
+    case 'reverse-sort':
+      sortReverse = !sortReverse;
+      statusMessage = `Sort: ${sortMode} ${sortReverse ? '(reversed)' : ''}`;
+      applySortAndFilter();
+      render();
+      break;
+    case 'refresh':
+      allProcesses = getClaudeProcesses(); applySortAndFilter();
+      updateProcessHistory(allProcesses);
+      checkStateTransitions(allProcesses);
+      lastRefresh = new Date();
+      statusMessage = 'Refreshed';
+      render();
+      break;
+    case 'cycle-theme':
+      cycleTheme();
+      render();
+      break;
+    case 'toggle-notif':
+      notificationsEnabled = !notificationsEnabled;
+      statusMessage = `Notifications: ${notificationsEnabled ? 'ON' : 'OFF'}`;
+      render();
+      break;
+    case 'search':
+      searchMode = true;
+      searchQuery = '';
+      searchResults.clear();
+      statusMessage = 'Search: type query, Enter to search, ESC to cancel';
+      render();
+      break;
+    case 'filter':
+      filterInput = true;
+      filterText = '';
+      statusMessage = 'Filter: type to search, Enter to confirm, ESC to cancel';
+      render();
+      break;
+    case 'help':
+      showingHelp = true;
+      showHelp();
+      break;
+    case 'quit':
+      cleanup();
+      process.exit(0);
+      break;
+  }
+}
+
 function showHelp() {
   const { columns } = process.stdout;
   let output = CLEAR;
@@ -2992,6 +3267,7 @@ function showHelp() {
   output += `  ${DIM}Current:${RESET}  ${currentThemeName}\n\n`;
 
   output += `${BOLD}OTHER:${RESET}\n`;
+  output += `  ${CYAN}Ctrl+K${RESET}    Command palette with fuzzy search\n`;
   output += `  ${CYAN}q / ESC${RESET}   Quit the manager\n`;
   output += `  ${CYAN}?${RESET}         Show this help\n\n`;
 
@@ -3151,6 +3427,51 @@ function handleInput(key) {
   const mouseEvt = parseMouseEvent(key);
   if (mouseEvt) {
     handleMouseEvent(mouseEvt);
+    return;
+  }
+
+  // Command palette mode
+  if (showPalette) {
+    if (key === '\x1b' && key.length === 1) {
+      // ESC: close palette
+      showPalette = false;
+      paletteQuery = '';
+      paletteSelected = 0;
+      render();
+    } else if (key === '\r' || key === '\n') {
+      // Enter: execute selected command
+      const filtered = filterCommands(paletteQuery);
+      if (filtered.length > 0 && paletteSelected < filtered.length) {
+        const action = filtered[paletteSelected].action;
+        showPalette = false;
+        paletteQuery = '';
+        paletteSelected = 0;
+        executeCommand(action);
+      }
+    } else if (key === '\x1b[A' || key === '\x10') {
+      // Up arrow or Ctrl+P
+      if (paletteSelected > 0) paletteSelected--;
+      render();
+      renderPalette();
+    } else if (key === '\x1b[B' || key === '\x0e') {
+      // Down arrow or Ctrl+N
+      const filtered = filterCommands(paletteQuery);
+      if (paletteSelected < filtered.length - 1) paletteSelected++;
+      render();
+      renderPalette();
+    } else if (key === '\x7f' || key === '\b') {
+      // Backspace
+      paletteQuery = paletteQuery.slice(0, -1);
+      paletteSelected = 0;
+      render();
+      renderPalette();
+    } else if (key.length === 1 && key >= ' ') {
+      // Regular character
+      paletteQuery += key;
+      paletteSelected = 0;
+      render();
+      renderPalette();
+    }
     return;
   }
 
@@ -3328,6 +3649,14 @@ function handleInput(key) {
   }
 
   switch (key) {
+    case '\x0b': // Ctrl+K — open command palette
+      showPalette = true;
+      paletteQuery = '';
+      paletteSelected = 0;
+      render();
+      renderPalette();
+      break;
+
     case 'P':
       if (viewMode === 'list') {
         viewMode = 'pane';
@@ -3680,7 +4009,7 @@ function main() {
 
   // Auto-refresh every 5 seconds
   setInterval(() => {
-    if (!showingHelp && !showHistory && !showTimeline && !showHeatmap && !confirmKillAll && !confirmKillStopped && !filterInput && !searchMode) {
+    if (!showingHelp && !showHistory && !showTimeline && !showHeatmap && !confirmKillAll && !confirmKillStopped && !filterInput && !searchMode && !showPalette) {
       allProcesses = getClaudeProcesses(); applySortAndFilter();
       updateProcessHistory(allProcesses);
       checkStateTransitions(allProcesses);
@@ -3781,6 +4110,12 @@ module.exports = {
   getSessionFileForProc,
   formatElapsed,
   renderTimeline,
+  // Command palette
+  COMMANDS,
+  fuzzyMatch,
+  fuzzyScore,
+  filterCommands,
+  executeCommand,
   // Expose internals for testing
   _state: { get allProcesses() { return allProcesses; }, set allProcesses(v) { allProcesses = v; },
             get processes() { return processes; }, set processes(v) { processes = v; },
@@ -3805,7 +4140,10 @@ module.exports = {
             get logScrollOffset() { return logScrollOffset; }, set logScrollOffset(v) { logScrollOffset = v; },
             get exportMode() { return exportMode; }, set exportMode(v) { exportMode = v; },
             get THEME() { return THEME; }, set THEME(v) { THEME = v; },
-            get plugins() { return plugins; }, set plugins(v) { plugins = v; } },
+            get plugins() { return plugins; }, set plugins(v) { plugins = v; },
+            get showPalette() { return showPalette; }, set showPalette(v) { showPalette = v; },
+            get paletteQuery() { return paletteQuery; }, set paletteQuery(v) { paletteQuery = v; },
+            get paletteSelected() { return paletteSelected; }, set paletteSelected(v) { paletteSelected = v; } },
   _notif: { previousStates, processStartTimes },
   _colors: { RED, ORANGE, YELLOW, GREEN, BLUE, CYAN, DIM, RESET },
 };
