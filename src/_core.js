@@ -2242,16 +2242,28 @@ function renderDetailPane(proc, startRow, paneCol, paneWidth, availRows) {
       bar = result.bar;
     } else {
       // Block character rendering (original)
-      const seg = (v) => Math.max(v > 0 ? 1 : 0, Math.round(v / CTX_LIMIT * barW));
+      // Clamp total used to CTX_LIMIT so bar never overflows
+      const totalUsed = inp + cw + cr + out;
+      const denominator = Math.max(CTX_LIMIT, totalUsed + free);
+      const seg = (v) => Math.max(v > 0 ? 1 : 0, Math.round(v / denominator * barW));
       let sInp = seg(inp);
       let sCw = seg(cw);
       let sCr = seg(cr);
       let sOut = seg(out);
       let sFree = seg(free);
-      // Adjust to exactly barW
+      // Clamp total to exactly barW
       let total = sInp + sCw + sCr + sOut + sFree;
-      if (total > barW) sFree = Math.max(0, sFree - (total - barW));
-      else if (total < barW) sFree += (barW - total);
+      while (total > barW) {
+        // Shrink the largest segment
+        if (sFree > 0) { sFree--; }
+        else if (sCr > 1) { sCr--; }
+        else if (sInp > 1) { sInp--; }
+        else if (sCw > 1) { sCw--; }
+        else if (sOut > 1) { sOut--; }
+        else break;
+        total = sInp + sCw + sCr + sOut + sFree;
+      }
+      if (total < barW) sFree += (barW - total);
 
       bar = `${GREEN}${'█'.repeat(sInp)}${RESET}` +
             `${BLUE}${'█'.repeat(sCw)}${RESET}` +
