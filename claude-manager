@@ -17,6 +17,7 @@ const DEFAULT_CONFIG = {
   defaultView: 'list', // 'list' or 'pane'
   theme: 'default',    // 'default' or 'minimal'
   contextBarStyle: 'block', // 'block' or 'braille'
+  notifications: { enabled: true, minDuration: 30 }, // seconds
 };
 
 function loadConfig() {
@@ -31,6 +32,9 @@ function loadConfig() {
       if (rc.defaultView === 'pane' || rc.defaultView === 'list') config.defaultView = rc.defaultView;
       if (rc.theme === 'minimal') config.theme = 'minimal';
       if (rc.contextBarStyle === 'braille') config.contextBarStyle = 'braille';
+      if (rc.notifications !== undefined && typeof rc.notifications === 'object') {
+        config.notifications = { ...DEFAULT_CONFIG.notifications, ...rc.notifications };
+      }
     }
   } catch (e) {}
   // CLI flags override
@@ -193,6 +197,106 @@ let sortReverse = false;
 let filterText = '';
 let filterInput = false; // true when typing a filter
 let showDashboard = false; // toggled by 'd' key
+
+// Notification state
+let notificationsEnabled = CONFIG.notifications.enabled;
+const previousStates = new Map();   // PID -> last known status string
+const processStartTimes = new Map(); // PID -> timestamp (ms) when first seen ACTIVE
+
+function sendNotification(title, message) {
+  try {
+    if (IS_MAC) {
+      spawn('osascript', ['-e', `display notification "${message}" with title "${title}"`], {
+        detached: true, stdio: 'ignore'
+      }).unref();
+    } else if (IS_LINUX) {
+      spawn('notify-send', [title, message], {
+        detached: true, stdio: 'ignore'
+      }).unref();
+    }
+  } catch (e) {}
+}
+
+function formatDuration(ms) {
+  const totalSec = Math.floor(ms / 1000);
+  if (totalSec < 60) return `${totalSec}s`;
+  const mins = Math.floor(totalSec / 60);
+  const secs = totalSec % 60;
+  if (mins < 60) return `${mins}m ${secs}s`;
+  const hours = Math.floor(mins / 60);
+  const remMins = mins % 60;
+  return `${hours}h ${remMins}m`;
+}
+
+function formatNotificationMessage(proc) {
+  const parts = [];
+  const label = proc.slug || proc.title || 'Claude session';
+  parts.push(label);
+  if (proc._activeDurationMs) {
+    parts.push(`Duration: ${formatDuration(proc._activeDurationMs)}`);
+  }
+  if (proc.model) {
+    parts.push(`Model: ${proc.model.replace(/^claude-/, '')}`);
+  }
+  return parts.join(' | ');
+}
+
+function checkStateTransitions(currentProcs) {
+  if (!notificationsEnabled) return;
+
+  const minDuration = (CONFIG.notifications.minDuration || 30) * 1000;
+  const now = Date.now();
+
+  // Build a map of current PIDs -> status
+  const currentMap = new Map();
+  for (const proc of currentProcs) {
+    currentMap.set(proc.pid, proc);
+  }
+
+  // Track when processes first become ACTIVE
+  for (const proc of currentProcs) {
+    if (proc.status === 'ACTIVE' && !processStartTimes.has(proc.pid)) {
+      processStartTimes.set(proc.pid, now);
+    }
+  }
+
+  // Check for transitions: previously ACTIVE -> now STOPPED/ZOMBIE/disappeared
+  for (const [pid, prevStatus] of previousStates) {
+    if (prevStatus !== 'ACTIVE') continue;
+
+    const current = currentMap.get(pid);
+    const newStatus = current ? current.status : null;
+
+    // Only notify on completion transitions
+    if (newStatus === 'ACTIVE') continue;
+
+    // Process transitioned away from ACTIVE (or disappeared)
+    const startTime = processStartTimes.get(pid);
+    if (!startTime) continue;
+
+    const activeDuration = now - startTime;
+    if (activeDuration < minDuration) continue;
+
+    // Build notification
+    const proc = current || { pid, slug: null, title: 'Claude session', model: null };
+    proc._activeDurationMs = activeDuration;
+    const message = formatNotificationMessage(proc);
+    sendNotification('CTOP \u2014 Session Completed', message);
+  }
+
+  // Update previousStates for next cycle
+  previousStates.clear();
+  for (const proc of currentProcs) {
+    previousStates.set(proc.pid, proc.status);
+  }
+
+  // Clean up start times for processes that are gone
+  for (const pid of processStartTimes.keys()) {
+    if (!currentMap.has(pid)) {
+      processStartTimes.delete(pid);
+    }
+  }
+}
 
 function getClaudeProcesses() {
   try {
@@ -756,6 +860,8 @@ function renderPaneMode() {
   if (sortMode !== 'age') statsLine += `${DIM} | Sort: ${RESET}${CYAN}${sortMode}${sortReverse ? ' ↑' : ''}${RESET}`;
   if (filterText) statsLine += `${DIM} | Filter: ${RESET}${YELLOW}"${filterText}"${RESET}${DIM} (${processes.length}/${allProcesses.length})${RESET}`;
   if (filterInput) statsLine += `${DIM} | ${RESET}${BG_BLUE}${WHITE} /${filterText}█ ${RESET}`;
+  const notifLabel = notificationsEnabled ? `${GREEN}ON${RESET}` : `${RED}OFF${RESET}`;
+  statsLine += `${DIM} | Notif: ${RESET}${notifLabel}`;
   statsLine += `${DIM} | ${lastRefresh.toLocaleTimeString()} ${RESET}`;
   output += statsLine + `${CLR_LINE}\n`;
 
@@ -918,7 +1024,7 @@ function renderPaneMode() {
   output += `${RED}x${RESET} Kill  ${RED}X${RESET} Force  `;
   output += `${CYAN}o${RESET} Open  `;
   output += `${CYAN}s${RESET} Sort  ${CYAN}/${RESET} Filter  `;
-  output += `${CYAN}d${RESET} Dash  ${CYAN}P${RESET} List  ${CYAN}r${RESET} Refresh  ${CYAN}q${RESET} Quit  ${CYAN}?${RESET} Help${CLR_LINE}`;
+  output += `${CYAN}d${RESET} Dash  ${CYAN}n${RESET} Notif  ${CYAN}P${RESET} List  ${CYAN}r${RESET} Refresh  ${CYAN}q${RESET} Quit  ${CYAN}?${RESET} Help${CLR_LINE}`;
 
   process.stdout.write(output);
 }
@@ -1141,6 +1247,8 @@ function render() {
   if (sortMode !== 'age') statsLine += `${DIM} | Sort: ${RESET}${CYAN}${sortMode}${sortReverse ? ' ↑' : ''}${RESET}`;
   if (filterText) statsLine += `${DIM} | Filter: ${RESET}${YELLOW}"${filterText}"${RESET}${DIM} (${processes.length}/${allProcesses.length})${RESET}`;
   if (filterInput) statsLine += `${DIM} | ${RESET}${BG_BLUE}${WHITE} /${filterText}█ ${RESET}`;
+  const notifLabel2 = notificationsEnabled ? `${GREEN}ON${RESET}` : `${RED}OFF${RESET}`;
+  statsLine += `${DIM} | Notif: ${RESET}${notifLabel2}`;
   statsLine += `${DIM} | ${lastRefresh.toLocaleTimeString()} ${RESET}`;
   output += statsLine + `${CLR_LINE}\n`;
 
@@ -1354,7 +1462,7 @@ function render() {
   output += `${RED}x${RESET} Kill  ${RED}X${RESET} Force  `;
   output += `${CYAN}o${RESET} Open  `;
   output += `${CYAN}s${RESET} Sort  ${CYAN}/${RESET} Filter  `;
-  output += `${CYAN}d${RESET} Dash  ${CYAN}P${RESET} Pane  ${CYAN}r${RESET} Refresh  ${CYAN}q${RESET} Quit  ${CYAN}?${RESET} Help${CLR_LINE}`;
+  output += `${CYAN}d${RESET} Dash  ${CYAN}n${RESET} Notif  ${CYAN}P${RESET} Pane  ${CYAN}r${RESET} Refresh  ${CYAN}q${RESET} Quit  ${CYAN}?${RESET} Help${CLR_LINE}`;
 
   process.stdout.write(output);
 }
@@ -1493,7 +1601,8 @@ function showHelp() {
   output += `  ${CYAN}e${RESET}         Open working directory in editor ($EDITOR or code)\n`;
   output += `  ${CYAN}t${RESET}         Open new terminal tab in working directory\n`;
   output += `  ${CYAN}r${RESET}         Refresh process list\n`;
-  output += `  ${CYAN}d${RESET}         Toggle aggregate dashboard stats\n\n`;
+  output += `  ${CYAN}d${RESET}         Toggle aggregate dashboard stats\n`;
+  output += `  ${CYAN}n${RESET}         Toggle desktop notifications on/off\n\n`;
 
   output += `${BOLD}OTHER:${RESET}\n`;
   output += `  ${CYAN}q / ESC${RESET}   Quit the manager\n`;
@@ -1516,11 +1625,147 @@ function showHelp() {
   process.stdout.write(output);
 }
 
+function parseMouseEvent(data) {
+  // SGR format: \x1b[<button;col;rowM (press) or \x1b[<button;col;rowm (release)
+  const match = data.match(/\x1b\[<(\d+);(\d+);(\d+)([Mm])/);
+  if (!match) return null;
+  const button = parseInt(match[1]);
+  const col = parseInt(match[2]);
+  const row = parseInt(match[3]);
+  const isRelease = match[4] === 'm';
+  return {
+    button: button & 3, // 0=left, 1=middle, 2=right
+    col, row, isRelease,
+    isScroll: (button & 64) !== 0,
+    scrollUp: (button & 64) !== 0 && (button & 1) === 0,
+    scrollDown: (button & 64) !== 0 && (button & 1) !== 0,
+  };
+}
+
+function listViewRowToIndex(row) {
+  // Header: 3 (header box) + 1 (stats) + 1 (separator) + 1 (col headers) + 1 (separator) = 7
+  const headerLines = 7 + (showDashboard ? 2 : 0);
+  const dataRow = row - headerLines - 1; // -1 because rows are 1-based
+  if (dataRow < 0) return -1;
+
+  const termRows = process.stdout.rows || 40;
+  const maxVisible = termRows - 10 - (showDashboard ? 2 : 0);
+  const startIdx = Math.max(0, selectedIndex - Math.floor(maxVisible / 2));
+  return startIdx + dataRow;
+}
+
+function paneViewClickToIndex(row, col) {
+  const { columns } = process.stdout;
+  const cardWidth = 34;
+  const cardHeight = 8;
+  const cardGapX = 1;
+  const cardGapY = 1;
+  const cardsPerRow = getCardsPerRow();
+
+  // Header: 3 (header box) + 1 (stats) + 1 (separator) = 5, plus optional dashboard/status
+  const headerLines = 5 + (showDashboard ? 2 : 0);
+  const contentRow = row - headerLines - 1; // 0-based row within card grid (1-based row correction)
+  if (contentRow < 0) return -1;
+
+  // Determine which card row
+  const cellHeight = cardHeight + cardGapY;
+  const cardRow = Math.floor(contentRow / cellHeight);
+  const withinCard = contentRow % cellHeight;
+  if (withinCard >= cardHeight) return -1; // clicked in gap
+
+  // Determine which card column
+  const cellWidth = cardWidth + cardGapX;
+  const cardCol = Math.floor((col - 1) / cellWidth); // col is 1-based
+  if (cardCol >= cardsPerRow) return -1;
+  const withinCardX = (col - 1) % cellWidth;
+  if (withinCardX >= cardWidth) return -1; // clicked in gap
+
+  // Account for scroll offset
+  const totalRows = Math.ceil(processes.length / cardsPerRow);
+  const { rows: termRows } = process.stdout;
+  const footerLines = 2;
+  const availableSpace = termRows - headerLines - footerLines;
+  const maxVisibleCardRows = Math.max(1, Math.floor((availableSpace + cardGapY) / (cardHeight + cardGapY)));
+  const scrollRow = Math.max(0, paneRow - Math.floor(maxVisibleCardRows / 2));
+
+  const actualCardRow = scrollRow + cardRow;
+  const idx = actualCardRow * cardsPerRow + cardCol;
+  if (idx >= processes.length) return -1;
+  return idx;
+}
+
+function handleMouseEvent(evt) {
+  // Only handle left-click press events, plus scroll
+  if (evt.isScroll) {
+    if (evt.scrollUp) {
+      // Same as 'k' — move selection up
+      if (viewMode === 'pane') {
+        if (paneRow > 0) {
+          paneRow--;
+          const cardsPerRow = getCardsPerRow();
+          selectedIndex = paneRow * cardsPerRow + paneCol;
+          if (selectedIndex >= processes.length) {
+            selectedIndex = processes.length - 1;
+            paneCol = selectedIndex % cardsPerRow;
+          }
+        }
+      } else {
+        if (selectedIndex > 0) selectedIndex--;
+      }
+    } else if (evt.scrollDown) {
+      // Same as 'j' — move selection down
+      if (viewMode === 'pane') {
+        const cardsPerRow = getCardsPerRow();
+        const totalRows = Math.ceil(processes.length / cardsPerRow);
+        if (paneRow < totalRows - 1) {
+          paneRow++;
+          selectedIndex = paneRow * cardsPerRow + paneCol;
+          if (selectedIndex >= processes.length) {
+            selectedIndex = processes.length - 1;
+            paneCol = selectedIndex % cardsPerRow;
+          }
+        }
+      } else {
+        if (selectedIndex < processes.length - 1) selectedIndex++;
+      }
+    }
+    render();
+    return;
+  }
+
+  // Only left-click press (not release)
+  if (evt.button !== 0 || evt.isRelease) return;
+
+  if (viewMode === 'pane') {
+    const idx = paneViewClickToIndex(evt.row, evt.col);
+    if (idx >= 0 && idx < processes.length) {
+      selectedIndex = idx;
+      const cardsPerRow = getCardsPerRow();
+      paneRow = Math.floor(idx / cardsPerRow);
+      paneCol = idx % cardsPerRow;
+      render();
+    }
+  } else {
+    const idx = listViewRowToIndex(evt.row);
+    if (idx >= 0 && idx < processes.length) {
+      selectedIndex = idx;
+      render();
+    }
+  }
+}
+
 let showingHelp = false;
 let confirmKillAll = false;
 let confirmKillStopped = false;
 
 function handleInput(key) {
+  // Check for mouse events first
+  const mouseEvt = parseMouseEvent(key);
+  if (mouseEvt) {
+    handleMouseEvent(mouseEvt);
+    return;
+  }
+
   // Filter input mode
   if (filterInput) {
     if (key === '\r' || key === '\n') {
@@ -1787,8 +2032,15 @@ function handleInput(key) {
       render();
       break;
 
+    case 'n':
+      notificationsEnabled = !notificationsEnabled;
+      statusMessage = `Notifications: ${notificationsEnabled ? 'ON' : 'OFF'}`;
+      render();
+      break;
+
     case 'r':
       allProcesses = getClaudeProcesses(); applySortAndFilter();
+      checkStateTransitions(allProcesses);
       lastRefresh = new Date();
       statusMessage = 'Refreshed';
       render();
@@ -1818,6 +2070,8 @@ function handleInput(key) {
 }
 
 function cleanup() {
+  // Disable mouse tracking
+  process.stdout.write('\x1b[?1000l\x1b[?1006l');
   process.stdout.write(SHOW_CURSOR + CLEAR);
   process.stdin.setRawMode(false);
 }
@@ -1832,6 +2086,9 @@ function main() {
   process.stdin.setRawMode(true);
   process.stdin.resume();
   process.stdin.setEncoding('utf8');
+
+  // Enable mouse tracking (SGR extended mode)
+  process.stdout.write('\x1b[?1000h\x1b[?1006h');
 
   // Handle resize
   process.stdout.on('resize', () => {
@@ -1857,6 +2114,7 @@ function main() {
   setInterval(() => {
     if (!showingHelp && !confirmKillAll && !confirmKillStopped && !filterInput) {
       allProcesses = getClaudeProcesses(); applySortAndFilter();
+      checkStateTransitions(allProcesses);
       lastRefresh = new Date();
       if (selectedIndex >= processes.length) {
         selectedIndex = Math.max(0, processes.length - 1);
@@ -1892,7 +2150,15 @@ module.exports = {
   renderBrailleBar,
   renderContextBarBraille,
   BRAILLE_FILLS,
+  parseMouseEvent,
+  listViewRowToIndex,
+  paneViewClickToIndex,
   DEFAULT_CONFIG,
+  // Notification helpers
+  sendNotification,
+  formatDuration,
+  formatNotificationMessage,
+  checkStateTransitions,
   // Expose internals for testing
   _state: { get allProcesses() { return allProcesses; }, set allProcesses(v) { allProcesses = v; },
             get processes() { return processes; }, set processes(v) { processes = v; },
@@ -1900,6 +2166,9 @@ module.exports = {
             get sortMode() { return sortMode; }, set sortMode(v) { sortMode = v; },
             get sortReverse() { return sortReverse; }, set sortReverse(v) { sortReverse = v; },
             get selectedIndex() { return selectedIndex; }, set selectedIndex(v) { selectedIndex = v; },
-            get showDashboard() { return showDashboard; }, set showDashboard(v) { showDashboard = v; } },
+            get showDashboard() { return showDashboard; }, set showDashboard(v) { showDashboard = v; },
+            get notificationsEnabled() { return notificationsEnabled; }, set notificationsEnabled(v) { notificationsEnabled = v; },
+            get viewMode() { return viewMode; }, set viewMode(v) { viewMode = v; } },
+  _notif: { previousStates, processStartTimes },
   _colors: { RED, ORANGE, YELLOW, GREEN, BLUE, CYAN, DIM, RESET },
 };
