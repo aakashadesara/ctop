@@ -1,0 +1,125 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="820" height="500" viewBox="0 0 820 500">
+  <style>
+    .bg { fill: #0d1117; }
+    .t { font-family: 'JetBrains Mono', 'Fira Code', 'SF Mono', 'Menlo', monospace; font-size: 12px; fill: #e6edf3; }
+    .t11 { font-family: 'JetBrains Mono', 'Fira Code', 'SF Mono', 'Menlo', monospace; font-size: 11px; fill: #e6edf3; }
+    .dim { fill: #484f58; }
+    .green { fill: #3fb950; }
+    .red { fill: #f85149; }
+    .yellow { fill: #d29922; }
+    .cyan { fill: #58a6ff; }
+    .orange { fill: #d18616; }
+    .bold { font-weight: bold; }
+    .header-bg { fill: #d18616; }
+    .border { fill: #30363d; }
+    .title-bar { fill: #161b22; }
+  </style>
+
+  <!-- Terminal window -->
+  <rect class="bg" width="820" height="500" rx="8"/>
+
+  <!-- Title bar -->
+  <rect class="title-bar" width="820" height="28" rx="8"/>
+  <rect class="title-bar" width="820" height="14" y="14"/>
+  <circle fill="#ff5f57" cx="16" cy="14" r="5"/>
+  <circle fill="#febc2e" cx="32" cy="14" r="5"/>
+  <circle fill="#28c840" cx="48" cy="14" r="5"/>
+  <text class="t dim" x="370" y="18" text-anchor="middle" font-size="11">ctop</text>
+
+  <!-- Header border top -->
+  <rect class="border" x="8" y="36" width="804" height="1"/>
+
+  <!-- Header bar -->
+  <rect class="header-bg" x="8" y="37" width="804" height="22"/>
+  <text class="t bold" x="250" y="52" fill="#ffffff">CTOP &#8212; Claude Terminal Operations Panel</text>
+
+  <!-- Header border bottom -->
+  <rect class="border" x="8" y="59" width="804" height="1"/>
+
+  <!-- NAVIGATION section -->
+  <text class="t bold" x="24" y="82">NAVIGATION:</text>
+
+  <text class="t cyan" x="38" y="100">&#8593; / k</text>
+  <text class="t" x="120" y="100">Move selection up</text>
+  <text class="t cyan" x="38" y="116">&#8595; / j</text>
+  <text class="t" x="120" y="116">Move selection down</text>
+  <text class="t cyan" x="38" y="132">&#8592; / h</text>
+  <text class="t" x="120" y="132">Move selection left (pane mode)</text>
+  <text class="t cyan" x="38" y="148">&#8594; / l</text>
+  <text class="t" x="120" y="148">Move selection right (pane mode)</text>
+  <text class="t cyan" x="38" y="164">g</text>
+  <text class="t" x="120" y="164">Jump to first process</text>
+  <text class="t cyan" x="38" y="180">G</text>
+  <text class="t" x="120" y="180">Jump to last process</text>
+  <text class="t cyan" x="38" y="196">P</text>
+  <text class="t" x="120" y="196">Toggle pane/grid view</text>
+
+  <!-- ACTIONS section -->
+  <text class="t bold" x="24" y="222">ACTIONS:</text>
+
+  <text class="t cyan" x="38" y="240">x</text>
+  <text class="t" x="120" y="240">Kill selected process (SIGTERM - graceful)</text>
+  <text class="t cyan" x="38" y="256">X</text>
+  <text class="t" x="120" y="256">Force kill selected process (SIGKILL)</text>
+  <text class="t cyan" x="38" y="272">K</text>
+  <text class="t" x="120" y="272">Kill ALL Claude processes (with confirmation)</text>
+  <text class="t cyan" x="38" y="288">A</text>
+  <text class="t" x="120" y="288">Kill ALL stopped/dead processes</text>
+  <text class="t cyan" x="38" y="304">o</text>
+  <text class="t" x="120" y="304">Open working directory in file manager</text>
+  <text class="t cyan" x="38" y="320">e</text>
+  <text class="t" x="120" y="320">Open working directory in editor</text>
+  <text class="t cyan" x="38" y="336">r</text>
+  <text class="t" x="120" y="336">Refresh process list</text>
+  <text class="t cyan" x="38" y="352">d</text>
+  <text class="t" x="120" y="352">Toggle aggregate dashboard stats</text>
+  <text class="t cyan" x="38" y="368">L</text>
+  <text class="t" x="120" y="368">Toggle live session log pane</text>
+
+  <!-- Right column - SORT & FILTER -->
+  <text class="t bold" x="440" y="82">SORT &amp; FILTER:</text>
+
+  <text class="t cyan" x="454" y="100">s</text>
+  <text class="t" x="536" y="100">Cycle sort: age &#8594; cpu &#8594; mem &#8594; context</text>
+  <text class="t cyan" x="454" y="116">S</text>
+  <text class="t" x="536" y="116">Reverse sort order</text>
+  <text class="t cyan" x="454" y="132">/</text>
+  <text class="t" x="536" y="132">Start filter (branch, model, dir, slug)</text>
+  <text class="t cyan" x="454" y="148">F</text>
+  <text class="t" x="536" y="148">Full-text search session content</text>
+  <text class="t cyan" x="454" y="164">ESC</text>
+  <text class="t" x="536" y="164">Clear active filter or search</text>
+
+  <!-- APPEARANCE section -->
+  <text class="t bold" x="440" y="196">APPEARANCE:</text>
+
+  <text class="t cyan" x="454" y="214">T</text>
+  <text class="t" x="536" y="214">Cycle color theme</text>
+  <text class="t cyan" x="454" y="230">H</text>
+  <text class="t" x="536" y="230">Toggle usage history view (24h charts)</text>
+  <text class="t cyan" x="454" y="246">n</text>
+  <text class="t" x="536" y="246">Toggle desktop notifications</text>
+
+  <!-- OTHER section -->
+  <text class="t bold" x="440" y="278">OTHER:</text>
+
+  <text class="t cyan" x="454" y="296">q / ESC</text>
+  <text class="t" x="536" y="296">Quit the manager</text>
+  <text class="t cyan" x="454" y="312">?</text>
+  <text class="t" x="536" y="312">Show this help</text>
+
+  <!-- PROCESS STATUS section -->
+  <text class="t bold" x="440" y="344">PROCESS STATUS:</text>
+
+  <text class="t green" x="454" y="362">ACTIVE</text>
+  <text class="t" x="536" y="362">Process is running normally</text>
+  <text class="t yellow" x="454" y="378">STOPPED</text>
+  <text class="t" x="536" y="378">Process is suspended</text>
+  <text class="t red" x="454" y="394">ZOMBIE</text>
+  <text class="t" x="536" y="394">Process terminated but not reaped</text>
+  <text class="t dim" x="454" y="410">SLEEPING</text>
+  <text class="t" x="536" y="410">Process is idle/waiting</text>
+
+  <!-- Bottom prompt -->
+  <text class="t dim" x="24" y="480">Press any key to return...</text>
+</svg>
