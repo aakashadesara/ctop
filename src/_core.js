@@ -1926,7 +1926,7 @@ function render() {
   const showCostCol = listWidth >= 140;
   const costColW = 9;
   const sparkColW = 10; // 8 chars sparkline + 2 padding
-  const showSparklines = listWidth >= 180;
+  const showSparklines = columns >= 180;
   // Plugin columns — extra width from loaded plugins
   const pluginCols = plugins.filter(p => p.column);
   const pluginColsWidth = pluginCols.reduce((sum, p) => sum + (p.column.width || 10), 0);
@@ -2093,12 +2093,16 @@ function render() {
     }
 
     // MEM%
-    output += `${proc.mem.toFixed(1)}`;
+    if (showSparklines) {
+      output += `${proc.mem.toFixed(1).padEnd(7)}`;
+    } else {
+      output += `${proc.mem.toFixed(1)}`;
+    }
 
     // MEM sparkline
     if (showSparklines) {
       const memHist = processHistory.has(proc.pid) ? processHistory.get(proc.pid).mem : [];
-      output += `  ${isSelected ? '' : CYAN}${renderSparkline(memHist, 8).padEnd(sparkColW)}${isSelected ? '' : RESET}`;
+      output += `${isSelected ? '' : CYAN}${renderSparkline(memHist, 8).padEnd(sparkColW)}${isSelected ? '' : RESET}`;
     }
 
     output += `${isSelected ? RESET : ''}${CLR_LINE}\n`;
