@@ -1,0 +1,804 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CTOP — Claude Terminal Operations Panel</title>
+<meta name="description" content="Monitor and manage your Claude Code sessions in real-time. Like htop, but for Claude.">
+<meta name="theme-color" content="#0d1117">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+/* ── Reset & Base ───────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg: #0d1117;
+  --bg-raised: #161b22;
+  --bg-card: #1c2129;
+  --border: #30363d;
+  --border-bright: #484f58;
+  --text: #c9d1d9;
+  --text-dim: #8b949e;
+  --text-bright: #f0f6fc;
+  --green: #3fb950;
+  --green-dim: #238636;
+  --cyan: #58a6ff;
+  --orange: #d29922;
+  --orange-bright: #e3b341;
+  --red: #f85149;
+  --yellow: #e3b341;
+  --purple: #bc8cff;
+  --mono: 'JetBrains Mono', 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+  --sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+}
+
+html { scroll-behavior: smooth; }
+body {
+  font-family: var(--sans);
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+a { color: var(--cyan); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* ── Scanline overlay (subtle CRT effect) ───────────────── */
+body::after {
+  content: '';
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 2px,
+    rgba(0,0,0,0.03) 2px,
+    rgba(0,0,0,0.03) 4px
+  );
+  pointer-events: none;
+  z-index: 9999;
+}
+
+/* ── Layout ─────────────────────────────────────────────── */
+.container {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 0 24px;
+}
+
+section {
+  padding: 80px 0;
+}
+
+/* ── Hero ───────────────────────────────────────────────── */
+.hero {
+  padding: 100px 0 60px;
+  text-align: center;
+  position: relative;
+}
+
+.hero::before {
+  content: '';
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 500px;
+  background: radial-gradient(ellipse 60% 50% at 50% 0%, rgba(63,185,80,0.08) 0%, transparent 100%);
+  pointer-events: none;
+}
+
+.hero-label {
+  display: inline-block;
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--green);
+  border: 1px solid var(--green-dim);
+  border-radius: 20px;
+  padding: 4px 16px;
+  margin-bottom: 24px;
+  letter-spacing: 0.5px;
+}
+
+.hero h1 {
+  font-family: var(--mono);
+  font-size: clamp(56px, 10vw, 96px);
+  font-weight: 700;
+  color: var(--text-bright);
+  letter-spacing: -2px;
+  line-height: 1;
+  margin-bottom: 8px;
+}
+
+.hero h1 .cursor {
+  display: inline-block;
+  width: 3px;
+  height: 0.85em;
+  background: var(--green);
+  margin-left: 4px;
+  vertical-align: baseline;
+  animation: blink 1s step-end infinite;
+}
+
+@keyframes blink {
+  50% { opacity: 0; }
+}
+
+.hero h2 {
+  font-family: var(--sans);
+  font-size: clamp(16px, 2.5vw, 22px);
+  font-weight: 500;
+  color: var(--text-dim);
+  margin-bottom: 16px;
+}
+
+.hero .tagline {
+  font-size: clamp(15px, 2vw, 18px);
+  color: var(--text);
+  max-width: 600px;
+  margin: 0 auto 40px;
+}
+
+.hero .tagline em {
+  font-style: normal;
+  color: var(--green);
+  font-family: var(--mono);
+}
+
+.hero-actions {
+  display: flex;
+  gap: 16px;
+  justify-content: center;
+  flex-wrap: wrap;
+  margin-bottom: 20px;
+}
+
+.btn {
+  font-family: var(--mono);
+  font-size: 15px;
+  padding: 12px 28px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  cursor: pointer;
+  transition: all 0.2s;
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.btn-primary {
+  background: var(--green-dim);
+  border-color: var(--green);
+  color: var(--text-bright);
+}
+
+.btn-primary:hover {
+  background: var(--green);
+  color: #000;
+  text-decoration: none;
+}
+
+.btn-secondary {
+  background: var(--bg-raised);
+  color: var(--text);
+}
+
+.btn-secondary:hover {
+  border-color: var(--border-bright);
+  background: var(--bg-card);
+  text-decoration: none;
+}
+
+/* ── Terminal Mockup ────────────────────────────────────── */
+.terminal-wrapper {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 0 24px;
+}
+
+.terminal {
+  background: #010409;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+  box-shadow:
+    0 0 0 1px rgba(63,185,80,0.05),
+    0 16px 64px rgba(0,0,0,0.5),
+    0 4px 16px rgba(0,0,0,0.3);
+}
+
+.terminal-bar {
+  background: var(--bg-raised);
+  padding: 10px 16px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.terminal-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+}
+
+.terminal-dot.red { background: #ff5f57; }
+.terminal-dot.yellow { background: #febc2e; }
+.terminal-dot.green { background: #28c840; }
+
+.terminal-title {
+  flex: 1;
+  text-align: center;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.terminal-body {
+  padding: 0;
+  font-family: var(--mono);
+  font-size: 13px;
+  line-height: 1.45;
+  overflow-x: auto;
+  color: #c9d1d9;
+}
+
+.terminal-body pre {
+  margin: 0;
+  padding: 12px 16px;
+  white-space: pre;
+  min-width: 700px;
+}
+
+/* Terminal syntax colors */
+.t-dim { color: #484f58; }
+.t-green { color: #3fb950; }
+.t-cyan { color: #58a6ff; }
+.t-orange { color: #d29922; }
+.t-yellow { color: #e3b341; }
+.t-red { color: #f85149; }
+.t-white { color: #f0f6fc; }
+.t-bold { font-weight: 700; }
+.t-bg-orange { background: #d29922; color: #000; font-weight: 700; }
+.t-bg-selected { background: #1c3a5f; }
+.t-bg-blue { background: #1f3d6f; color: #58a6ff; }
+
+/* ── Features Grid ──────────────────────────────────────── */
+.features {
+  padding: 80px 0;
+}
+
+.section-label {
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--green);
+  text-transform: uppercase;
+  letter-spacing: 2px;
+  margin-bottom: 12px;
+}
+
+.section-title {
+  font-size: clamp(28px, 4vw, 40px);
+  font-weight: 700;
+  color: var(--text-bright);
+  margin-bottom: 12px;
+}
+
+.section-subtitle {
+  font-size: 17px;
+  color: var(--text-dim);
+  max-width: 560px;
+  margin-bottom: 48px;
+}
+
+.features-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 16px;
+}
+
+.feature-card {
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 24px;
+  transition: border-color 0.2s, transform 0.2s;
+}
+
+.feature-card:hover {
+  border-color: var(--border-bright);
+  transform: translateY(-2px);
+}
+
+.feature-icon {
+  font-family: var(--mono);
+  font-size: 24px;
+  margin-bottom: 12px;
+  display: block;
+  width: 44px;
+  height: 44px;
+  line-height: 44px;
+  text-align: center;
+  border-radius: 8px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+}
+
+.feature-icon.green { color: var(--green); }
+.feature-icon.cyan { color: var(--cyan); }
+.feature-icon.orange { color: var(--orange); }
+.feature-icon.yellow { color: var(--yellow); }
+.feature-icon.red { color: var(--red); }
+.feature-icon.purple { color: var(--purple); }
+
+.feature-card h3 {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-bright);
+  margin-bottom: 6px;
+}
+
+.feature-card p {
+  font-size: 14px;
+  color: var(--text-dim);
+  line-height: 1.5;
+}
+
+/* ── Install Section ────────────────────────────────────── */
+.install {
+  padding: 80px 0;
+  text-align: center;
+}
+
+.install-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 24px;
+  max-width: 700px;
+  margin: 0 auto;
+}
+
+.install-option {
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 28px 24px;
+  text-align: left;
+}
+
+.install-option h3 {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  margin-bottom: 16px;
+}
+
+.code-block {
+  background: #010409;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px;
+  font-family: var(--mono);
+  font-size: 14px;
+  color: var(--green);
+  position: relative;
+  overflow-x: auto;
+}
+
+.code-block .prompt { color: var(--text-dim); }
+.code-block .cmd { color: var(--text-bright); }
+
+.code-block + .code-block {
+  margin-top: 10px;
+}
+
+.copy-btn {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-dim);
+  font-family: var(--mono);
+  font-size: 11px;
+  padding: 4px 10px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.copy-btn:hover {
+  color: var(--text);
+  border-color: var(--border-bright);
+}
+
+.copy-btn.copied {
+  color: var(--green);
+  border-color: var(--green-dim);
+}
+
+.install-note {
+  margin-top: 24px;
+  font-size: 14px;
+  color: var(--text-dim);
+}
+
+.install-note code {
+  font-family: var(--mono);
+  background: var(--bg-raised);
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 13px;
+  color: var(--text);
+}
+
+/* ── Keyboard Shortcuts Preview ─────────────────────────── */
+.keys-section {
+  padding: 60px 0 80px;
+}
+
+.keys-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 12px;
+  max-width: 700px;
+  margin: 32px auto 0;
+}
+
+.key-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 14px;
+}
+
+.key-cap {
+  font-family: var(--mono);
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-bright);
+  background: var(--bg-card);
+  border: 1px solid var(--border-bright);
+  border-radius: 4px;
+  padding: 2px 8px;
+  min-width: 28px;
+  text-align: center;
+  box-shadow: 0 2px 0 var(--border);
+}
+
+.key-desc {
+  color: var(--text-dim);
+  font-size: 13px;
+}
+
+/* ── Footer ─────────────────────────────────────────────── */
+footer {
+  border-top: 1px solid var(--border);
+  padding: 40px 0;
+  text-align: center;
+}
+
+.footer-links {
+  display: flex;
+  justify-content: center;
+  gap: 32px;
+  flex-wrap: wrap;
+  margin-bottom: 20px;
+}
+
+.footer-links a {
+  font-family: var(--mono);
+  font-size: 14px;
+  color: var(--text-dim);
+  transition: color 0.2s;
+}
+
+.footer-links a:hover {
+  color: var(--text);
+  text-decoration: none;
+}
+
+.footer-copy {
+  font-size: 13px;
+  color: #484f58;
+}
+
+/* ── Divider ────────────────────────────────────────────── */
+.divider {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 0;
+}
+
+/* ── Responsive ─────────────────────────────────────────── */
+@media (max-width: 768px) {
+  .hero { padding: 60px 0 40px; }
+  section { padding: 60px 0; }
+  .features-grid { grid-template-columns: 1fr 1fr; gap: 12px; }
+  .feature-card { padding: 20px; }
+  .terminal-body { font-size: 11px; }
+  .terminal-body pre { padding: 10px 12px; }
+  .install-grid { grid-template-columns: 1fr; }
+  .keys-grid { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 480px) {
+  .features-grid { grid-template-columns: 1fr; }
+  .hero h1 { letter-spacing: -1px; }
+  .hero-actions { flex-direction: column; align-items: center; }
+  .btn { width: 100%; max-width: 280px; justify-content: center; }
+}
+
+/* ── Animations ─────────────────────────────────────────── */
+@keyframes fadeUp {
+  from { opacity: 0; transform: translateY(20px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.animate-in {
+  opacity: 0;
+  animation: fadeUp 0.6s ease-out forwards;
+}
+
+.animate-in.delay-1 { animation-delay: 0.1s; }
+.animate-in.delay-2 { animation-delay: 0.2s; }
+.animate-in.delay-3 { animation-delay: 0.3s; }
+.animate-in.delay-4 { animation-delay: 0.4s; }
+</style>
+</head>
+<body>
+
+<!-- ════════════════════════════════════════════════════════ -->
+<!-- HERO                                                    -->
+<!-- ════════════════════════════════════════════════════════ -->
+<section class="hero">
+  <div class="container">
+    <div class="animate-in">
+      <span class="hero-label">v1.0 -- zero dependencies</span>
+    </div>
+    <h1 class="animate-in delay-1">CTOP<span class="cursor"></span></h1>
+    <h2 class="animate-in delay-2">Claude Terminal Operations Panel</h2>
+    <p class="tagline animate-in delay-2">
+      Monitor and manage your Claude Code sessions in real-time &mdash; like <em>htop</em>, but for Claude.
+    </p>
+    <div class="hero-actions animate-in delay-3">
+      <a href="#install" class="btn btn-primary">$ npm install -g ctop-claude</a>
+      <a href="https://github.com/aakashadesara/ctop" class="btn btn-secondary">View on GitHub</a>
+    </div>
+  </div>
+</section>
+
+<!-- ════════════════════════════════════════════════════════ -->
+<!-- TERMINAL MOCKUP                                         -->
+<!-- ════════════════════════════════════════════════════════ -->
+<div class="terminal-wrapper animate-in delay-4">
+  <div class="terminal">
+    <div class="terminal-bar">
+      <div class="terminal-dot red"></div>
+      <div class="terminal-dot yellow"></div>
+      <div class="terminal-dot green"></div>
+      <div class="terminal-title">ctop &mdash; 3 sessions</div>
+    </div>
+    <div class="terminal-body">
+      <pre><span class="t-dim">────────────────────────────────────────────────────────────────────────────────────────</span>
+<span class="t-bg-orange">                          CTOP &#8212; Claude Terminal Operations Panel                          </span>
+<span class="t-dim">────────────────────────────────────────────────────────────────────────────────────────</span>
+<span class="t-dim"> Active: </span><span class="t-green">3</span><span class="t-dim"> | Dead/Stopped: </span><span class="t-red">0</span><span class="t-dim"> | Total Cost: </span><span class="t-green">$1.24</span><span class="t-dim"> | Sort: </span><span class="t-cyan">cpu</span><span class="t-dim"> | 14:32:07 </span>
+<span class="t-dim">────────────────────────────────────────────────────────────────────────────────────────</span>
+<span class="t-cyan t-bold">  PID      STATUS    CTX   STARTED     BRANCH            MODEL         CPU%   MEM%</span>
+<span class="t-dim">────────────────────────────────────────────────────────────────────────────────────────</span>
+<span class="t-bg-selected"><span class="t-white"> &#9654;</span> 48291    <span class="t-green">running</span>   <span class="t-green">73%</span>   2m ago      <span class="t-cyan">main</span>              <span class="t-dim">opus-4-6</span>      <span class="t-yellow">34.2</span>   2.1</span>
+  51034    <span class="t-green">running</span>   <span class="t-yellow">41%</span>   18m ago     <span class="t-cyan">feat/auth</span>         <span class="t-dim">sonnet-4-6</span>    <span class="t-dim">12.8</span>   1.4
+  52190    <span class="t-green">running</span>   <span class="t-orange">22%</span>   1h ago      <span class="t-cyan">fix/parser</span>        <span class="t-dim">sonnet-4-6</span>    <span class="t-dim"> 5.1</span>   0.9
+
+<span class="t-dim">  &#9484;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9488;</span>
+<span class="t-dim">  &#9474;</span> <span class="t-bold t-white">Selected: 48291</span>  <span class="t-dim">Model:</span> <span class="t-white">claude-opus-4-6</span>     <span class="t-dim">Cost:</span> <span class="t-green">$0.82</span>               <span class="t-dim">&#9474;</span>
+<span class="t-dim">  &#9474;</span> <span class="t-dim">Context:</span> <span class="t-green">&#9608;&#9608;&#9608;&#9608;&#9608;&#9608;</span><span class="t-cyan">&#9608;&#9608;</span><span class="t-yellow">&#9608;</span><span class="t-dim">&#9617;&#9617;&#9617;&#9617;&#9617;&#9617;&#9617;&#9617;&#9617;&#9617;&#9617;&#9617;&#9617;&#9617;&#9617;&#9617;&#9617;&#9617;&#9617;&#9617;&#9617;</span> <span class="t-green">73% free</span>                   <span class="t-dim">&#9474;</span>
+<span class="t-dim">  &#9474;</span> <span class="t-green">&#9608;</span> <span class="t-dim">Input</span>  <span class="t-white">32,841</span>    <span class="t-cyan">&#9608;</span> <span class="t-dim">Cache R</span>  <span class="t-white">12,190</span>                                 <span class="t-dim">&#9474;</span>
+<span class="t-dim">  &#9474;</span> <span class="t-yellow">&#9608;</span> <span class="t-dim">Output</span>  <span class="t-white">8,420</span>    <span class="t-dim">&#9617; Free</span>   <span class="t-white">146,549</span>                                <span class="t-dim">&#9474;</span>
+<span class="t-dim">  &#9474;</span> <span class="t-dim">Branch:</span> <span class="t-cyan">main</span>  <span class="t-dim">Slug:</span> <span class="t-white">ctop</span>  <span class="t-dim">Turn:</span> <span class="t-white">4.2s</span>                              <span class="t-dim">&#9474;</span>
+<span class="t-dim">  &#9492;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9496;</span>
+<span class="t-dim">────────────────────────────────────────────────────────────────────────────────────────</span>
+<span class="t-dim"> j/k</span> navigate  <span class="t-dim">x</span> kill  <span class="t-dim">s</span> sort  <span class="t-dim">/</span> filter  <span class="t-dim">P</span> pane view  <span class="t-dim">r</span> refresh  <span class="t-dim">?</span> help  <span class="t-dim">q</span> quit</pre>
+    </div>
+  </div>
+</div>
+
+<!-- ════════════════════════════════════════════════════════ -->
+<!-- FEATURES                                                -->
+<!-- ════════════════════════════════════════════════════════ -->
+<section class="features" id="features">
+  <div class="container">
+    <p class="section-label">Features</p>
+    <h2 class="section-title">Everything you need, nothing you don't.</h2>
+    <p class="section-subtitle">Zero dependencies. Single file. Instant startup. Just the essentials for keeping tabs on your Claude sessions.</p>
+
+    <div class="features-grid">
+      <div class="feature-card">
+        <span class="feature-icon green">&gt;_</span>
+        <h3>Real-time monitoring</h3>
+        <p>CPU, memory, status, and uptime for every Claude Code session. Auto-refreshes on a configurable interval.</p>
+      </div>
+      <div class="feature-card">
+        <span class="feature-icon cyan">[=]</span>
+        <h3>Context window tracking</h3>
+        <p>Visual bar showing input, cache, output, and free tokens out of the 200k context window &mdash; color-coded by saturation.</p>
+      </div>
+      <div class="feature-card">
+        <span class="feature-icon orange">$</span>
+        <h3>Cost estimation</h3>
+        <p>Per-session and total cost calculated from token usage and model pricing. Supports Opus, Sonnet, and Haiku.</p>
+      </div>
+      <div class="feature-card">
+        <span class="feature-icon yellow">~</span>
+        <h3>Sparkline graphs</h3>
+        <p>Inline CPU and memory history sparklines rendered right in the process list. See trends at a glance.</p>
+      </div>
+      <div class="feature-card">
+        <span class="feature-icon cyan">/</span>
+        <h3>Sort &amp; filter</h3>
+        <p>Sort by CPU, memory, context usage, or age. Filter by branch, model, directory, slug, or title.</p>
+      </div>
+      <div class="feature-card">
+        <span class="feature-icon red">x</span>
+        <h3>Process control</h3>
+        <p>Kill individual sessions or nuke them all. Graceful SIGTERM or force SIGKILL. Clean up zombies in one keystroke.</p>
+      </div>
+      <div class="feature-card">
+        <span class="feature-icon purple">vim</span>
+        <h3>Vim-style navigation</h3>
+        <p>Navigate with h/j/k/l, jump with g/G. Two view modes: list and pane grid. Feels like home.</p>
+      </div>
+      <div class="feature-card">
+        <span class="feature-icon green">{}</span>
+        <h3>Configurable settings</h3>
+        <p>Tune refresh interval, context limit, and default view via ~/.ctoprc or CLI flags. Your terminal, your rules.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<hr class="divider">
+
+<!-- ════════════════════════════════════════════════════════ -->
+<!-- KEYBOARD SHORTCUTS                                      -->
+<!-- ════════════════════════════════════════════════════════ -->
+<section class="keys-section" id="keys">
+  <div class="container" style="text-align: center;">
+    <p class="section-label">Keyboard-driven</p>
+    <h2 class="section-title">No mouse required.</h2>
+    <p class="section-subtitle" style="margin-left: auto; margin-right: auto;">Every action is a single keystroke away. If you know vim, you already know ctop.</p>
+
+    <div class="keys-grid">
+      <div class="key-item">
+        <span class="key-cap">j/k</span>
+        <span class="key-desc">Navigate up/down</span>
+      </div>
+      <div class="key-item">
+        <span class="key-cap">s</span>
+        <span class="key-desc">Cycle sort mode</span>
+      </div>
+      <div class="key-item">
+        <span class="key-cap">/</span>
+        <span class="key-desc">Filter processes</span>
+      </div>
+      <div class="key-item">
+        <span class="key-cap">x</span>
+        <span class="key-desc">Kill selected</span>
+      </div>
+      <div class="key-item">
+        <span class="key-cap">P</span>
+        <span class="key-desc">Toggle pane view</span>
+      </div>
+      <div class="key-item">
+        <span class="key-cap">?</span>
+        <span class="key-desc">Show help</span>
+      </div>
+      <div class="key-item">
+        <span class="key-cap">r</span>
+        <span class="key-desc">Force refresh</span>
+      </div>
+      <div class="key-item">
+        <span class="key-cap">q</span>
+        <span class="key-desc">Quit</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<hr class="divider">
+
+<!-- ════════════════════════════════════════════════════════ -->
+<!-- INSTALL                                                 -->
+<!-- ════════════════════════════════════════════════════════ -->
+<section class="install" id="install">
+  <div class="container">
+    <p class="section-label">Get started</p>
+    <h2 class="section-title">Install in seconds.</h2>
+    <p class="section-subtitle" style="margin-left: auto; margin-right: auto;">Requires Node.js 18+ and macOS or Linux.</p>
+
+    <div class="install-grid">
+      <div class="install-option">
+        <h3>Global install</h3>
+        <div class="code-block">
+          <button class="copy-btn" onclick="copyCode(this, 'npm install -g ctop-claude')">copy</button>
+          <span class="prompt">$</span> <span class="cmd">npm install -g ctop-claude</span>
+        </div>
+        <div class="code-block" style="margin-top: 10px;">
+          <button class="copy-btn" onclick="copyCode(this, 'ctop')">copy</button>
+          <span class="prompt">$</span> <span class="cmd">ctop</span>
+        </div>
+      </div>
+
+      <div class="install-option">
+        <h3>Run without installing</h3>
+        <div class="code-block">
+          <button class="copy-btn" onclick="copyCode(this, 'npx ctop-claude')">copy</button>
+          <span class="prompt">$</span> <span class="cmd">npx ctop-claude</span>
+        </div>
+      </div>
+    </div>
+
+    <p class="install-note" style="margin-top: 28px;">
+      Or clone from source: <code>git clone https://github.com/aakashadesara/ctop.git</code>
+    </p>
+  </div>
+</section>
+
+<!-- ════════════════════════════════════════════════════════ -->
+<!-- FOOTER                                                  -->
+<!-- ════════════════════════════════════════════════════════ -->
+<footer>
+  <div class="container">
+    <div class="footer-links">
+      <a href="https://github.com/aakashadesara/ctop">GitHub</a>
+      <a href="https://www.npmjs.com/package/ctop-claude">npm</a>
+      <a href="https://github.com/aakashadesara/ctop/blob/main/LICENSE">MIT License</a>
+      <a href="https://github.com/aakashadesara/ctop/issues">Issues</a>
+    </div>
+    <p class="footer-copy">CTOP &mdash; Made for the Claude Code community.</p>
+  </div>
+</footer>
+
+<script>
+// ── Copy-to-clipboard ──────────────────────────────────────
+function copyCode(btn, text) {
+  navigator.clipboard.writeText(text).then(function() {
+    btn.textContent = 'copied!';
+    btn.classList.add('copied');
+    setTimeout(function() {
+      btn.textContent = 'copy';
+      btn.classList.remove('copied');
+    }, 2000);
+  });
+}
+
+// ── Scroll-triggered fade-in ────────────────────────────────
+(function() {
+  var observer = new IntersectionObserver(function(entries) {
+    entries.forEach(function(entry) {
+      if (entry.isIntersecting) {
+        entry.target.style.opacity = '1';
+        entry.target.style.transform = 'translateY(0)';
+      }
+    });
+  }, { threshold: 0.1 });
+
+  document.querySelectorAll('.feature-card, .install-option, .key-item').forEach(function(el) {
+    el.style.opacity = '0';
+    el.style.transform = 'translateY(16px)';
+    el.style.transition = 'opacity 0.5s ease, transform 0.5s ease';
+    observer.observe(el);
+  });
+})();
+</script>
+</body>
+</html>

@@ -115,21 +115,42 @@ function formatTokenCount(n) {
 }
 
 function calculateAggregateStats(procs) {
-  let totalInput = 0, totalOutput = 0, totalCacheRead = 0, totalCacheWrite = 0;
-  let totalCost = 0, ctxSum = 0, ctxCount = 0, active = 0, dead = 0;
+  let totalInput = 0;
+  let totalOutput = 0;
+  let totalCacheRead = 0;
+  let totalCacheWrite = 0;
+  let totalCost = 0;
+  let ctxSum = 0;
+  let ctxCount = 0;
+  let active = 0;
+  let dead = 0;
+
   for (const p of procs) {
     if (p.inputTokens != null) totalInput += p.inputTokens;
     if (p.outputTokens != null) totalOutput += p.outputTokens;
     if (p.cacheReadTokens != null) totalCacheRead += p.cacheReadTokens;
     if (p.cacheCreateTokens != null) totalCacheWrite += p.cacheCreateTokens;
     totalCost += (p.cost || 0);
-    if (p.contextPct != null) { ctxSum += (100 - p.contextPct); ctxCount++; }
-    if (p.isActive) active++; else dead++;
+    if (p.contextPct != null) {
+      ctxSum += (100 - p.contextPct);
+      ctxCount++;
+    }
+    if (p.isActive) active++;
+    else dead++;
   }
-  return { totalInput, totalOutput, totalCacheRead, totalCacheWrite,
-    totalCache: totalCacheRead + totalCacheWrite, totalCost,
+
+  return {
+    totalInput,
+    totalOutput,
+    totalCacheRead,
+    totalCacheWrite,
+    totalCache: totalCacheRead + totalCacheWrite,
+    totalCost,
     avgContextUtil: ctxCount > 0 ? Math.round(ctxSum / ctxCount) : null,
-    active, dead, total: procs.length };
+    active,
+    dead,
+    total: procs.length,
+  };
 }
 
 // ANSI escape codes
@@ -513,17 +534,26 @@ function applySortAndFilter() {
   }
 }
 
-function renderDashboard(cols) {
-  const s = calculateAggregateStats(allProcesses);
-  let o = '';
-  o += `${DIM} Tokens  ${RESET}${GREEN}In: ${formatTokenCount(s.totalInput)}${RESET}${DIM} | ${RESET}${YELLOW}Out: ${formatTokenCount(s.totalOutput)}${RESET}${DIM} | ${RESET}${CYAN}Cache: ${formatTokenCount(s.totalCache)}${RESET}${CLR_LINE}\n`;
-  const uStr = s.avgContextUtil !== null ? `${s.avgContextUtil}%` : '--';
-  let uC = GREEN;
-  if (s.avgContextUtil !== null) { if (s.avgContextUtil > 80) uC = RED; else if (s.avgContextUtil > 50) uC = YELLOW; }
-  let cC = GREEN;
-  if (s.totalCost > 5) cC = RED; else if (s.totalCost >= 1) cC = YELLOW;
-  o += `${DIM} Avg Ctx ${RESET}${uC}${uStr}${RESET}${DIM} | Cost: ${RESET}${cC}${formatCost(s.totalCost > 0 ? s.totalCost : null)}${RESET}${DIM} | Sessions: ${RESET}${GREEN}${s.active}${RESET}${DIM} active ${RESET}${RED}${s.dead}${RESET}${DIM} dead ${RESET}${WHITE}${s.total}${RESET}${DIM} total${RESET}${CLR_LINE}\n`;
-  return o;
+function renderDashboard(columns) {
+  const stats = calculateAggregateStats(allProcesses);
+  let out = '';
+  const inStr = `In: ${formatTokenCount(stats.totalInput)}`;
+  const outStr = `Out: ${formatTokenCount(stats.totalOutput)}`;
+  const cacheStr = `Cache: ${formatTokenCount(stats.totalCache)}`;
+  out += `${DIM} Tokens  ${RESET}${GREEN}${inStr}${RESET}${DIM} | ${RESET}${YELLOW}${outStr}${RESET}${DIM} | ${RESET}${CYAN}${cacheStr}${RESET}${CLR_LINE}\n`;
+  const utilStr = stats.avgContextUtil !== null ? `${stats.avgContextUtil}%` : '--';
+  let utilColor = GREEN;
+  if (stats.avgContextUtil !== null) {
+    if (stats.avgContextUtil > 80) utilColor = RED;
+    else if (stats.avgContextUtil > 50) utilColor = YELLOW;
+  }
+  let costColor = GREEN;
+  if (stats.totalCost > 5) costColor = RED;
+  else if (stats.totalCost >= 1) costColor = YELLOW;
+  out += `${DIM} Avg Ctx ${RESET}${utilColor}${utilStr}${RESET}`;
+  out += `${DIM} | Cost: ${RESET}${costColor}${formatCost(stats.totalCost > 0 ? stats.totalCost : null)}${RESET}`;
+  out += `${DIM} | Sessions: ${RESET}${GREEN}${stats.active}${RESET}${DIM} active ${RESET}${RED}${stats.dead}${RESET}${DIM} dead ${RESET}${WHITE}${stats.total}${RESET}${DIM} total${RESET}${CLR_LINE}\n`;
+  return out;
 }
 
 function renderHeader(columns) {
@@ -738,6 +768,7 @@ function renderPaneMode() {
   output += `${BOLD} KEYS:${RESET} `;
   output += `${CYAN}hjkl${RESET} Nav  `;
   output += `${RED}x${RESET} Kill  ${RED}X${RESET} Force  `;
+  output += `${CYAN}o${RESET} Open  `;
   output += `${CYAN}s${RESET} Sort  ${CYAN}/${RESET} Filter  `;
   output += `${CYAN}d${RESET} Dash  ${CYAN}P${RESET} List  ${CYAN}r${RESET} Refresh  ${CYAN}q${RESET} Quit  ${CYAN}?${RESET} Help${CLR_LINE}`;
 
@@ -1152,10 +1183,89 @@ function render() {
   output += `${BOLD} KEYS:${RESET} `;
   output += `${CYAN}jk${RESET} Nav  `;
   output += `${RED}x${RESET} Kill  ${RED}X${RESET} Force  `;
+  output += `${CYAN}o${RESET} Open  `;
   output += `${CYAN}s${RESET} Sort  ${CYAN}/${RESET} Filter  `;
   output += `${CYAN}d${RESET} Dash  ${CYAN}P${RESET} Pane  ${CYAN}r${RESET} Refresh  ${CYAN}q${RESET} Quit  ${CYAN}?${RESET} Help${CLR_LINE}`;
 
   process.stdout.write(output);
+}
+
+function openDirectory(cwd, mode) {
+  // Validate cwd
+  if (!cwd) {
+    return { error: 'No working directory for this process' };
+  }
+  try {
+    if (!fs.existsSync(cwd)) {
+      return { error: `Directory does not exist: ${cwd}` };
+    }
+  } catch (e) {
+    return { error: `Directory does not exist: ${cwd}` };
+  }
+
+  let command, args, message;
+
+  switch (mode) {
+    case 'finder':
+      if (IS_MAC) {
+        command = 'open';
+        args = [cwd];
+      } else {
+        command = 'xdg-open';
+        args = [cwd];
+      }
+      message = `Opened ${cwd}`;
+      break;
+
+    case 'editor': {
+      const editor = process.env.EDITOR || 'code';
+      command = editor;
+      args = [cwd];
+      message = `Opened in editor: ${cwd}`;
+      break;
+    }
+
+    case 'terminal':
+      if (IS_MAC) {
+        command = 'osascript';
+        args = ['-e', `tell app "Terminal" to do script "cd ${cwd}"`];
+      } else {
+        // Try gnome-terminal first, fall back to xterm
+        try {
+          execSync('which gnome-terminal', { stdio: 'pipe' });
+          command = 'gnome-terminal';
+          args = ['--working-directory=' + cwd];
+        } catch (e) {
+          command = 'xterm';
+          args = ['-e', `cd ${cwd} && ${process.env.SHELL || '/bin/sh'}`];
+        }
+      }
+      message = `Opened terminal in ${cwd}`;
+      break;
+
+    default:
+      return { error: `Unknown mode: ${mode}` };
+  }
+
+  return { command, args, message };
+}
+
+function execOpenDirectory(cwd, mode) {
+  const result = openDirectory(cwd, mode);
+  if (result.error) {
+    statusMessage = result.error;
+    return;
+  }
+  try {
+    const child = spawn(result.command, result.args, {
+      detached: true,
+      stdio: 'ignore',
+    });
+    child.unref();
+    statusMessage = result.message;
+  } catch (e) {
+    statusMessage = `Failed to open: ${e.message}`;
+  }
 }
 
 function killProcess(pid, force = false) {
@@ -1210,6 +1320,9 @@ function showHelp() {
   output += `  ${CYAN}X${RESET}         Force kill selected process (SIGKILL)\n`;
   output += `  ${CYAN}K${RESET}         Kill ALL Claude processes (with confirmation)\n`;
   output += `  ${CYAN}A${RESET}         Kill ALL stopped/dead processes (with confirmation)\n`;
+  output += `  ${CYAN}o${RESET}         Open working directory in file manager\n`;
+  output += `  ${CYAN}e${RESET}         Open working directory in editor ($EDITOR or code)\n`;
+  output += `  ${CYAN}t${RESET}         Open new terminal tab in working directory\n`;
   output += `  ${CYAN}r${RESET}         Refresh process list\n`;
   output += `  ${CYAN}d${RESET}         Toggle aggregate dashboard stats\n\n`;
 
@@ -1458,6 +1571,27 @@ function handleInput(key) {
       break;
     }
 
+    case 'o':
+      if (processes[selectedIndex]) {
+        execOpenDirectory(processes[selectedIndex].cwd, 'finder');
+        render();
+      }
+      break;
+
+    case 'e':
+      if (processes[selectedIndex]) {
+        execOpenDirectory(processes[selectedIndex].cwd, 'editor');
+        render();
+      }
+      break;
+
+    case 't':
+      if (processes[selectedIndex]) {
+        execOpenDirectory(processes[selectedIndex].cwd, 'terminal');
+        render();
+      }
+      break;
+
     case 's': {
       // Cycle sort mode
       const si = SORT_MODES.indexOf(sortMode);
@@ -1585,6 +1719,7 @@ module.exports = {
   getSessionData,
   applySortAndFilter,
   getCardsPerRow,
+  openDirectory,
   DEFAULT_CONFIG,
   // Expose internals for testing
   _state: { get allProcesses() { return allProcesses; }, set allProcesses(v) { allProcesses = v; },
