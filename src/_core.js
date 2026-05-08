@@ -2943,10 +2943,30 @@ function scanSessionFilesForHistory() {
         const fp = path.join(projectPath, file);
         try {
           const fstat = fs.statSync(fp);
-          // Use file mtime as session date
-          const dateKey = fstat.mtime.toISOString().slice(0, 10);
-          // Read last 32KB for usage data
+          if (fstat.size === 0) continue;
           const fd = fs.openSync(fp, 'r');
+
+          // Read first 4KB to find the actual session timestamp
+          const headSize = Math.min(4096, fstat.size);
+          const headBuf = Buffer.alloc(headSize);
+          fs.readSync(fd, headBuf, 0, headSize, 0);
+          let dateKey = null;
+          for (const line of headBuf.toString('utf8').split('\n')) {
+            if (!line.trim()) continue;
+            try {
+              const d = JSON.parse(line);
+              if (d.timestamp) {
+                dateKey = d.timestamp.slice(0, 10); // YYYY-MM-DD
+                break;
+              }
+            } catch {}
+          }
+          // Fallback to mtime if no timestamp found in content
+          if (!dateKey) {
+            dateKey = fstat.mtime.toISOString().slice(0, 10);
+          }
+
+          // Read last 32KB for usage data
           const tailSize = Math.min(32768, fstat.size);
           const buf = Buffer.alloc(tailSize);
           fs.readSync(fd, buf, 0, tailSize, fstat.size - tailSize);
