@@ -9,6 +9,7 @@ const os = require('os');
 const PLATFORM = os.platform(); // 'darwin', 'linux', 'win32'
 const IS_MAC = PLATFORM === 'darwin';
 const IS_LINUX = PLATFORM === 'linux';
+const IS_WIN = PLATFORM === 'win32';
 
 // ANSI escape codes
 const ESC = '\x1b';
@@ -460,6 +461,13 @@ function sendNotification(title, message) {
       spawn('osascript', ['-e', `display notification "${message}" with title "${title}"`], {
         detached: true, stdio: 'ignore'
       }).unref();
+    } else if (IS_WIN) {
+      const safeTitle = title.replace(/'/g, "''");
+      const safeMsg = message.replace(/'/g, "''");
+      spawn('powershell', ['-Command',
+        `Add-Type -AssemblyName System.Windows.Forms; ` +
+        `[System.Windows.Forms.MessageBox]::Show('${safeMsg}','${safeTitle}')`
+      ], { detached: true, stdio: 'ignore' }).unref();
     } else if (IS_LINUX) {
       spawn('notify-send', [title, message], {
         detached: true, stdio: 'ignore'
@@ -549,7 +557,85 @@ function checkStateTransitions(currentProcs) {
   }
 }
 
+function getClaudeProcessesWindows() {
+  try {
+    const psCmd = `powershell -Command "Get-Process | Where-Object {$_.CommandLine -like '*claude*' -and $_.CommandLine -notlike '*claude-manager*' -and $_.CommandLine -notlike '*ctop*'} | Select-Object Id,CPU,WorkingSet64,StartTime,CommandLine | ConvertTo-Json"`;
+    const output = execSync(psCmd, { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
+    if (!output) return [];
+
+    let parsed = JSON.parse(output);
+    // PowerShell returns a single object (not array) when there is only one match
+    if (!Array.isArray(parsed)) parsed = [parsed];
+
+    const procs = [];
+    const totalMem = os.totalmem();
+
+    for (const p of parsed) {
+      if (!p || !p.Id) continue;
+      const pid = String(p.Id);
+      const cpuVal = p.CPU != null ? parseFloat(p.CPU) : 0;
+      const memBytes = p.WorkingSet64 || 0;
+      const memPct = totalMem > 0 ? (memBytes / totalMem * 100) : 0;
+      const command = p.CommandLine || '';
+
+      // Parse start time — PowerShell serializes dates as "/Date(ms)/" strings
+      let startDate = new Date();
+      if (p.StartTime) {
+        const m = String(p.StartTime).match(/\/Date\((\d+)\)\//);
+        if (m) startDate = new Date(parseInt(m[1], 10));
+        else startDate = new Date(p.StartTime);
+      }
+
+      const startTime = formatStartTime(startDate);
+      const cwd = getProcessCwd(pid);
+
+      procs.push({
+        pid,
+        cpu: cpuVal,
+        mem: parseFloat(memPct.toFixed(1)),
+        stat: 'R',
+        startDate,
+        startTime,
+        command,
+        cwd,
+        title: 'Claude Code',
+        contextPct: null,
+        model: null,
+        stopReason: null,
+        gitBranch: null,
+        slug: null,
+        sessionId: null,
+        version: null,
+        userType: null,
+        inputTokens: null,
+        cacheCreateTokens: null,
+        cacheReadTokens: null,
+        outputTokens: null,
+        serviceTier: null,
+        timestamp: null,
+        requestId: null,
+        lastTurnMs: null,
+        isActive: true,
+        isZombie: false,
+        isStopped: false,
+        status: 'ACTIVE'
+      });
+    }
+
+    procs.sort((a, b) => a.startDate - b.startDate);
+    assignSessionsToProcesses(procs);
+    for (const proc of procs) {
+      proc.cost = calculateCost(proc);
+    }
+    return procs;
+  } catch (e) {
+    return [];
+  }
+}
+
 function getClaudeProcesses() {
+  if (IS_WIN) return getClaudeProcessesWindows();
+
   try {
     // Get all claude processes with elapsed time for sorting
     // Using lstart for actual start time sorting
@@ -657,7 +743,20 @@ function formatStartTime(date) {
 
 function getProcessCwd(pid) {
   try {
-    if (IS_LINUX) {
+    if (IS_WIN) {
+      // Windows: use PowerShell to get the working directory via CIM
+      // This queries the Win32_Process WMI class for the ExecutablePath,
+      // but CWD is not reliably available on Windows. We try wmic first.
+      try {
+        const output = execSync(
+          `powershell -Command "(Get-CimInstance Win32_Process -Filter \\"ProcessId=${pid}\\").ExecutablePath"`,
+          { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }
+        ).trim();
+        // ExecutablePath gives us the exe location; derive a working directory from it
+        if (output) return path.dirname(output);
+      } catch (e2) {}
+      return '';
+    } else if (IS_LINUX) {
       // Linux: read /proc/<pid>/cwd symlink
       return fs.readlinkSync(`/proc/${pid}/cwd`);
     } else {
@@ -818,14 +917,21 @@ function searchSessionContent(projectPath, sessionFile, query) {
   return result;
 }
 
+// Convert a cwd path to the Claude project directory name.
+// On Unix: /Users/foo/project -> -Users-foo-project
+// On Windows: C:\Users\foo\project -> C-Users-foo-project
+function cwdToProjectDirName(cwd) {
+  return cwd.replace(/[\\/]/g, '-').replace(/:/g, '');
+}
+
 function executeSearch(query) {
   searchResults.clear();
   if (!query) return;
 
   for (const proc of processes) {
     if (!proc.cwd) continue;
-    const projectDirName = proc.cwd.replace(/\//g, '-');
-    const projectPath = path.join(process.env.HOME, '.claude', 'projects', projectDirName);
+    const projectDirName = cwdToProjectDirName(proc.cwd);
+    const projectPath = path.join(os.homedir(), '.claude', 'projects', projectDirName);
     if (!fs.existsSync(projectPath)) continue;
 
     const files = getSessionFilesForProject(projectPath);
@@ -878,8 +984,8 @@ function assignSessionsToProcesses(procs) {
   }
 
   for (const [cwd, groupProcs] of groups) {
-    const projectDirName = cwd.replace(/\//g, '-');
-    const projectPath = path.join(process.env.HOME, '.claude', 'projects', projectDirName);
+    const projectDirName = cwdToProjectDirName(cwd);
+    const projectPath = path.join(os.homedir(), '.claude', 'projects', projectDirName);
 
     if (!fs.existsSync(projectPath)) continue;
 
@@ -908,7 +1014,7 @@ function assignSessionsToProcesses(procs) {
   // Set fallback titles for processes that still have default
   for (const proc of procs) {
     if (proc.title === 'Claude Code' && proc.cwd) {
-      const parts = proc.cwd.split('/').filter(Boolean);
+      const parts = proc.cwd.split(/[\\/]/).filter(Boolean);
       proc.title = parts.length >= 2
         ? parts[parts.length - 2] + '/' + parts[parts.length - 1]
         : parts[parts.length - 1] || proc.cwd;
@@ -1427,7 +1533,7 @@ function renderDetailPane(proc, startRow, paneCol, paneWidth, availRows) {
 
   // Directory shortened
   let dir = proc.cwd || '--';
-  if (dir.startsWith(process.env.HOME)) dir = '~' + dir.substring(process.env.HOME.length);
+  if (dir.startsWith(os.homedir())) dir = '~' + dir.substring(os.homedir().length);
 
   // Row pairs
   if (r < startRow + availRows - 1)
@@ -1778,8 +1884,8 @@ function render() {
       // Directory
       const dirMaxLen = listWidth - fixedColsTotal;
       let dir = proc.cwd || '';
-      if (dir.startsWith(process.env.HOME)) {
-        dir = '~' + dir.substring(process.env.HOME.length);
+      if (dir.startsWith(os.homedir())) {
+        dir = '~' + dir.substring(os.homedir().length);
       }
       if (dir.length > dirMaxLen) {
         dir = '...' + dir.substring(dir.length - dirMaxLen + 3);
@@ -1883,6 +1989,9 @@ function openDirectory(cwd, mode) {
       if (IS_MAC) {
         command = 'open';
         args = [cwd];
+      } else if (IS_WIN) {
+        command = 'explorer';
+        args = [cwd];
       } else {
         command = 'xdg-open';
         args = [cwd];
@@ -1902,6 +2011,9 @@ function openDirectory(cwd, mode) {
       if (IS_MAC) {
         command = 'osascript';
         args = ['-e', `tell app "Terminal" to do script "cd ${cwd}"`];
+      } else if (IS_WIN) {
+        command = 'cmd';
+        args = ['/c', 'start', 'cmd', '/k', `cd /d ${cwd}`];
       } else {
         // Try gnome-terminal first, fall back to xterm
         try {
@@ -1941,15 +2053,26 @@ function execOpenDirectory(cwd, mode) {
   }
 }
 
+function buildKillCommand(pid, force = false) {
+  if (IS_WIN) {
+    return `taskkill ${force ? '/F ' : ''}/PID ${pid}`;
+  }
+  const signal = force ? 9 : 15;  // SIGKILL=9, SIGTERM=15
+  return `kill -${signal} ${pid} 2>&1`;
+}
+
 function killProcess(pid, force = false) {
   try {
-    // Use numeric signals for better compatibility
-    const signal = force ? 9 : 15;  // SIGKILL=9, SIGTERM=15
-    execSync(`kill -${signal} ${pid} 2>&1`, { encoding: 'utf8' });
+    execSync(buildKillCommand(pid, force), { encoding: 'utf8' });
     statusMessage = `${force ? 'Force killed' : 'Killed'} process ${pid}`;
     return true;
   } catch (e) {
-    // Check if process still exists
+    if (IS_WIN) {
+      // On Windows, taskkill returns non-zero if the process doesn't exist
+      statusMessage = `Process ${pid} already terminated or could not be killed`;
+      return true;
+    }
+    // Check if process still exists (Unix)
     try {
       execSync(`kill -0 ${pid} 2>&1`);
       statusMessage = `Failed to kill process ${pid}: ${e.message}`;
@@ -2689,6 +2812,13 @@ module.exports = {
   formatDuration,
   formatNotificationMessage,
   checkStateTransitions,
+  // Windows / cross-platform exports
+  buildKillCommand,
+  cwdToProjectDirName,
+  IS_MAC,
+  IS_LINUX,
+  IS_WIN,
+  PLATFORM,
   // Expose internals for testing
   _state: { get allProcesses() { return allProcesses; }, set allProcesses(v) { allProcesses = v; },
             get processes() { return processes; }, set processes(v) { processes = v; },

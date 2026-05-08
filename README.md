@@ -1,7 +1,7 @@
 # CTOP — Claude Terminal Operations Panel
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Platform: macOS | Linux](https://img.shields.io/badge/Platform-macOS%20%7C%20Linux-lightgrey.svg)](#requirements)
+[![Platform: macOS | Linux | Windows](https://img.shields.io/badge/Platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey.svg)](#requirements)
 [![Node.js](https://img.shields.io/badge/Node.js-18%2B-green.svg)](#requirements)
 [![Zero Dependencies](https://img.shields.io/badge/Dependencies-Zero-brightgreen.svg)](#)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](#contributing)
@@ -26,7 +26,7 @@ Track CPU, memory, token usage, context window saturation, active branches, and 
 - **Vim-style navigation** — `hjkl`, `g`/`G`, arrow keys
 - **Sort & filter** — sort by CPU, memory, context %; filter by branch, model, directory, or slug
 - **Configurable** — refresh interval, context limit, default view via `~/.ctoprc` or CLI flags
-- **Cross-platform** — macOS and Linux (Windows planned)
+- **Cross-platform** — macOS, Linux, and Windows
 - **Zero dependencies** — pure Node.js, no `npm install` required
 - **Auto-refresh** — configurable interval (default 5s)
 
@@ -174,15 +174,19 @@ CLI flags override config file values.
 
 ## Requirements
 
-- **macOS or Linux** (uses `ps` + `lsof` on macOS, `ps` + `/proc` on Linux)
+- **macOS, Linux, or Windows** (uses `ps` + `lsof` on macOS, `ps` + `/proc` on Linux, PowerShell on Windows)
 - **Node.js 18+**
 - **Claude Code** installed and running sessions
+
+### Windows notes
+
+On Windows, ctop uses PowerShell to detect Claude processes and retrieve process information. Process working-directory detection is limited compared to macOS/Linux -- ctop will fall back to the executable path when the true CWD is unavailable. Kill uses `taskkill`, file explorer uses `explorer`, and terminal opens `cmd`. Notifications use a PowerShell `MessageBox` popup.
 
 ---
 
 ## How it works
 
-`ctop` reads process info from `ps`, resolves working directories via `lsof`, and enriches each process with session metadata by parsing Claude Code's local `.jsonl` session files in `~/.claude/projects/`. No network calls. No external dependencies. Everything stays local.
+`ctop` reads process info from `ps` (or PowerShell on Windows), resolves working directories via `lsof` (or `Get-CimInstance` on Windows), and enriches each process with session metadata by parsing Claude Code's local `.jsonl` session files in `~/.claude/projects/`. No network calls. No external dependencies. Everything stays local.
 
 ---
 
@@ -193,7 +197,7 @@ CLI flags override config file values.
 - [x] **Configurable settings** — refresh interval, context limit, default view
 - [x] **Sort** — cycle through age, CPU, memory, context %
 - [x] **Filter** — search by branch, model, directory, slug, title
-- [ ] **Windows support** — PowerShell-based process detection
+- [x] **Windows support** — PowerShell-based process detection
 - [ ] **Homebrew formula** — `brew install ctop`
 - [ ] **Process log tailing** — stream a session's output in a split pane
 - [ ] **Color themes** — custom or preset color schemes
@@ -216,8 +220,7 @@ cd ctop
 
 A few areas where contributions would be especially helpful:
 
-- **Windows compatibility** — the biggest gap right now
-- **Tests** — there are none yet
+- **Windows testing** — basic support is in, needs real-world validation
 - **Linux testing** — basic support is in, needs real-world validation
 - **Performance** — profiling on systems with many Claude sessions
 - **UI polish** — better responsive layouts, color themes
