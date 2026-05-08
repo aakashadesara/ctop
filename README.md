@@ -10,8 +10,7 @@
 
 Track CPU, memory, token usage, context window saturation, active branches, and more — all from a single terminal pane.
 
-<!-- TODO: Add hero screenshot -->
-<!-- ![ctop screenshot](assets/screenshot.png) -->
+![CTOP Detail Pane](assets/detail-pane.svg)
 
 ---
 
@@ -30,11 +29,9 @@ Track CPU, memory, token usage, context window saturation, active branches, and 
 - **Zero dependencies** — pure Node.js, no `npm install` required
 - **Auto-refresh** — configurable interval (default 5s)
 
-<!-- TODO: Add screenshot of list view -->
-<!-- ![List view](assets/list-view.png) -->
+![CTOP List View](assets/list-view.svg)
 
-<!-- TODO: Add screenshot of pane view -->
-<!-- ![Pane view](assets/pane-view.png) -->
+![CTOP Pane View](assets/pane-view.svg)
 
 ---
 
@@ -130,6 +127,8 @@ source ~/.zshrc
 | `?` | Show help |
 | `q` | Quit |
 
+![CTOP Help Screen](assets/help-screen.svg)
+
 ### Context window visualization
 
 The context bar shows how much of the 200k token window is consumed:
@@ -150,8 +149,7 @@ Color coding:
 
 On wide terminals (140+ cols), a detail pane appears showing full session info: model, branch, slug, token breakdown, turn duration, session ID, and more.
 
-<!-- TODO: Add screenshot of detail pane -->
-<!-- ![Detail pane](assets/detail-pane.png) -->
+![CTOP Detail Pane](assets/detail-pane.svg)
 
 ---
 

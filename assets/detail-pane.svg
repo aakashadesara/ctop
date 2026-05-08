@@ -1,0 +1,234 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="820" height="460" viewBox="0 0 820 460">
+  <style>
+    .bg { fill: #0d1117; }
+    .t { font-family: 'JetBrains Mono', 'Fira Code', 'SF Mono', 'Menlo', monospace; font-size: 12px; fill: #e6edf3; }
+    .t11 { font-family: 'JetBrains Mono', 'Fira Code', 'SF Mono', 'Menlo', monospace; font-size: 11px; fill: #e6edf3; }
+    .t10 { font-family: 'JetBrains Mono', 'Fira Code', 'SF Mono', 'Menlo', monospace; font-size: 10px; fill: #e6edf3; }
+    .dim { fill: #484f58; }
+    .green { fill: #3fb950; }
+    .red { fill: #f85149; }
+    .yellow { fill: #d29922; }
+    .cyan { fill: #58a6ff; }
+    .blue { fill: #388bfd; }
+    .orange { fill: #d18616; }
+    .bold { font-weight: bold; }
+    .header-bg { fill: #d18616; }
+    .sel-bg { fill: #d18616; }
+    .border { fill: #30363d; }
+    .title-bar { fill: #161b22; }
+    .pane-border { stroke: #30363d; stroke-width: 1; fill: none; }
+  </style>
+
+  <!-- Terminal window -->
+  <rect class="bg" width="820" height="460" rx="8"/>
+
+  <!-- Title bar -->
+  <rect class="title-bar" width="820" height="28" rx="8"/>
+  <rect class="title-bar" width="820" height="14" y="14"/>
+  <circle fill="#ff5f57" cx="16" cy="14" r="5"/>
+  <circle fill="#febc2e" cx="32" cy="14" r="5"/>
+  <circle fill="#28c840" cx="48" cy="14" r="5"/>
+  <text class="t dim" x="370" y="18" text-anchor="middle" font-size="11">ctop</text>
+
+  <!-- Header border top -->
+  <rect class="border" x="8" y="36" width="804" height="1"/>
+
+  <!-- Header bar -->
+  <rect class="header-bg" x="8" y="37" width="804" height="22"/>
+  <text class="t bold" x="220" y="52" fill="#ffffff">CTOP &#8212; Claude Terminal Operations Panel</text>
+
+  <!-- Header border bottom -->
+  <rect class="border" x="8" y="59" width="804" height="1"/>
+
+  <!-- Stats line -->
+  <text class="t dim" x="14" y="76">Active:</text>
+  <text class="t green" x="66" y="76">3</text>
+  <text class="t dim" x="78" y="76">| Dead/Stopped:</text>
+  <text class="t red" x="188" y="76">1</text>
+  <text class="t dim" x="200" y="76">| Total Cost:</text>
+  <text class="t green" x="296" y="76">$2.45</text>
+  <text class="t dim" x="340" y="76">| Notif:</text>
+  <text class="t green" x="392" y="76">ON</text>
+  <text class="t dim" x="416" y="76">| 2:34:12 PM</text>
+
+  <!-- Separator -->
+  <rect class="border" x="8" y="84" width="540" height="1"/>
+
+  <!-- Column headers (narrower to fit detail pane) -->
+  <text class="t cyan bold" x="20" y="100">PID</text>
+  <text class="t cyan bold" x="72" y="100">STATUS</text>
+  <text class="t cyan bold" x="142" y="100">CTX</text>
+  <text class="t cyan bold" x="182" y="100">STARTED</text>
+  <text class="t cyan bold" x="248" y="100">MODEL</text>
+  <text class="t cyan bold" x="348" y="100">BRANCH</text>
+  <text class="t cyan bold" x="478" y="100">CPU%</text>
+  <text class="t cyan bold" x="520" y="100">MEM%</text>
+
+  <!-- Separator -->
+  <rect class="border" x="8" y="108" width="540" height="1"/>
+
+  <!-- Row 1 (selected) -->
+  <rect class="sel-bg" x="8" y="112" width="540" height="18" opacity="0.9"/>
+  <text class="t bold" x="12" y="125" fill="#ffffff">></text>
+  <text class="t bold" x="20" y="125" fill="#ffffff">48291</text>
+  <text class="t bold" x="72" y="125" fill="#ffffff">ACTIVE</text>
+  <text class="t bold" x="142" y="125" fill="#ffffff">27%</text>
+  <text class="t bold" x="182" y="125" fill="#ffffff">2m ago</text>
+  <text class="t bold" x="248" y="125" fill="#ffffff">opus-4-6</text>
+  <text class="t bold" x="348" y="125" fill="#ffffff">feat/add-auth</text>
+  <text class="t bold" x="478" y="125" fill="#ffffff">12.4</text>
+  <text class="t bold" x="520" y="125" fill="#ffffff">3.2</text>
+
+  <!-- Row 2 -->
+  <text class="t cyan" x="20" y="148">51034</text>
+  <text class="t green" x="72" y="148">ACTIVE</text>
+  <text class="t green" x="142" y="148">45%</text>
+  <text class="t" x="182" y="148">18m ago</text>
+  <text class="t cyan" x="248" y="148">sonnet-4-6</text>
+  <text class="t yellow" x="348" y="148">fix/memory-leak</text>
+  <text class="t" x="478" y="148">8.2</text>
+  <text class="t" x="520" y="148">5.1</text>
+
+  <!-- Row 3 -->
+  <text class="t cyan" x="20" y="168">49872</text>
+  <text class="t green" x="72" y="168">ACTIVE</text>
+  <text class="t yellow" x="142" y="168">68%</text>
+  <text class="t" x="182" y="168">1h ago</text>
+  <text class="t cyan" x="248" y="168">sonnet-4-6</text>
+  <text class="t yellow" x="348" y="168">main</text>
+  <text class="t yellow" x="478" y="168">24.7</text>
+  <text class="t" x="520" y="168">8.4</text>
+
+  <!-- Row 4 (sleeping) -->
+  <text class="t cyan" x="20" y="188">47103</text>
+  <text class="t dim" x="72" y="188">SLEEPING</text>
+  <text class="t dim" x="142" y="188">12%</text>
+  <text class="t" x="182" y="188">3h ago</text>
+  <text class="t cyan" x="248" y="188">haiku-4-5</text>
+  <text class="t yellow" x="348" y="188">chore/update-deps</text>
+  <text class="t" x="478" y="188">0.0</text>
+  <text class="t" x="520" y="188">1.2</text>
+
+  <!-- Detail pane (right side) -->
+  <!-- Detail pane border -->
+  <rect class="pane-border" x="558" y="86" width="254" height="330" rx="2"/>
+
+  <!-- Session Detail heading -->
+  <rect fill="#0d1117" x="564" y="82" width="130" height="10"/>
+  <text class="t11 cyan bold" x="572" y="90">Session Detail</text>
+
+  <!-- PID / Status row -->
+  <text class="t11 dim" x="568" y="110">PID:</text>
+  <text class="t11 cyan" x="596" y="110">48291</text>
+  <text class="t11 dim" x="674" y="110">Status:</text>
+  <text class="t11 green" x="722" y="110">ACTIVE</text>
+
+  <!-- CTX / Model row -->
+  <text class="t11 dim" x="568" y="128">CTX:</text>
+  <text class="t11 green" x="596" y="128">27%</text>
+  <text class="t11 dim" x="674" y="128">Model:</text>
+  <text class="t11 cyan" x="722" y="128">opus-4-6</text>
+
+  <!-- Branch row -->
+  <text class="t11 dim" x="568" y="146">Branch:</text>
+  <text class="t11 yellow" x="618" y="146">feat/add-auth-middleware</text>
+
+  <!-- Started / CPU row -->
+  <text class="t11 dim" x="568" y="164">Started:</text>
+  <text class="t11" x="622" y="164">2m ago</text>
+  <text class="t11 dim" x="674" y="164">CPU:</text>
+  <text class="t11" x="702" y="164">12.4%</text>
+
+  <!-- MEM / Stat row -->
+  <text class="t11 dim" x="568" y="182">MEM:</text>
+  <text class="t11" x="600" y="182">3.2%</text>
+  <text class="t11 dim" x="674" y="182">Stat:</text>
+  <text class="t11 dim" x="702" y="182">S+</text>
+
+  <!-- Separator line in pane -->
+  <line x1="566" y1="192" x2="804" y2="192" stroke="#30363d" stroke-width="1"/>
+
+  <!-- Token details -->
+  <text class="t11 dim" x="568" y="208">In:</text>
+  <text class="t11" x="590" y="208">32,451</text>
+  <text class="t11 dim" x="674" y="208">Out:</text>
+  <text class="t11 green" x="702" y="208">8,234</text>
+
+  <text class="t11 dim" x="568" y="226">Cache W:</text>
+  <text class="t11" x="626" y="226">12,108</text>
+  <text class="t11 dim" x="674" y="226">Cache R:</text>
+  <text class="t11" x="732" y="226">1,542</text>
+
+  <text class="t11 dim" x="568" y="244">Turn:</text>
+  <text class="t11" x="604" y="244">4.2s</text>
+  <text class="t11 dim" x="674" y="244">Stop:</text>
+  <text class="t11 dim" x="710" y="244">end_turn</text>
+
+  <!-- Cost row -->
+  <text class="t11 dim" x="568" y="262">Cost:</text>
+  <text class="t11 green" x="604" y="262">$1.23</text>
+
+  <!-- Context Window heading -->
+  <line x1="566" y1="272" x2="620" y2="272" stroke="#30363d" stroke-width="1"/>
+  <text class="t11 cyan bold" x="624" y="276">Context Window</text>
+  <line x1="742" y1="272" x2="804" y2="272" stroke="#30363d" stroke-width="1"/>
+
+  <!-- Context bar -->
+  <rect fill="#3fb950" x="568" y="284" width="42" height="12" rx="1"/>
+  <rect fill="#388bfd" x="610" y="284" width="20" height="12" rx="1"/>
+  <rect fill="#58a6ff" x="630" y="284" width="6" height="12" rx="1"/>
+  <rect fill="#d29922" x="636" y="284" width="14" height="12" rx="1"/>
+  <rect fill="#21262d" x="650" y="284" width="148" height="12" rx="1"/>
+
+  <!-- Legend row 1 -->
+  <rect fill="#3fb950" x="568" y="304" width="8" height="8" rx="1"/>
+  <text class="t10 dim" x="580" y="312">Input 16%</text>
+  <rect fill="#388bfd" x="674" y="304" width="8" height="8" rx="1"/>
+  <text class="t10 dim" x="686" y="312">Cache W 6%</text>
+
+  <!-- Legend row 2 -->
+  <rect fill="#58a6ff" x="568" y="320" width="8" height="8" rx="1"/>
+  <text class="t10 dim" x="580" y="328">Cache R 1%</text>
+  <rect fill="#d29922" x="674" y="320" width="8" height="8" rx="1"/>
+  <text class="t10 dim" x="686" y="328">Output 4%</text>
+
+  <!-- Legend row 3 -->
+  <rect fill="#21262d" x="568" y="336" width="8" height="8" rx="1"/>
+  <text class="t10 dim" x="580" y="344">Free 73%</text>
+
+  <!-- Footer separator -->
+  <rect class="border" x="8" y="424" width="804" height="1"/>
+
+  <!-- Footer -->
+  <text class="t bold" x="14" y="442">KEYS:</text>
+  <text class="t cyan" x="56" y="442">hjkl</text>
+  <text class="t" x="88" y="442">Nav</text>
+  <text class="t red" x="120" y="442">x</text>
+  <text class="t" x="130" y="442">Kill</text>
+  <text class="t red" x="162" y="442">X</text>
+  <text class="t" x="172" y="442">Force</text>
+  <text class="t cyan" x="212" y="442">o</text>
+  <text class="t" x="222" y="442">Open</text>
+  <text class="t cyan" x="258" y="442">s</text>
+  <text class="t" x="268" y="442">Sort</text>
+  <text class="t cyan" x="300" y="442">/</text>
+  <text class="t" x="310" y="442">Filter</text>
+  <text class="t cyan" x="354" y="442">F</text>
+  <text class="t" x="364" y="442">Search</text>
+  <text class="t cyan" x="412" y="442">L</text>
+  <text class="t" x="422" y="442">Log</text>
+  <text class="t cyan" x="452" y="442">T</text>
+  <text class="t" x="462" y="442">Theme</text>
+  <text class="t cyan" x="504" y="442">d</text>
+  <text class="t" x="514" y="442">Dash</text>
+  <text class="t cyan" x="550" y="442">H</text>
+  <text class="t" x="560" y="442">History</text>
+  <text class="t cyan" x="610" y="442">n</text>
+  <text class="t" x="620" y="442">Notif</text>
+  <text class="t cyan" x="662" y="442">P</text>
+  <text class="t" x="672" y="442">Pane</text>
+  <text class="t cyan" x="708" y="442">r</text>
+  <text class="t" x="718" y="442">Refresh</text>
+  <text class="t cyan" x="768" y="442">q</text>
+  <text class="t" x="778" y="442">Quit</text>
+</svg>
