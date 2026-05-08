@@ -1443,4 +1443,24 @@ function main() {
   });
 }
 
-main();
+if (require.main === module) {
+  main();
+}
+
+module.exports = {
+  formatStartTime,
+  ctxColor,
+  loadConfig,
+  getSessionData,
+  applySortAndFilter,
+  getCardsPerRow,
+  DEFAULT_CONFIG,
+  // Expose internals for testing
+  _state: { get allProcesses() { return allProcesses; }, set allProcesses(v) { allProcesses = v; },
+            get processes() { return processes; }, set processes(v) { processes = v; },
+            get filterText() { return filterText; }, set filterText(v) { filterText = v; },
+            get sortMode() { return sortMode; }, set sortMode(v) { sortMode = v; },
+            get sortReverse() { return sortReverse; }, set sortReverse(v) { sortReverse = v; },
+            get selectedIndex() { return selectedIndex; }, set selectedIndex(v) { selectedIndex = v; } },
+  _colors: { RED, ORANGE, YELLOW, GREEN },
+};

@@ -7,7 +7,8 @@
     "ctop": "./claude-manager"
   },
   "scripts": {
-    "start": "node claude-manager"
+    "start": "node claude-manager",
+    "test": "node --test test/*.test.js"
   },
   "keywords": [
     "claude",
