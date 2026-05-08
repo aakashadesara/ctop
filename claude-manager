@@ -158,6 +158,49 @@ const CONFIG = loadConfig();
 THEME = resolveTheme(CONFIG.theme);
 currentThemeName = (typeof CONFIG.theme === 'string' && THEMES[CONFIG.theme]) ? CONFIG.theme : 'custom';
 
+// Plugin system
+// Each plugin is a JS file in ~/.ctop/plugins/ that exports:
+// {
+//   name: 'git-status',           // unique name
+//   description: 'Show git status', // human-readable
+//   column: {                       // optional: adds a column to list view
+//     header: 'GIT',               // column header text
+//     width: 12,                   // column width in characters
+//     getValue: (proc) => '...',   // function returning display value
+//     getColor: (proc) => ANSI,    // optional: color function
+//   },
+//   detailRows: (proc) => [{       // optional: adds rows to detail pane
+//     label: 'Git Branch', value: 'main', color: CYAN
+//   }],
+//   init: () => {},                // optional: called on load
+//   cleanup: () => {},             // optional: called on exit
+// }
+
+function loadPlugins(pluginDir) {
+  const dir = pluginDir || path.join(os.homedir(), '.ctop', 'plugins');
+  if (!fs.existsSync(dir)) return [];
+  const plugins = [];
+  for (const file of fs.readdirSync(dir)) {
+    if (!file.endsWith('.js')) continue;
+    try {
+      const plugin = require(path.join(dir, file));
+      if (plugin.name) {
+        if (plugin.init) plugin.init();
+        plugins.push(plugin);
+      }
+    } catch (e) {
+      // Log error but don't crash
+    }
+  }
+  return plugins;
+}
+
+let plugins = [];
+// Load plugins at startup (only when running as main)
+if (require.main === module) {
+  plugins = loadPlugins();
+}
+
 // Pricing per million tokens (USD) — as of 2025
 const MODEL_PRICING = {
   'claude-sonnet-4-6': { input: 3, output: 15, cacheWrite: 3.75, cacheRead: 0.30 },
@@ -1379,6 +1422,24 @@ function renderDetailPane(proc, startRow, paneCol, paneWidth, availRows) {
     }
   }
 
+  // Plugin detail rows
+  const pluginsWithDetails = plugins.filter(p => typeof p.detailRows === 'function');
+  if (pluginsWithDetails.length > 0) {
+    for (const p of pluginsWithDetails) {
+      let rows2 = [];
+      try { rows2 = p.detailRows(proc) || []; } catch (e) {}
+      if (rows2.length > 0 && r < startRow + availRows - 1) {
+        const pluginHeading = ` ${p.name || 'Plugin'} `;
+        const phLen = paneWidth - 2 - pluginHeading.length;
+        output += drawLine(r++, `${DIM}├${'─'.repeat(Math.floor(phLen / 2))}${RESET}${BOLD}${CYAN}${pluginHeading}${RESET}${DIM}${'─'.repeat(phLen - Math.floor(phLen / 2))}┤${RESET}`);
+      }
+      for (const row of rows2) {
+        if (r >= startRow + availRows - 1) break;
+        output += fullRow(r++, (row.label || '') + ':', row.value || '--', row.color || '');
+      }
+    }
+  }
+
   // Fill remaining
   while (r < startRow + availRows - 1) {
     output += drawLine(r++, `${DIM}│${' '.repeat(paneWidth - 2)}│${RESET}`);
@@ -1436,17 +1497,23 @@ function render() {
   const isNarrow = listWidth < 120;
   const showCostCol = listWidth >= 140;
   const costColW = 9;
+  // Plugin columns — extra width from loaded plugins
+  const pluginCols = plugins.filter(p => p.column);
+  const pluginColsWidth = pluginCols.reduce((sum, p) => sum + (p.column.width || 10), 0);
   // In narrow mode: PID(8) + STATUS(10) + CTX(6) + STARTED(12) + MODEL(14) + CPU%(7) + MEM%(5) + pad(2) = 64
   // In wide mode: full columns with BRANCH, SLUG, DIRECTORY, and optionally COST
   const fixedColsTotal = isNarrow
-    ? 8 + 10 + ctxColW + 12 + 14 + 7 + 7 + 2
-    : 8 + 10 + ctxColW + 12 + 32 + 22 + 14 + (showCostCol ? costColW : 0) + 7 + 7 + 2;
+    ? 8 + 10 + ctxColW + 12 + 14 + 7 + 7 + 2 + pluginColsWidth
+    : 8 + 10 + ctxColW + 12 + 32 + 22 + 14 + (showCostCol ? costColW : 0) + pluginColsWidth + 7 + 7 + 2;
   output += `${BOLD}${CYAN}`;
   if (isNarrow) {
-    output += `  ${'PID'.padEnd(8)}${'STATUS'.padEnd(10)}${'CTX'.padEnd(ctxColW)}${'STARTED'.padEnd(12)}${'MODEL'.padEnd(14)}${'CPU%'.padEnd(7)}MEM%`;
+    output += `  ${'PID'.padEnd(8)}${'STATUS'.padEnd(10)}${'CTX'.padEnd(ctxColW)}${'STARTED'.padEnd(12)}${'MODEL'.padEnd(14)}`;
+    for (const p of pluginCols) output += `${(p.column.header || '').padEnd(p.column.width || 10)}`;
+    output += `${'CPU%'.padEnd(7)}MEM%`;
   } else {
     output += `  ${'PID'.padEnd(8)}${'STATUS'.padEnd(10)}${'CTX'.padEnd(ctxColW)}${'STARTED'.padEnd(12)}${'BRANCH'.padEnd(32)}${'SLUG'.padEnd(22)}${'MODEL'.padEnd(14)}`;
     if (showCostCol) output += `${'COST'.padEnd(costColW)}`;
+    for (const p of pluginCols) output += `${(p.column.header || '').padEnd(p.column.width || 10)}`;
     output += `${'DIRECTORY'.padEnd(Math.max(0, listWidth - fixedColsTotal))}${'CPU%'.padEnd(7)}MEM%`;
   }
   output += `${RESET}${CLR_LINE}\n`;
@@ -1547,6 +1614,20 @@ function render() {
       }
       output += `${costStr.padEnd(costColW)}`;
       if (!isSelected) output += RESET;
+    }
+
+    // Plugin columns
+    for (const p of pluginCols) {
+      const w = p.column.width || 10;
+      let val = '--';
+      try { val = String(p.column.getValue(proc) || '--'); } catch (e) {}
+      let color = '';
+      if (p.column.getColor && !isSelected) {
+        try { color = p.column.getColor(proc) || ''; } catch (e) {}
+      }
+      if (color) output += color;
+      output += `${val.substring(0, w - 1).padEnd(w)}`;
+      if (color) output += RESET;
     }
 
     if (!isNarrow) {
@@ -2308,6 +2389,12 @@ function handleInput(key) {
 }
 
 function cleanup() {
+  // Call plugin cleanup functions
+  for (const p of plugins) {
+    if (typeof p.cleanup === 'function') {
+      try { p.cleanup(); } catch (e) {}
+    }
+  }
   // Disable mouse tracking
   process.stdout.write('\x1b[?1000l\x1b[?1006l');
   process.stdout.write(SHOW_CURSOR + CLEAR);
@@ -2399,6 +2486,8 @@ module.exports = {
   THEME_REQUIRED_KEYS,
   resolveTheme,
   cycleTheme,
+  // Plugin system
+  loadPlugins,
   // Notification helpers
   sendNotification,
   formatDuration,
@@ -2417,7 +2506,8 @@ module.exports = {
             get notificationsEnabled() { return notificationsEnabled; }, set notificationsEnabled(v) { notificationsEnabled = v; },
             get viewMode() { return viewMode; }, set viewMode(v) { viewMode = v; },
             get currentThemeName() { return currentThemeName; }, set currentThemeName(v) { currentThemeName = v; },
-            get THEME() { return THEME; }, set THEME(v) { THEME = v; } },
+            get THEME() { return THEME; }, set THEME(v) { THEME = v; },
+            get plugins() { return plugins; }, set plugins(v) { plugins = v; } },
   _notif: { previousStates, processStartTimes },
   _colors: { RED, ORANGE, YELLOW, GREEN, BLUE, CYAN, DIM, RESET },
 };
