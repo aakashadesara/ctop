@@ -1,4 +1,4 @@
-const { describe, it } = require('node:test');
+const { describe, it, beforeEach } = require('node:test');
 const assert = require('node:assert');
 
 const {
@@ -6,11 +6,28 @@ const {
   getHeatmapColorLevel,
   loadHistory,
   formatCompactTokens,
+  _state,
 } = require('../claude-manager');
+
+// Mock scanSessionFilesForHistory to return empty during tests
+// by pre-populating the cache so it doesn't scan real files
+const mod = require('../src/_core');
+// Reset the session scan cache to empty before each test
+function clearSessionScanCache() {
+  // Set the internal cache by calling aggregateHeatmapData after forcing cache
+  if (mod.sessionScanCache !== undefined) {
+    mod.sessionScanCache = [];
+    mod.sessionScanCacheTime = Date.now();
+  }
+}
 
 describe('Heatmap', () => {
 
   describe('aggregateHeatmapData', () => {
+    beforeEach(() => {
+      clearSessionScanCache();
+    });
+
     it('returns empty map for empty history', () => {
       const result = aggregateHeatmapData([], 'tokens');
       assert.strictEqual(result.size, 0);
