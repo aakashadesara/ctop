@@ -302,6 +302,7 @@ let filterText = '';
 let filterInput = false; // true when typing a filter
 let showDashboard = false; // toggled by 'd' key
 let showHistory = false; // toggled by 'H' key
+let exportMode = false; // true when awaiting export format key
 
 // History tracking state
 const HISTORY_DIR = path.join(os.homedir(), '.ctop');
@@ -779,6 +780,87 @@ function formatStartTime(date) {
     return `${diffMins}m ago`;
   } else {
     return 'just now';
+  }
+}
+
+// --- Export report formatting ---
+
+function formatSessionMarkdown(proc) {
+  return `## Claude Session Report
+- **Model:** ${proc.model || 'unknown'}
+- **Status:** ${proc.status}
+- **Started:** ${proc.startTime}
+- **Cost:** ${formatCost(proc.cost)}
+- **Context:** ${proc.contextPct != null ? proc.contextPct + '% free' : 'N/A'}
+- **Tokens:** ${(proc.inputTokens || 0).toLocaleString()} input, ${(proc.outputTokens || 0).toLocaleString()} output, ${(proc.cacheReadTokens || 0).toLocaleString()} cache read
+- **Branch:** ${proc.gitBranch || 'N/A'}
+- **Directory:** ${proc.cwd || 'N/A'}
+- **PID:** ${proc.pid}`;
+}
+
+function formatSessionJSON(proc) {
+  return JSON.stringify({
+    pid: proc.pid,
+    model: proc.model,
+    status: proc.status,
+    startTime: proc.startTime,
+    cost: proc.cost,
+    contextPct: proc.contextPct,
+    tokens: {
+      input: proc.inputTokens,
+      output: proc.outputTokens,
+      cacheCreate: proc.cacheCreateTokens,
+      cacheRead: proc.cacheReadTokens,
+    },
+    branch: proc.gitBranch,
+    slug: proc.slug,
+    cwd: proc.cwd,
+    cpu: proc.cpu,
+    mem: proc.mem,
+  }, null, 2);
+}
+
+function formatSessionCSV(proc) {
+  const headers = 'pid,model,status,cost,context_pct,input_tokens,output_tokens,cache_read_tokens,branch,directory';
+  const values = [
+    proc.pid,
+    csvEscape(proc.model || ''),
+    csvEscape(proc.status),
+    proc.cost || 0,
+    proc.contextPct || '',
+    proc.inputTokens || 0,
+    proc.outputTokens || 0,
+    proc.cacheReadTokens || 0,
+    csvEscape(proc.gitBranch || ''),
+    csvEscape(proc.cwd || ''),
+  ].join(',');
+  return headers + '\n' + values;
+}
+
+function csvEscape(value) {
+  const str = String(value);
+  if (str.includes(',') || str.includes('"') || str.includes('\n')) {
+    return '"' + str.replace(/"/g, '""') + '"';
+  }
+  return str;
+}
+
+function copyToClipboard(text) {
+  try {
+    if (IS_MAC) {
+      execSync('pbcopy', { input: text, stdio: ['pipe', 'pipe', 'pipe'] });
+    } else if (IS_LINUX) {
+      try {
+        execSync('xclip -selection clipboard', { input: text, stdio: ['pipe', 'pipe', 'pipe'] });
+      } catch {
+        execSync('xsel --clipboard --input', { input: text, stdio: ['pipe', 'pipe', 'pipe'] });
+      }
+    } else if (IS_WIN) {
+      execSync('clip', { input: text, stdio: ['pipe', 'pipe', 'pipe'] });
+    }
+    return true;
+  } catch (e) {
+    return false;
   }
 }
 
@@ -1591,7 +1673,7 @@ function renderPaneMode() {
   output += `${RED}x${RESET} Kill  ${RED}X${RESET} Force  `;
   output += `${CYAN}o${RESET} Open  `;
   output += `${CYAN}s${RESET} Sort  ${CYAN}/${RESET} Filter  ${CYAN}F${RESET} Search  `;
-  output += `${CYAN}L${RESET} Log  `;
+  output += `${CYAN}L${RESET} Log  ${CYAN}E${RESET} Export  `;
   output += `${CYAN}T${RESET} Theme  ${CYAN}d${RESET} Dash  ${CYAN}H${RESET} History  ${CYAN}n${RESET} Notif  ${CYAN}P${RESET} List  ${CYAN}r${RESET} Refresh  ${CYAN}q${RESET} Quit  ${CYAN}?${RESET} Help${CLR_LINE}`;
 
   process.stdout.write(output);
@@ -2187,7 +2269,7 @@ function render() {
   output += `${RED}x${RESET} Kill  ${RED}X${RESET} Force  `;
   output += `${CYAN}o${RESET} Open  `;
   output += `${CYAN}s${RESET} Sort  ${CYAN}/${RESET} Filter  ${CYAN}F${RESET} Search  `;
-  output += `${CYAN}L${RESET} Log  `;
+  output += `${CYAN}L${RESET} Log  ${CYAN}E${RESET} Export  `;
   output += `${CYAN}T${RESET} Theme  ${CYAN}d${RESET} Dash  ${CYAN}H${RESET} History  ${CYAN}n${RESET} Notif  ${CYAN}P${RESET} Pane  ${CYAN}r${RESET} Refresh  ${CYAN}q${RESET} Quit  ${CYAN}?${RESET} Help${CLR_LINE}`;
 
   process.stdout.write(output);
@@ -2373,7 +2455,8 @@ function showHelp() {
   output += `  ${CYAN}d${RESET}         Toggle aggregate dashboard stats\n`;
   output += `  ${CYAN}H${RESET}         Toggle usage history view (24h charts)\n`;
   output += `  ${CYAN}n${RESET}         Toggle desktop notifications on/off\n`;
-  output += `  ${CYAN}L${RESET}         Toggle live session log pane\n\n`;
+  output += `  ${CYAN}L${RESET}         Toggle live session log pane\n`;
+  output += `  ${CYAN}E${RESET}         Export session report to clipboard\n\n`;
 
   output += `${BOLD}APPEARANCE:${RESET}\n`;
   output += `  ${CYAN}T${RESET}         Cycle color theme (${THEME_NAMES.join(', ')})\n`;
@@ -2655,6 +2738,33 @@ function handleInput(key) {
     return;
   }
 
+  if (exportMode) {
+    exportMode = false;
+    const proc = processes[selectedIndex];
+    if (proc && (key === 'm' || key === 'j' || key === 'c')) {
+      let text, label;
+      if (key === 'm') {
+        text = formatSessionMarkdown(proc);
+        label = 'Markdown';
+      } else if (key === 'j') {
+        text = formatSessionJSON(proc);
+        label = 'JSON';
+      } else {
+        text = formatSessionCSV(proc);
+        label = 'CSV';
+      }
+      if (copyToClipboard(text)) {
+        statusMessage = `Copied ${label} report to clipboard`;
+      } else {
+        statusMessage = `Failed to copy ${label} report to clipboard`;
+      }
+    } else {
+      statusMessage = 'Export cancelled';
+    }
+    render();
+    return;
+  }
+
   switch (key) {
     case 'P':
       if (viewMode === 'list') {
@@ -2879,6 +2989,14 @@ function handleInput(key) {
       render();
       break;
 
+    case 'E':
+      if (processes[selectedIndex]) {
+        exportMode = true;
+        statusMessage = 'Export: [m]arkdown [j]son [c]sv';
+        render();
+      }
+      break;
+
     case 'n':
       notificationsEnabled = !notificationsEnabled;
       statusMessage = `Notifications: ${notificationsEnabled ? 'ON' : 'OFF'}`;
@@ -3033,6 +3151,12 @@ module.exports = {
   THEME_REQUIRED_KEYS,
   resolveTheme,
   cycleTheme,
+  // Export report
+  formatSessionMarkdown,
+  formatSessionJSON,
+  formatSessionCSV,
+  csvEscape,
+  copyToClipboard,
   // Plugin system
   loadPlugins,
   // History tracking
@@ -3085,6 +3209,7 @@ module.exports = {
             get showLogPane() { return showLogPane; }, set showLogPane(v) { showLogPane = v; },
             get logLines() { return logLines; }, set logLines(v) { logLines = v; },
             get logScrollOffset() { return logScrollOffset; }, set logScrollOffset(v) { logScrollOffset = v; },
+            get exportMode() { return exportMode; }, set exportMode(v) { exportMode = v; },
             get THEME() { return THEME; }, set THEME(v) { THEME = v; },
             get plugins() { return plugins; }, set plugins(v) { plugins = v; } },
   _notif: { previousStates, processStartTimes },
