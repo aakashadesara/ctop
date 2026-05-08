@@ -16,6 +16,7 @@ const DEFAULT_CONFIG = {
   contextLimit: 200000,
   defaultView: 'list', // 'list' or 'pane'
   theme: 'default',    // 'default' or 'minimal'
+  contextBarStyle: 'block', // 'block' or 'braille'
 };
 
 function loadConfig() {
@@ -29,6 +30,7 @@ function loadConfig() {
       if (rc.contextLimit) config.contextLimit = Number(rc.contextLimit);
       if (rc.defaultView === 'pane' || rc.defaultView === 'list') config.defaultView = rc.defaultView;
       if (rc.theme === 'minimal') config.theme = 'minimal';
+      if (rc.contextBarStyle === 'braille') config.contextBarStyle = 'braille';
     }
   } catch (e) {}
   // CLI flags override
@@ -489,6 +491,152 @@ function ctxColor(pct) {
   return GREEN;
 }
 
+// Braille-dot context bar rendering
+// Each braille character can represent 8 sub-positions (dots in a 2x4 grid).
+// We use vertical fill patterns: bottom-to-top dot filling for a smooth bar.
+// Braille patterns for horizontal fill (left-to-right within a character):
+//   ⠀ (empty) ⢀ ⢠ ⢰ ⢸ ⣸ ⣼ ⣾ ⣿ (full)
+// This gives 8 sub-positions per character cell.
+const BRAILLE_FILLS = ['\u2800', '\u2880', '\u28A0', '\u28B0', '\u28B8', '\u28F8', '\u28FC', '\u28FE', '\u28FF'];
+// indices:                0        1        2        3        4        5        6        7        8
+
+function renderBrailleBar(segments, width) {
+  // segments: [{value: fraction (0-1), color: ANSI_COLOR_STRING}, ...]
+  // width: number of character cells for the bar
+  // Returns a string with ANSI colors representing the bar, exactly `width` visible chars.
+  if (width <= 0) return '';
+
+  // Build a per-character array: each cell stores which segment fills it and how much.
+  // We walk through character positions and assign each to the segment that owns it.
+  const totalSubs = width * 8;
+  const chars = new Array(width);
+
+  // Compute cumulative sub-position boundaries for each segment
+  let cumSubs = 0;
+  const segBounds = []; // [{start, end, color}]
+  for (const seg of segments) {
+    const segSubs = Math.round(seg.value * totalSubs);
+    if (segSubs <= 0) {
+      segBounds.push({ start: cumSubs, end: cumSubs, color: seg.color });
+      continue;
+    }
+    segBounds.push({ start: cumSubs, end: cumSubs + segSubs, color: seg.color });
+    cumSubs += segSubs;
+  }
+  // Ensure total fills exactly width by extending the last non-empty segment,
+  // or if all segments are empty, leave them empty.
+  if (segBounds.length > 0 && cumSubs > 0 && cumSubs < totalSubs) {
+    // Find last segment with non-zero span and extend it
+    for (let i = segBounds.length - 1; i >= 0; i--) {
+      if (segBounds[i].end > segBounds[i].start) {
+        segBounds[i].end = totalSubs;
+        break;
+      }
+    }
+  }
+
+  // For each character cell, determine the dominant segment and fill level
+  for (let ci = 0; ci < width; ci++) {
+    const cellStart = ci * 8;
+    const cellEnd = cellStart + 8;
+
+    // Find the segment that covers the most sub-positions in this cell
+    let bestSeg = segBounds.length - 1;
+    let bestOverlap = 0;
+    for (let si = 0; si < segBounds.length; si++) {
+      const oStart = Math.max(cellStart, segBounds[si].start);
+      const oEnd = Math.min(cellEnd, segBounds[si].end);
+      const overlap = Math.max(0, oEnd - oStart);
+      if (overlap > bestOverlap) {
+        bestOverlap = overlap;
+        bestSeg = si;
+      }
+    }
+
+    // Determine how many sub-positions are filled (non-free) up to this cell
+    // We compute fill = total filled sub-positions within this cell across all segments
+    // preceding the last segment (which is typically "free")
+    let filled = 0;
+    for (let si = 0; si < segBounds.length; si++) {
+      const oStart = Math.max(cellStart, segBounds[si].start);
+      const oEnd = Math.min(cellEnd, segBounds[si].end);
+      filled += Math.max(0, oEnd - oStart);
+    }
+
+    // The character is the dominant segment's color with its fill level
+    const segColor = segBounds[bestSeg].color;
+    const fillSubs = Math.min(8, Math.max(0, bestOverlap));
+    chars[ci] = { color: segColor, fill: fillSubs };
+  }
+
+  // Render the character array
+  let result = '';
+  let prevColor = null;
+  for (let ci = 0; ci < width; ci++) {
+    const { color, fill } = chars[ci];
+    if (color !== prevColor) {
+      if (prevColor !== null) result += RESET;
+      if (color) result += color;
+      prevColor = color;
+    }
+    result += BRAILLE_FILLS[fill];
+  }
+  if (prevColor !== null) result += RESET;
+
+  return result;
+}
+
+function renderContextBarBraille(proc, width) {
+  // Renders a context bar using braille dots for the given process.
+  // Returns an object { bar, segments } where bar is the ANSI string and
+  // segments contains the computed proportions for testing.
+  const CTX_LIMIT = CONFIG.contextLimit;
+  const inp = proc.inputTokens || 0;
+  const cw = proc.cacheCreateTokens || 0;
+  const cr = proc.cacheReadTokens || 0;
+  const out = proc.outputTokens || 0;
+  const used = inp + cw + cr;
+  const free = Math.max(0, CTX_LIMIT - used);
+
+  const total = inp + cw + cr + out + free;
+  // Avoid division by zero
+  if (total === 0) {
+    return {
+      bar: `${DIM}${BRAILLE_FILLS[0].repeat(width)}${RESET}`,
+      segments: [{ name: 'free', value: 1, tokens: 0 }]
+    };
+  }
+
+  // Compute segment proportions relative to CTX_LIMIT.
+  // Output tokens reduce the free space (same approach as the block bar).
+  const adjustedFree = Math.max(0, free - out);
+
+  const segDefs = [
+    { name: 'input',       tokens: inp,           color: GREEN },
+    { name: 'cache_write', tokens: cw,            color: BLUE },
+    { name: 'cache_read',  tokens: cr,            color: CYAN },
+    { name: 'output',      tokens: out,           color: YELLOW },
+    { name: 'free',        tokens: adjustedFree,  color: DIM },
+  ];
+
+  const segments = segDefs.map(s => ({
+    name: s.name,
+    value: s.tokens / CTX_LIMIT,
+    tokens: s.tokens,
+    color: s.color,
+  }));
+
+  // Clamp total value to 1.0 (in case used + output > CTX_LIMIT)
+  let sumValues = segments.reduce((s, seg) => s + seg.value, 0);
+  if (sumValues > 1) {
+    const scale = 1 / sumValues;
+    for (const seg of segments) seg.value *= scale;
+  }
+
+  const bar = renderBrailleBar(segments, width);
+  return { bar, segments };
+}
+
 function applySortAndFilter() {
   let result = [...allProcesses];
 
@@ -888,24 +1036,32 @@ function renderDetailPane(proc, startRow, paneCol, paneWidth, availRows) {
     const used = inp + cw + cr;
     const free = Math.max(0, CTX_LIMIT - used);
 
-    // Segment widths proportional to CTX_LIMIT
-    const seg = (v) => Math.max(v > 0 ? 1 : 0, Math.round(v / CTX_LIMIT * barW));
-    let sInp = seg(inp);
-    let sCw = seg(cw);
-    let sCr = seg(cr);
-    let sOut = seg(out);
-    let sFree = seg(free);
-    // Adjust to exactly barW
-    let total = sInp + sCw + sCr + sOut + sFree;
-    if (total > barW) sFree = Math.max(0, sFree - (total - barW));
-    else if (total < barW) sFree += (barW - total);
+    let bar;
+    const legendChar = CONFIG.contextBarStyle === 'braille' ? '\u28FF' : '\u2588';
+    const freeChar = CONFIG.contextBarStyle === 'braille' ? '\u2800' : '\u2591';
 
-    const MAGENTA = `${ESC}[35m`;
-    const bar = `${GREEN}${'█'.repeat(sInp)}${RESET}` +
-                `${BLUE}${'█'.repeat(sCw)}${RESET}` +
-                `${CYAN}${'█'.repeat(sCr)}${RESET}` +
-                `${YELLOW}${'█'.repeat(sOut)}${RESET}` +
-                `${DIM}${'░'.repeat(sFree)}${RESET}`;
+    if (CONFIG.contextBarStyle === 'braille') {
+      const result = renderContextBarBraille(proc, barW);
+      bar = result.bar;
+    } else {
+      // Block character rendering (original)
+      const seg = (v) => Math.max(v > 0 ? 1 : 0, Math.round(v / CTX_LIMIT * barW));
+      let sInp = seg(inp);
+      let sCw = seg(cw);
+      let sCr = seg(cr);
+      let sOut = seg(out);
+      let sFree = seg(free);
+      // Adjust to exactly barW
+      let total = sInp + sCw + sCr + sOut + sFree;
+      if (total > barW) sFree = Math.max(0, sFree - (total - barW));
+      else if (total < barW) sFree += (barW - total);
+
+      bar = `${GREEN}${'█'.repeat(sInp)}${RESET}` +
+            `${BLUE}${'█'.repeat(sCw)}${RESET}` +
+            `${CYAN}${'█'.repeat(sCr)}${RESET}` +
+            `${YELLOW}${'█'.repeat(sOut)}${RESET}` +
+            `${DIM}${'░'.repeat(sFree)}${RESET}`;
+    }
     output += drawLine(r++, `${DIM}│${RESET} ${bar} ${DIM}│${RESET}`);
 
     // Legend rows
@@ -913,19 +1069,19 @@ function renderDetailPane(proc, startRow, paneCol, paneWidth, availRows) {
     const lPad = (s, w) => s.length >= w ? s.substring(0, w) : s + ' '.repeat(w - s.length);
     const legendW = Math.floor((inner - 2) / 2);
     // Row 1: input + cache write
-    const l1a = `${GREEN}█${RESET} ${DIM}Input${RESET} ${pct(inp)}`;
-    const l1b = `${BLUE}█${RESET} ${DIM}Cache W${RESET} ${pct(cw)}`;
+    const l1a = `${GREEN}${legendChar}${RESET} ${DIM}Input${RESET} ${pct(inp)}`;
+    const l1b = `${BLUE}${legendChar}${RESET} ${DIM}Cache W${RESET} ${pct(cw)}`;
     const l1aVis = 8 + pct(inp).length;
     const l1bVis = 10 + pct(cw).length;
     output += drawLine(r++, `${DIM}│${RESET} ${l1a}${' '.repeat(Math.max(1, inner - 2 - l1aVis - l1bVis))}${l1b} ${DIM}│${RESET}`);
     // Row 2: cache read + output
-    const l2a = `${CYAN}█${RESET} ${DIM}Cache R${RESET} ${pct(cr)}`;
-    const l2b = `${YELLOW}█${RESET} ${DIM}Output${RESET} ${pct(out)}`;
+    const l2a = `${CYAN}${legendChar}${RESET} ${DIM}Cache R${RESET} ${pct(cr)}`;
+    const l2b = `${YELLOW}${legendChar}${RESET} ${DIM}Output${RESET} ${pct(out)}`;
     const l2aVis = 10 + pct(cr).length;
     const l2bVis = 9 + pct(out).length;
     output += drawLine(r++, `${DIM}│${RESET} ${l2a}${' '.repeat(Math.max(1, inner - 2 - l2aVis - l2bVis))}${l2b} ${DIM}│${RESET}`);
     // Row 3: free
-    const l3 = `${DIM}░ Free ${pct(free)}${RESET}`;
+    const l3 = `${DIM}${freeChar} Free ${pct(free)}${RESET}`;
     const l3Vis = 7 + pct(free).length;
     output += drawLine(r++, `${DIM}│${RESET} ${l3}${' '.repeat(Math.max(0, inner - 2 - l3Vis))} ${DIM}│${RESET}`);
   }
@@ -1058,13 +1214,26 @@ function render() {
     if (ctxBarMode) {
       // Loading bar mode: 10-char bar + space + 4-char pct + 1 space = 16
       const barLen = 10;
-      const filled = Math.round(ctxPct / 100 * barLen);
-      const empty = barLen - filled;
-      if (isSelected) {
-        output += `${'█'.repeat(filled)}${'░'.repeat(empty)} ${(ctxPct + '%').padStart(4)} `;
+      if (CONFIG.contextBarStyle === 'braille') {
+        // Braille bar: sub-character precision
+        const filledValue = ctxPct / 100;
+        const freeValue = 1 - filledValue;
+        const cc = isSelected ? '' : ctxColor(ctxPct);
+        const ccEnd = isSelected ? '' : RESET;
+        const brailleBar = renderBrailleBar(
+          [{ value: filledValue, color: cc || '' }, { value: freeValue, color: DIM }],
+          barLen
+        );
+        output += `${brailleBar}${ccEnd} ${cc}${(ctxPct + '%').padStart(4)}${ccEnd} `;
       } else {
-        const cc = ctxColor(ctxPct);
-        output += `${cc}${'█'.repeat(filled)}${RESET}${DIM}${'░'.repeat(empty)}${RESET} ${cc}${(ctxPct + '%').padStart(4)}${RESET} `;
+        const filled = Math.round(ctxPct / 100 * barLen);
+        const empty = barLen - filled;
+        if (isSelected) {
+          output += `${'█'.repeat(filled)}${'░'.repeat(empty)} ${(ctxPct + '%').padStart(4)} `;
+        } else {
+          const cc = ctxColor(ctxPct);
+          output += `${cc}${'█'.repeat(filled)}${RESET}${DIM}${'░'.repeat(empty)}${RESET} ${cc}${(ctxPct + '%').padStart(4)}${RESET} `;
+        }
       }
     } else {
       if (!isSelected) output += ctxColor(ctxPct);
@@ -1720,6 +1889,9 @@ module.exports = {
   applySortAndFilter,
   getCardsPerRow,
   openDirectory,
+  renderBrailleBar,
+  renderContextBarBraille,
+  BRAILLE_FILLS,
   DEFAULT_CONFIG,
   // Expose internals for testing
   _state: { get allProcesses() { return allProcesses; }, set allProcesses(v) { allProcesses = v; },
@@ -1729,5 +1901,5 @@ module.exports = {
             get sortReverse() { return sortReverse; }, set sortReverse(v) { sortReverse = v; },
             get selectedIndex() { return selectedIndex; }, set selectedIndex(v) { selectedIndex = v; },
             get showDashboard() { return showDashboard; }, set showDashboard(v) { showDashboard = v; } },
-  _colors: { RED, ORANGE, YELLOW, GREEN },
+  _colors: { RED, ORANGE, YELLOW, GREEN, BLUE, CYAN, DIM, RESET },
 };
