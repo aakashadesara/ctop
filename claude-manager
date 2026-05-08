@@ -611,6 +611,8 @@ function renderPaneMode() {
   statsLine += `${DIM} | ${lastRefresh.toLocaleTimeString()} ${RESET}`;
   output += statsLine + `${CLR_LINE}\n`;
 
+  if (showDashboard) { output += renderDashboard(columns); }
+
   // Status message if any
   if (statusMessage) {
     output += `${YELLOW} ${statusMessage}${RESET}${CLR_LINE}\n`;
@@ -621,7 +623,7 @@ function renderPaneMode() {
 
   // Calculate grid
   const totalRows = Math.ceil(processes.length / cardsPerRow);
-  const headerLines = 6; // header box (3) + stats + separator + status
+  const headerLines = 6 + (showDashboard ? 2 : 0); // header box (3) + stats + dashboard + separator + status
   const footerLines = 2; // separator + keys (pinned to bottom)
   const availableSpace = rows - headerLines - footerLines;
   // Last card row doesn't need gap after it, so add cardGapY back once
@@ -986,6 +988,8 @@ function render() {
   statsLine += `${DIM} | ${lastRefresh.toLocaleTimeString()} ${RESET}`;
   output += statsLine + `${CLR_LINE}\n`;
 
+  if (showDashboard) { output += renderDashboard(columns); }
+
   // Status message if any
   if (statusMessage) {
     output += `${YELLOW} ${statusMessage}${RESET}${CLR_LINE}\n`;
@@ -1020,7 +1024,7 @@ function render() {
   // Header: 3 (header box) + 1 (stats) + 1 (separator) + 1 (col headers) + 1 (separator) = 7
   // Footer: 2 (separator + keys, pinned to bottom)
   // Reserve 1 extra for selected item detail line
-  const maxVisible = rows - 10;
+  const maxVisible = rows - 10 - (showDashboard ? 2 : 0);
   const startIdx = Math.max(0, selectedIndex - Math.floor(maxVisible / 2));
   const endIdx = Math.min(processes.length, startIdx + maxVisible);
 
@@ -1319,7 +1323,8 @@ function showHelp() {
   output += `  ${CYAN}o${RESET}         Open working directory in file manager\n`;
   output += `  ${CYAN}e${RESET}         Open working directory in editor ($EDITOR or code)\n`;
   output += `  ${CYAN}t${RESET}         Open new terminal tab in working directory\n`;
-  output += `  ${CYAN}r${RESET}         Refresh process list\n\n`;
+  output += `  ${CYAN}r${RESET}         Refresh process list\n`;
+  output += `  ${CYAN}d${RESET}         Toggle aggregate dashboard stats\n\n`;
 
   output += `${BOLD}OTHER:${RESET}\n`;
   output += `  ${CYAN}q / ESC${RESET}   Quit the manager\n`;
@@ -1496,6 +1501,11 @@ function handleInput(key) {
         }
         render();
       }
+      break;
+
+    case 'd':
+      showDashboard = !showDashboard;
+      render();
       break;
 
     case 'g':
