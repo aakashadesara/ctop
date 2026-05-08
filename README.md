@@ -40,6 +40,13 @@ Track CPU, memory, token usage, context window saturation, active branches, and 
 
 ## Installation
 
+### Homebrew (macOS/Linux)
+
+```bash
+brew tap aakashadesara/ctop
+brew install ctop-claude
+```
+
 ### npm (recommended)
 
 ```bash
@@ -198,7 +205,7 @@ On Windows, ctop uses PowerShell to detect Claude processes and retrieve process
 - [x] **Sort** — cycle through age, CPU, memory, context %
 - [x] **Filter** — search by branch, model, directory, slug, title
 - [x] **Windows support** — PowerShell-based process detection
-- [ ] **Homebrew formula** — `brew install ctop`
+- [x] **Homebrew formula** — `brew install ctop-claude`
 - [ ] **Process log tailing** — stream a session's output in a split pane
 - [ ] **Color themes** — custom or preset color schemes
 

@@ -727,7 +727,19 @@ footer {
 
     <div class="install-grid">
       <div class="install-option">
-        <h3>Global install</h3>
+        <h3>Homebrew</h3>
+        <div class="code-block">
+          <button class="copy-btn" onclick="copyCode(this, 'brew tap aakashadesara/ctop')">copy</button>
+          <span class="prompt">$</span> <span class="cmd">brew tap aakashadesara/ctop</span>
+        </div>
+        <div class="code-block" style="margin-top: 10px;">
+          <button class="copy-btn" onclick="copyCode(this, 'brew install ctop-claude')">copy</button>
+          <span class="prompt">$</span> <span class="cmd">brew install ctop-claude</span>
+        </div>
+      </div>
+
+      <div class="install-option">
+        <h3>npm</h3>
         <div class="code-block">
           <button class="copy-btn" onclick="copyCode(this, 'npm install -g ctop-claude')">copy</button>
           <span class="prompt">$</span> <span class="cmd">npm install -g ctop-claude</span>
