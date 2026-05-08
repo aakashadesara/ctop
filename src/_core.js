@@ -3045,13 +3045,19 @@ function aggregateHeatmapData(history, metric = 'tokens') {
   return dayMap;
 }
 
-function getHeatmapColorLevel(value, maxValue) {
-  if (value === 0 || maxValue === 0) return 0;
-  const ratio = value / maxValue;
-  if (ratio <= 0.05) return 0;
-  if (ratio <= 0.25) return 1;
-  if (ratio <= 0.50) return 2;
-  if (ratio <= 0.75) return 3;
+function computeHeatmapThresholds(allValues) {
+  // GitHub-style percentile thresholds
+  const nonZero = allValues.filter(v => v > 0).sort((a, b) => a - b);
+  if (nonZero.length === 0) return [0, 0, 0, 0];
+  const p = (pct) => nonZero[Math.min(nonZero.length - 1, Math.floor(pct * nonZero.length))];
+  return [p(0.0), p(0.25), p(0.50), p(0.75)];
+}
+
+function getHeatmapColorLevel(value, thresholds) {
+  if (value <= 0) return 0;
+  if (value <= thresholds[0]) return 1;
+  if (value <= thresholds[1]) return 2;
+  if (value <= thresholds[2]) return 3;
   return 4;
 }
 
@@ -3081,7 +3087,7 @@ function renderHeatmap(columns, rows) {
   // Build grid[week][day] = value
   const grid = [];
   const dates = [];
-  let maxValue = 0;
+  const allValues = [];
   for (let w = 0; w < WEEKS; w++) {
     const weekCol = [];
     const weekDates = [];
@@ -3091,7 +3097,7 @@ function renderHeatmap(columns, rows) {
       const val = dayMap.get(key) || 0;
       if (cellDate <= today) {
         weekCol.push(val);
-        if (val > maxValue) maxValue = val;
+        allValues.push(val);
       } else {
         weekCol.push(-1); // future date
       }
@@ -3100,6 +3106,9 @@ function renderHeatmap(columns, rows) {
     grid.push(weekCol);
     dates.push(weekDates);
   }
+
+  // Compute percentile thresholds for color levels (GitHub-style)
+  const thresholds = computeHeatmapThresholds(allValues);
 
   // Color definitions for levels
   const HEATMAP_CHARS = ['\u2591', '\u2592', '\u2593', '\u2588', '\u2588'];
@@ -3145,7 +3154,7 @@ function renderHeatmap(columns, rows) {
       if (val === -1) {
         row += ' '; // future date
       } else {
-        const level = getHeatmapColorLevel(val, maxValue);
+        const level = getHeatmapColorLevel(val, thresholds);
         row += `${HEATMAP_COLORS[level]}${HEATMAP_CHARS[level]}${RESET} `;
       }
     }
@@ -4257,6 +4266,7 @@ module.exports = {
   // Heatmap
   aggregateHeatmapData,
   getHeatmapColorLevel,
+  computeHeatmapThresholds,
   renderHeatmap,
   // Notification helpers
   sendNotification,

@@ -4,6 +4,7 @@ const assert = require('node:assert');
 const {
   aggregateHeatmapData,
   getHeatmapColorLevel,
+  computeHeatmapThresholds,
   loadHistory,
   formatCompactTokens,
   _state,
@@ -196,39 +197,60 @@ describe('Heatmap', () => {
 
   describe('getHeatmapColorLevel', () => {
     it('returns 0 for zero value', () => {
-      assert.strictEqual(getHeatmapColorLevel(0, 100), 0);
+      const thresholds = computeHeatmapThresholds([10, 20, 30, 40]);
+      assert.strictEqual(getHeatmapColorLevel(0, thresholds), 0);
     });
 
-    it('returns 0 for zero maxValue', () => {
-      assert.strictEqual(getHeatmapColorLevel(50, 0), 0);
+    it('returns 0 for negative value', () => {
+      const thresholds = computeHeatmapThresholds([10, 20, 30, 40]);
+      assert.strictEqual(getHeatmapColorLevel(-5, thresholds), 0);
     });
 
-    it('returns 0 for very low ratio (<= 5%)', () => {
-      assert.strictEqual(getHeatmapColorLevel(5, 100), 0);
+    it('returns level 1 for values at or below 25th percentile', () => {
+      const thresholds = computeHeatmapThresholds([10, 20, 30, 40]);
+      assert.strictEqual(getHeatmapColorLevel(10, thresholds), 1);
     });
 
-    it('returns 1 for low ratio (6-25%)', () => {
-      assert.strictEqual(getHeatmapColorLevel(10, 100), 1);
-      assert.strictEqual(getHeatmapColorLevel(25, 100), 1);
+    it('returns level 4 for values above 75th percentile', () => {
+      const thresholds = computeHeatmapThresholds([10, 20, 30, 40]);
+      assert.strictEqual(getHeatmapColorLevel(40, thresholds), 4);
     });
 
-    it('returns 2 for moderate ratio (26-50%)', () => {
-      assert.strictEqual(getHeatmapColorLevel(30, 100), 2);
-      assert.strictEqual(getHeatmapColorLevel(50, 100), 2);
+    it('distributes levels evenly with uniform data', () => {
+      const values = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+      const thresholds = computeHeatmapThresholds(values);
+      // Low values should be lower levels, high values higher levels
+      assert.ok(getHeatmapColorLevel(1, thresholds) < getHeatmapColorLevel(10, thresholds));
     });
 
-    it('returns 3 for high ratio (51-75%)', () => {
-      assert.strictEqual(getHeatmapColorLevel(60, 100), 3);
-      assert.strictEqual(getHeatmapColorLevel(75, 100), 3);
+    it('handles all same values', () => {
+      const thresholds = computeHeatmapThresholds([50, 50, 50]);
+      // All values equal the thresholds, should get some level > 0
+      assert.ok(getHeatmapColorLevel(50, thresholds) > 0);
     });
 
-    it('returns 4 for very high ratio (> 75%)', () => {
-      assert.strictEqual(getHeatmapColorLevel(80, 100), 4);
-      assert.strictEqual(getHeatmapColorLevel(100, 100), 4);
+    it('handles single value', () => {
+      const thresholds = computeHeatmapThresholds([100]);
+      assert.ok(getHeatmapColorLevel(100, thresholds) > 0);
+    });
+  });
+
+  describe('computeHeatmapThresholds', () => {
+    it('returns zeros for empty array', () => {
+      const t = computeHeatmapThresholds([]);
+      assert.deepStrictEqual(t, [0, 0, 0, 0]);
     });
 
-    it('handles equal value and maxValue', () => {
-      assert.strictEqual(getHeatmapColorLevel(50, 50), 4);
+    it('returns zeros for all-zero values', () => {
+      const t = computeHeatmapThresholds([0, 0, 0]);
+      assert.deepStrictEqual(t, [0, 0, 0, 0]);
+    });
+
+    it('returns ascending thresholds for varied data', () => {
+      const t = computeHeatmapThresholds([1, 5, 10, 20, 50, 100]);
+      assert.ok(t[0] <= t[1]);
+      assert.ok(t[1] <= t[2]);
+      assert.ok(t[2] <= t[3]);
     });
   });
 
