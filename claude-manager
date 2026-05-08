@@ -16,6 +16,7 @@ const DEFAULT_CONFIG = {
   contextLimit: 200000,
   defaultView: 'list', // 'list' or 'pane'
   theme: 'default',    // 'default' or 'minimal'
+  notifications: { enabled: true, minDuration: 30 }, // seconds
 };
 
 function loadConfig() {
@@ -29,6 +30,9 @@ function loadConfig() {
       if (rc.contextLimit) config.contextLimit = Number(rc.contextLimit);
       if (rc.defaultView === 'pane' || rc.defaultView === 'list') config.defaultView = rc.defaultView;
       if (rc.theme === 'minimal') config.theme = 'minimal';
+      if (rc.notifications !== undefined && typeof rc.notifications === 'object') {
+        config.notifications = { ...DEFAULT_CONFIG.notifications, ...rc.notifications };
+      }
     }
   } catch (e) {}
   // CLI flags override
@@ -191,6 +195,106 @@ let sortReverse = false;
 let filterText = '';
 let filterInput = false; // true when typing a filter
 let showDashboard = false; // toggled by 'd' key
+
+// Notification state
+let notificationsEnabled = CONFIG.notifications.enabled;
+const previousStates = new Map();   // PID -> last known status string
+const processStartTimes = new Map(); // PID -> timestamp (ms) when first seen ACTIVE
+
+function sendNotification(title, message) {
+  try {
+    if (IS_MAC) {
+      spawn('osascript', ['-e', `display notification "${message}" with title "${title}"`], {
+        detached: true, stdio: 'ignore'
+      }).unref();
+    } else if (IS_LINUX) {
+      spawn('notify-send', [title, message], {
+        detached: true, stdio: 'ignore'
+      }).unref();
+    }
+  } catch (e) {}
+}
+
+function formatDuration(ms) {
+  const totalSec = Math.floor(ms / 1000);
+  if (totalSec < 60) return `${totalSec}s`;
+  const mins = Math.floor(totalSec / 60);
+  const secs = totalSec % 60;
+  if (mins < 60) return `${mins}m ${secs}s`;
+  const hours = Math.floor(mins / 60);
+  const remMins = mins % 60;
+  return `${hours}h ${remMins}m`;
+}
+
+function formatNotificationMessage(proc) {
+  const parts = [];
+  const label = proc.slug || proc.title || 'Claude session';
+  parts.push(label);
+  if (proc._activeDurationMs) {
+    parts.push(`Duration: ${formatDuration(proc._activeDurationMs)}`);
+  }
+  if (proc.model) {
+    parts.push(`Model: ${proc.model.replace(/^claude-/, '')}`);
+  }
+  return parts.join(' | ');
+}
+
+function checkStateTransitions(currentProcs) {
+  if (!notificationsEnabled) return;
+
+  const minDuration = (CONFIG.notifications.minDuration || 30) * 1000;
+  const now = Date.now();
+
+  // Build a map of current PIDs -> status
+  const currentMap = new Map();
+  for (const proc of currentProcs) {
+    currentMap.set(proc.pid, proc);
+  }
+
+  // Track when processes first become ACTIVE
+  for (const proc of currentProcs) {
+    if (proc.status === 'ACTIVE' && !processStartTimes.has(proc.pid)) {
+      processStartTimes.set(proc.pid, now);
+    }
+  }
+
+  // Check for transitions: previously ACTIVE -> now STOPPED/ZOMBIE/disappeared
+  for (const [pid, prevStatus] of previousStates) {
+    if (prevStatus !== 'ACTIVE') continue;
+
+    const current = currentMap.get(pid);
+    const newStatus = current ? current.status : null;
+
+    // Only notify on completion transitions
+    if (newStatus === 'ACTIVE') continue;
+
+    // Process transitioned away from ACTIVE (or disappeared)
+    const startTime = processStartTimes.get(pid);
+    if (!startTime) continue;
+
+    const activeDuration = now - startTime;
+    if (activeDuration < minDuration) continue;
+
+    // Build notification
+    const proc = current || { pid, slug: null, title: 'Claude session', model: null };
+    proc._activeDurationMs = activeDuration;
+    const message = formatNotificationMessage(proc);
+    sendNotification('CTOP \u2014 Session Completed', message);
+  }
+
+  // Update previousStates for next cycle
+  previousStates.clear();
+  for (const proc of currentProcs) {
+    previousStates.set(proc.pid, proc.status);
+  }
+
+  // Clean up start times for processes that are gone
+  for (const pid of processStartTimes.keys()) {
+    if (!currentMap.has(pid)) {
+      processStartTimes.delete(pid);
+    }
+  }
+}
 
 function getClaudeProcesses() {
   try {
@@ -608,6 +712,8 @@ function renderPaneMode() {
   if (sortMode !== 'age') statsLine += `${DIM} | Sort: ${RESET}${CYAN}${sortMode}${sortReverse ? ' ↑' : ''}${RESET}`;
   if (filterText) statsLine += `${DIM} | Filter: ${RESET}${YELLOW}"${filterText}"${RESET}${DIM} (${processes.length}/${allProcesses.length})${RESET}`;
   if (filterInput) statsLine += `${DIM} | ${RESET}${BG_BLUE}${WHITE} /${filterText}█ ${RESET}`;
+  const notifLabel = notificationsEnabled ? `${GREEN}ON${RESET}` : `${RED}OFF${RESET}`;
+  statsLine += `${DIM} | Notif: ${RESET}${notifLabel}`;
   statsLine += `${DIM} | ${lastRefresh.toLocaleTimeString()} ${RESET}`;
   output += statsLine + `${CLR_LINE}\n`;
 
@@ -770,7 +876,7 @@ function renderPaneMode() {
   output += `${RED}x${RESET} Kill  ${RED}X${RESET} Force  `;
   output += `${CYAN}o${RESET} Open  `;
   output += `${CYAN}s${RESET} Sort  ${CYAN}/${RESET} Filter  `;
-  output += `${CYAN}d${RESET} Dash  ${CYAN}P${RESET} List  ${CYAN}r${RESET} Refresh  ${CYAN}q${RESET} Quit  ${CYAN}?${RESET} Help${CLR_LINE}`;
+  output += `${CYAN}d${RESET} Dash  ${CYAN}n${RESET} Notif  ${CYAN}P${RESET} List  ${CYAN}r${RESET} Refresh  ${CYAN}q${RESET} Quit  ${CYAN}?${RESET} Help${CLR_LINE}`;
 
   process.stdout.write(output);
 }
@@ -985,6 +1091,8 @@ function render() {
   if (sortMode !== 'age') statsLine += `${DIM} | Sort: ${RESET}${CYAN}${sortMode}${sortReverse ? ' ↑' : ''}${RESET}`;
   if (filterText) statsLine += `${DIM} | Filter: ${RESET}${YELLOW}"${filterText}"${RESET}${DIM} (${processes.length}/${allProcesses.length})${RESET}`;
   if (filterInput) statsLine += `${DIM} | ${RESET}${BG_BLUE}${WHITE} /${filterText}█ ${RESET}`;
+  const notifLabel2 = notificationsEnabled ? `${GREEN}ON${RESET}` : `${RED}OFF${RESET}`;
+  statsLine += `${DIM} | Notif: ${RESET}${notifLabel2}`;
   statsLine += `${DIM} | ${lastRefresh.toLocaleTimeString()} ${RESET}`;
   output += statsLine + `${CLR_LINE}\n`;
 
@@ -1185,7 +1293,7 @@ function render() {
   output += `${RED}x${RESET} Kill  ${RED}X${RESET} Force  `;
   output += `${CYAN}o${RESET} Open  `;
   output += `${CYAN}s${RESET} Sort  ${CYAN}/${RESET} Filter  `;
-  output += `${CYAN}d${RESET} Dash  ${CYAN}P${RESET} Pane  ${CYAN}r${RESET} Refresh  ${CYAN}q${RESET} Quit  ${CYAN}?${RESET} Help${CLR_LINE}`;
+  output += `${CYAN}d${RESET} Dash  ${CYAN}n${RESET} Notif  ${CYAN}P${RESET} Pane  ${CYAN}r${RESET} Refresh  ${CYAN}q${RESET} Quit  ${CYAN}?${RESET} Help${CLR_LINE}`;
 
   process.stdout.write(output);
 }
@@ -1324,7 +1432,8 @@ function showHelp() {
   output += `  ${CYAN}e${RESET}         Open working directory in editor ($EDITOR or code)\n`;
   output += `  ${CYAN}t${RESET}         Open new terminal tab in working directory\n`;
   output += `  ${CYAN}r${RESET}         Refresh process list\n`;
-  output += `  ${CYAN}d${RESET}         Toggle aggregate dashboard stats\n\n`;
+  output += `  ${CYAN}d${RESET}         Toggle aggregate dashboard stats\n`;
+  output += `  ${CYAN}n${RESET}         Toggle desktop notifications on/off\n\n`;
 
   output += `${BOLD}OTHER:${RESET}\n`;
   output += `  ${CYAN}q / ESC${RESET}   Quit the manager\n`;
@@ -1618,8 +1727,15 @@ function handleInput(key) {
       render();
       break;
 
+    case 'n':
+      notificationsEnabled = !notificationsEnabled;
+      statusMessage = `Notifications: ${notificationsEnabled ? 'ON' : 'OFF'}`;
+      render();
+      break;
+
     case 'r':
       allProcesses = getClaudeProcesses(); applySortAndFilter();
+      checkStateTransitions(allProcesses);
       lastRefresh = new Date();
       statusMessage = 'Refreshed';
       render();
@@ -1688,6 +1804,7 @@ function main() {
   setInterval(() => {
     if (!showingHelp && !confirmKillAll && !confirmKillStopped && !filterInput) {
       allProcesses = getClaudeProcesses(); applySortAndFilter();
+      checkStateTransitions(allProcesses);
       lastRefresh = new Date();
       if (selectedIndex >= processes.length) {
         selectedIndex = Math.max(0, processes.length - 1);
@@ -1721,6 +1838,11 @@ module.exports = {
   getCardsPerRow,
   openDirectory,
   DEFAULT_CONFIG,
+  // Notification helpers
+  sendNotification,
+  formatDuration,
+  formatNotificationMessage,
+  checkStateTransitions,
   // Expose internals for testing
   _state: { get allProcesses() { return allProcesses; }, set allProcesses(v) { allProcesses = v; },
             get processes() { return processes; }, set processes(v) { processes = v; },
@@ -1728,6 +1850,8 @@ module.exports = {
             get sortMode() { return sortMode; }, set sortMode(v) { sortMode = v; },
             get sortReverse() { return sortReverse; }, set sortReverse(v) { sortReverse = v; },
             get selectedIndex() { return selectedIndex; }, set selectedIndex(v) { selectedIndex = v; },
-            get showDashboard() { return showDashboard; }, set showDashboard(v) { showDashboard = v; } },
+            get showDashboard() { return showDashboard; }, set showDashboard(v) { showDashboard = v; },
+            get notificationsEnabled() { return notificationsEnabled; }, set notificationsEnabled(v) { notificationsEnabled = v; } },
+  _notif: { previousStates, processStartTimes },
   _colors: { RED, ORANGE, YELLOW, GREEN },
 };
