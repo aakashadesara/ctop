@@ -1456,11 +1456,147 @@ function showHelp() {
   process.stdout.write(output);
 }
 
+function parseMouseEvent(data) {
+  // SGR format: \x1b[<button;col;rowM (press) or \x1b[<button;col;rowm (release)
+  const match = data.match(/\x1b\[<(\d+);(\d+);(\d+)([Mm])/);
+  if (!match) return null;
+  const button = parseInt(match[1]);
+  const col = parseInt(match[2]);
+  const row = parseInt(match[3]);
+  const isRelease = match[4] === 'm';
+  return {
+    button: button & 3, // 0=left, 1=middle, 2=right
+    col, row, isRelease,
+    isScroll: (button & 64) !== 0,
+    scrollUp: (button & 64) !== 0 && (button & 1) === 0,
+    scrollDown: (button & 64) !== 0 && (button & 1) !== 0,
+  };
+}
+
+function listViewRowToIndex(row) {
+  // Header: 3 (header box) + 1 (stats) + 1 (separator) + 1 (col headers) + 1 (separator) = 7
+  const headerLines = 7 + (showDashboard ? 2 : 0);
+  const dataRow = row - headerLines - 1; // -1 because rows are 1-based
+  if (dataRow < 0) return -1;
+
+  const termRows = process.stdout.rows || 40;
+  const maxVisible = termRows - 10 - (showDashboard ? 2 : 0);
+  const startIdx = Math.max(0, selectedIndex - Math.floor(maxVisible / 2));
+  return startIdx + dataRow;
+}
+
+function paneViewClickToIndex(row, col) {
+  const { columns } = process.stdout;
+  const cardWidth = 34;
+  const cardHeight = 8;
+  const cardGapX = 1;
+  const cardGapY = 1;
+  const cardsPerRow = getCardsPerRow();
+
+  // Header: 3 (header box) + 1 (stats) + 1 (separator) = 5, plus optional dashboard/status
+  const headerLines = 5 + (showDashboard ? 2 : 0);
+  const contentRow = row - headerLines - 1; // 0-based row within card grid (1-based row correction)
+  if (contentRow < 0) return -1;
+
+  // Determine which card row
+  const cellHeight = cardHeight + cardGapY;
+  const cardRow = Math.floor(contentRow / cellHeight);
+  const withinCard = contentRow % cellHeight;
+  if (withinCard >= cardHeight) return -1; // clicked in gap
+
+  // Determine which card column
+  const cellWidth = cardWidth + cardGapX;
+  const cardCol = Math.floor((col - 1) / cellWidth); // col is 1-based
+  if (cardCol >= cardsPerRow) return -1;
+  const withinCardX = (col - 1) % cellWidth;
+  if (withinCardX >= cardWidth) return -1; // clicked in gap
+
+  // Account for scroll offset
+  const totalRows = Math.ceil(processes.length / cardsPerRow);
+  const { rows: termRows } = process.stdout;
+  const footerLines = 2;
+  const availableSpace = termRows - headerLines - footerLines;
+  const maxVisibleCardRows = Math.max(1, Math.floor((availableSpace + cardGapY) / (cardHeight + cardGapY)));
+  const scrollRow = Math.max(0, paneRow - Math.floor(maxVisibleCardRows / 2));
+
+  const actualCardRow = scrollRow + cardRow;
+  const idx = actualCardRow * cardsPerRow + cardCol;
+  if (idx >= processes.length) return -1;
+  return idx;
+}
+
+function handleMouseEvent(evt) {
+  // Only handle left-click press events, plus scroll
+  if (evt.isScroll) {
+    if (evt.scrollUp) {
+      // Same as 'k' — move selection up
+      if (viewMode === 'pane') {
+        if (paneRow > 0) {
+          paneRow--;
+          const cardsPerRow = getCardsPerRow();
+          selectedIndex = paneRow * cardsPerRow + paneCol;
+          if (selectedIndex >= processes.length) {
+            selectedIndex = processes.length - 1;
+            paneCol = selectedIndex % cardsPerRow;
+          }
+        }
+      } else {
+        if (selectedIndex > 0) selectedIndex--;
+      }
+    } else if (evt.scrollDown) {
+      // Same as 'j' — move selection down
+      if (viewMode === 'pane') {
+        const cardsPerRow = getCardsPerRow();
+        const totalRows = Math.ceil(processes.length / cardsPerRow);
+        if (paneRow < totalRows - 1) {
+          paneRow++;
+          selectedIndex = paneRow * cardsPerRow + paneCol;
+          if (selectedIndex >= processes.length) {
+            selectedIndex = processes.length - 1;
+            paneCol = selectedIndex % cardsPerRow;
+          }
+        }
+      } else {
+        if (selectedIndex < processes.length - 1) selectedIndex++;
+      }
+    }
+    render();
+    return;
+  }
+
+  // Only left-click press (not release)
+  if (evt.button !== 0 || evt.isRelease) return;
+
+  if (viewMode === 'pane') {
+    const idx = paneViewClickToIndex(evt.row, evt.col);
+    if (idx >= 0 && idx < processes.length) {
+      selectedIndex = idx;
+      const cardsPerRow = getCardsPerRow();
+      paneRow = Math.floor(idx / cardsPerRow);
+      paneCol = idx % cardsPerRow;
+      render();
+    }
+  } else {
+    const idx = listViewRowToIndex(evt.row);
+    if (idx >= 0 && idx < processes.length) {
+      selectedIndex = idx;
+      render();
+    }
+  }
+}
+
 let showingHelp = false;
 let confirmKillAll = false;
 let confirmKillStopped = false;
 
 function handleInput(key) {
+  // Check for mouse events first
+  const mouseEvt = parseMouseEvent(key);
+  if (mouseEvt) {
+    handleMouseEvent(mouseEvt);
+    return;
+  }
+
   // Filter input mode
   if (filterInput) {
     if (key === '\r' || key === '\n') {
@@ -1765,6 +1901,8 @@ function handleInput(key) {
 }
 
 function cleanup() {
+  // Disable mouse tracking
+  process.stdout.write('\x1b[?1000l\x1b[?1006l');
   process.stdout.write(SHOW_CURSOR + CLEAR);
   process.stdin.setRawMode(false);
 }
@@ -1779,6 +1917,9 @@ function main() {
   process.stdin.setRawMode(true);
   process.stdin.resume();
   process.stdin.setEncoding('utf8');
+
+  // Enable mouse tracking (SGR extended mode)
+  process.stdout.write('\x1b[?1000h\x1b[?1006h');
 
   // Handle resize
   process.stdout.on('resize', () => {
@@ -1837,6 +1978,9 @@ module.exports = {
   applySortAndFilter,
   getCardsPerRow,
   openDirectory,
+  parseMouseEvent,
+  listViewRowToIndex,
+  paneViewClickToIndex,
   DEFAULT_CONFIG,
   // Notification helpers
   sendNotification,
@@ -1851,7 +1995,8 @@ module.exports = {
             get sortReverse() { return sortReverse; }, set sortReverse(v) { sortReverse = v; },
             get selectedIndex() { return selectedIndex; }, set selectedIndex(v) { selectedIndex = v; },
             get showDashboard() { return showDashboard; }, set showDashboard(v) { showDashboard = v; },
-            get notificationsEnabled() { return notificationsEnabled; }, set notificationsEnabled(v) { notificationsEnabled = v; } },
+            get notificationsEnabled() { return notificationsEnabled; }, set notificationsEnabled(v) { notificationsEnabled = v; },
+            get viewMode() { return viewMode; }, set viewMode(v) { viewMode = v; } },
   _notif: { previousStates, processStartTimes },
   _colors: { RED, ORANGE, YELLOW, GREEN },
 };
