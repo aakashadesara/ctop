@@ -256,6 +256,150 @@ let sortReverse = false;
 let filterText = '';
 let filterInput = false; // true when typing a filter
 let showDashboard = false; // toggled by 'd' key
+let showHistory = false; // toggled by 'H' key
+
+// History tracking state
+const HISTORY_DIR = path.join(os.homedir(), '.ctop');
+const HISTORY_FILE = path.join(HISTORY_DIR, 'history.json');
+let lastSnapshotTime = 0; // ms timestamp of last saved snapshot
+const SNAPSHOT_INTERVAL = 60000; // 1 minute minimum between snapshots
+const HISTORY_RETENTION_DAYS = 7;
+
+function loadHistory() {
+  try {
+    return JSON.parse(fs.readFileSync(HISTORY_FILE, 'utf8'));
+  } catch {
+    return [];
+  }
+}
+
+function pruneHistory(history) {
+  const cutoff = Date.now() - HISTORY_RETENTION_DAYS * 24 * 60 * 60 * 1000;
+  return history.filter(entry => new Date(entry.timestamp).getTime() > cutoff);
+}
+
+function saveHistorySnapshot(procs) {
+  const now = Date.now();
+  if (now - lastSnapshotTime < SNAPSHOT_INTERVAL) return;
+  lastSnapshotTime = now;
+
+  const stats = calculateAggregateStats(procs);
+  const snapshot = {
+    timestamp: new Date().toISOString(),
+    sessions: procs.length,
+    activeCount: stats.active,
+    totalInputTokens: stats.totalInput,
+    totalOutputTokens: stats.totalOutput,
+    totalCacheTokens: stats.totalCache,
+    totalCost: Math.round(stats.totalCost * 100) / 100,
+    avgContext: stats.avgContextUtil !== null ? stats.avgContextUtil : 0,
+  };
+
+  try {
+    if (!fs.existsSync(HISTORY_DIR)) {
+      fs.mkdirSync(HISTORY_DIR, { recursive: true });
+    }
+    let history = loadHistory();
+    history.push(snapshot);
+    history = pruneHistory(history);
+    fs.writeFileSync(HISTORY_FILE, JSON.stringify(history, null, 0));
+  } catch {
+    // Silently fail - history is best-effort
+  }
+}
+
+function renderHistoryChart(history, columns) {
+  const now = Date.now();
+  const twentyFourHoursAgo = now - 24 * 60 * 60 * 1000;
+
+  // Filter to last 24h
+  const recent = history.filter(e => new Date(e.timestamp).getTime() > twentyFourHoursAgo);
+
+  if (recent.length === 0) {
+    return `${DIM}  No history data in the last 24 hours.${RESET}${CLR_LINE}\n` +
+           `${DIM}  Data is collected every minute while ctop is running.${RESET}${CLR_LINE}\n`;
+  }
+
+  // Bucket by hour (0-23 hours ago)
+  const buckets = new Array(24).fill(null).map(() => ({
+    tokens: 0, cost: 0, sessions: 0, count: 0
+  }));
+
+  for (const entry of recent) {
+    const ts = new Date(entry.timestamp).getTime();
+    const hoursAgo = Math.floor((now - ts) / (60 * 60 * 1000));
+    const bucketIdx = Math.min(23, Math.max(0, hoursAgo));
+    buckets[bucketIdx].tokens += (entry.totalInputTokens || 0) + (entry.totalOutputTokens || 0) + (entry.totalCacheTokens || 0);
+    buckets[bucketIdx].cost += entry.totalCost || 0;
+    buckets[bucketIdx].sessions += entry.activeCount || 0;
+    buckets[bucketIdx].count++;
+  }
+
+  // Average values per bucket (since we get multiple snapshots per hour)
+  for (const b of buckets) {
+    if (b.count > 0) {
+      b.tokens = Math.round(b.tokens / b.count);
+      b.cost = Math.round(b.cost * 100 / b.count) / 100;
+      b.sessions = Math.round(b.sessions / b.count);
+    }
+  }
+
+  const barWidth = Math.max(20, columns - 25);
+
+  let out = '';
+
+  // Token chart
+  out += `\n${BOLD}${THEME.accent}  --- Token Usage (24h) ---${RESET}${CLR_LINE}\n`;
+  const maxTokens = Math.max(1, ...buckets.map(b => b.tokens));
+  for (let h = 0; h < 24; h++) {
+    const b = buckets[h];
+    const hourLabel = formatHourLabel(h);
+    const barLen = Math.round((b.tokens / maxTokens) * barWidth);
+    const bar = barLen > 0 ? '\u2588'.repeat(barLen) : '';
+    const tokenStr = b.tokens > 0 ? formatCompactTokens(b.tokens) : '';
+    out += `  ${DIM}${hourLabel}${RESET} ${GREEN}${bar}${RESET} ${DIM}${tokenStr}${RESET}${CLR_LINE}\n`;
+  }
+
+  // Cost chart
+  out += `\n${BOLD}${THEME.accent}  --- Cost (24h) ---${RESET}${CLR_LINE}\n`;
+  const maxCost = Math.max(0.01, ...buckets.map(b => b.cost));
+  for (let h = 0; h < 24; h++) {
+    const b = buckets[h];
+    const hourLabel = formatHourLabel(h);
+    const barLen = Math.round((b.cost / maxCost) * barWidth);
+    const bar = barLen > 0 ? '\u2588'.repeat(barLen) : '';
+    const costStr = b.cost > 0 ? `$${b.cost.toFixed(2)}` : '';
+    out += `  ${DIM}${hourLabel}${RESET} ${YELLOW}${bar}${RESET} ${DIM}${costStr}${RESET}${CLR_LINE}\n`;
+  }
+
+  // Session count chart
+  out += `\n${BOLD}${THEME.accent}  --- Active Sessions (24h) ---${RESET}${CLR_LINE}\n`;
+  const maxSessions = Math.max(1, ...buckets.map(b => b.sessions));
+  for (let h = 0; h < 24; h++) {
+    const b = buckets[h];
+    const hourLabel = formatHourLabel(h);
+    const barLen = Math.round((b.sessions / maxSessions) * barWidth);
+    const bar = barLen > 0 ? '\u2588'.repeat(barLen) : '';
+    const sessStr = b.sessions > 0 ? `${b.sessions}` : '';
+    out += `  ${DIM}${hourLabel}${RESET} ${CYAN}${bar}${RESET} ${DIM}${sessStr}${RESET}${CLR_LINE}\n`;
+  }
+
+  return out;
+}
+
+function formatHourLabel(hoursAgo) {
+  const d = new Date(Date.now() - hoursAgo * 60 * 60 * 1000);
+  let hour = d.getHours();
+  const ampm = hour >= 12 ? 'pm' : 'am';
+  hour = hour % 12 || 12;
+  return `${String(hour).padStart(2)}${ampm}`;
+}
+
+function formatCompactTokens(n) {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${Math.round(n / 1_000)}k`;
+  return String(n);
+}
 
 // Full-text search state
 let searchMode = false;   // true when typing a search query
@@ -1173,7 +1317,7 @@ function renderPaneMode() {
   output += `${RED}x${RESET} Kill  ${RED}X${RESET} Force  `;
   output += `${CYAN}o${RESET} Open  `;
   output += `${CYAN}s${RESET} Sort  ${CYAN}/${RESET} Filter  ${CYAN}F${RESET} Search  `;
-  output += `${CYAN}T${RESET} Theme  ${CYAN}d${RESET} Dash  ${CYAN}n${RESET} Notif  ${CYAN}P${RESET} List  ${CYAN}r${RESET} Refresh  ${CYAN}q${RESET} Quit  ${CYAN}?${RESET} Help${CLR_LINE}`;
+  output += `${CYAN}T${RESET} Theme  ${CYAN}d${RESET} Dash  ${CYAN}H${RESET} History  ${CYAN}n${RESET} Notif  ${CYAN}P${RESET} List  ${CYAN}r${RESET} Refresh  ${CYAN}q${RESET} Quit  ${CYAN}?${RESET} Help${CLR_LINE}`;
 
   process.stdout.write(output);
 }
@@ -1633,7 +1777,7 @@ function render() {
   output += `${RED}x${RESET} Kill  ${RED}X${RESET} Force  `;
   output += `${CYAN}o${RESET} Open  `;
   output += `${CYAN}s${RESET} Sort  ${CYAN}/${RESET} Filter  ${CYAN}F${RESET} Search  `;
-  output += `${CYAN}T${RESET} Theme  ${CYAN}d${RESET} Dash  ${CYAN}n${RESET} Notif  ${CYAN}P${RESET} Pane  ${CYAN}r${RESET} Refresh  ${CYAN}q${RESET} Quit  ${CYAN}?${RESET} Help${CLR_LINE}`;
+  output += `${CYAN}T${RESET} Theme  ${CYAN}d${RESET} Dash  ${CYAN}H${RESET} History  ${CYAN}n${RESET} Notif  ${CYAN}P${RESET} Pane  ${CYAN}r${RESET} Refresh  ${CYAN}q${RESET} Quit  ${CYAN}?${RESET} Help${CLR_LINE}`;
 
   process.stdout.write(output);
 }
@@ -1755,6 +1899,24 @@ function cycleTheme() {
   statusMessage = `Theme: ${currentThemeName}`;
 }
 
+function showHistoryView() {
+  const { columns } = process.stdout;
+  let output = CLEAR;
+
+  output += renderHeader(columns);
+  output += '\n';
+
+  output += `${BOLD}${WHITE}  Usage History${RESET}${CLR_LINE}\n`;
+  output += `${DIM}${'─'.repeat(columns)}${RESET}${CLR_LINE}\n`;
+
+  const history = loadHistory();
+  output += renderHistoryChart(history, columns);
+
+  output += `\n${DIM}  Press any key to return...${RESET}`;
+
+  process.stdout.write(output);
+}
+
 function showHelp() {
   const { columns } = process.stdout;
   let output = CLEAR;
@@ -1781,6 +1943,7 @@ function showHelp() {
   output += `  ${CYAN}t${RESET}         Open new terminal tab in working directory\n`;
   output += `  ${CYAN}r${RESET}         Refresh process list\n`;
   output += `  ${CYAN}d${RESET}         Toggle aggregate dashboard stats\n`;
+  output += `  ${CYAN}H${RESET}         Toggle usage history view (24h charts)\n`;
   output += `  ${CYAN}n${RESET}         Toggle desktop notifications on/off\n\n`;
 
   output += `${BOLD}APPEARANCE:${RESET}\n`;
@@ -2016,6 +2179,12 @@ function handleInput(key) {
     return;
   }
 
+  if (showHistory) {
+    showHistory = false;
+    render();
+    return;
+  }
+
   if (confirmKillAll) {
     if (key === 'y' || key === 'Y') {
       const killed = killAllProcesses();
@@ -2140,6 +2309,11 @@ function handleInput(key) {
     case 'd':
       showDashboard = !showDashboard;
       render();
+      break;
+
+    case 'H':
+      showHistory = true;
+      showHistoryView();
       break;
 
     case 'g':
@@ -2348,11 +2522,22 @@ function main() {
   allProcesses = getClaudeProcesses(); applySortAndFilter();
   render();
 
+  // Prune old history on startup
+  try {
+    const hist = loadHistory();
+    const pruned = pruneHistory(hist);
+    if (pruned.length < hist.length) {
+      if (!fs.existsSync(HISTORY_DIR)) fs.mkdirSync(HISTORY_DIR, { recursive: true });
+      fs.writeFileSync(HISTORY_FILE, JSON.stringify(pruned, null, 0));
+    }
+  } catch {}
+
   // Auto-refresh every 5 seconds
   setInterval(() => {
-    if (!showingHelp && !confirmKillAll && !confirmKillStopped && !filterInput && !searchMode) {
+    if (!showingHelp && !showHistory && !confirmKillAll && !confirmKillStopped && !filterInput && !searchMode) {
       allProcesses = getClaudeProcesses(); applySortAndFilter();
       checkStateTransitions(allProcesses);
+      saveHistorySnapshot(allProcesses);
       lastRefresh = new Date();
       if (selectedIndex >= processes.length) {
         selectedIndex = Math.max(0, processes.length - 1);
@@ -2399,6 +2584,17 @@ module.exports = {
   THEME_REQUIRED_KEYS,
   resolveTheme,
   cycleTheme,
+  // History tracking
+  loadHistory,
+  pruneHistory,
+  saveHistorySnapshot,
+  renderHistoryChart,
+  formatHourLabel,
+  formatCompactTokens,
+  HISTORY_DIR,
+  HISTORY_FILE,
+  SNAPSHOT_INTERVAL,
+  HISTORY_RETENTION_DAYS,
   // Notification helpers
   sendNotification,
   formatDuration,
@@ -2412,6 +2608,8 @@ module.exports = {
             get sortReverse() { return sortReverse; }, set sortReverse(v) { sortReverse = v; },
             get selectedIndex() { return selectedIndex; }, set selectedIndex(v) { selectedIndex = v; },
             get showDashboard() { return showDashboard; }, set showDashboard(v) { showDashboard = v; },
+            get showHistory() { return showHistory; }, set showHistory(v) { showHistory = v; },
+            get lastSnapshotTime() { return lastSnapshotTime; }, set lastSnapshotTime(v) { lastSnapshotTime = v; },
             get searchQuery() { return searchQuery; }, set searchQuery(v) { searchQuery = v; },
             get searchResults() { return searchResults; }, set searchResults(v) { searchResults = v; },
             get notificationsEnabled() { return notificationsEnabled; }, set notificationsEnabled(v) { notificationsEnabled = v; },
