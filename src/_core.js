@@ -453,6 +453,7 @@ let searchResults = new Map(); // PID -> snippets[]
 
 // Log pane state
 let showLogPane = false;
+let logPaneManualToggle = false; // true once user presses L (manual override)
 let logLines = [];
 let logScrollOffset = 0;
 
@@ -1392,6 +1393,12 @@ function renderPaneMode() {
   const cardGapX = 1;
   const cardGapY = 1;
   const cardsPerRow = getCardsPerRow();
+
+  // Auto-show log pane when terminal is tall enough (unless user manually toggled)
+  if (!logPaneManualToggle) {
+    showLogPane = rows >= 40;
+  }
+
   let output = HOME + HIDE_CURSOR;
 
   // Header
@@ -1885,6 +1892,12 @@ function render() {
   const detailPaneWidth = 42;
   const showDetailPane = columns >= 140;
   const listWidth = showDetailPane ? columns - detailPaneWidth - 1 : columns;
+
+  // Auto-show log pane when terminal is tall enough (unless user manually toggled)
+  if (!logPaneManualToggle) {
+    showLogPane = rows >= 40;
+  }
+
   let output = HOME + HIDE_CURSOR;
 
   // Header
@@ -2661,6 +2674,7 @@ function handleInput(key) {
       break;
 
     case 'L':
+      logPaneManualToggle = true;
       showLogPane = !showLogPane;
       if (showLogPane) {
         logScrollOffset = 0;
