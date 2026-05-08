@@ -2925,9 +2925,75 @@ function showHistoryView() {
   process.stdout.write(output);
 }
 
+function scanSessionFile(fp, results) {
+  try {
+    const fstat = fs.statSync(fp);
+    if (fstat.size === 0) return;
+    const fd = fs.openSync(fp, 'r');
+
+    // Read first 4KB to find the actual session timestamp
+    const headSize = Math.min(4096, fstat.size);
+    const headBuf = Buffer.alloc(headSize);
+    fs.readSync(fd, headBuf, 0, headSize, 0);
+    let dateKey = null;
+    for (const line of headBuf.toString('utf8').split('\n')) {
+      if (!line.trim()) continue;
+      try {
+        const d = JSON.parse(line);
+        if (d.timestamp) {
+          dateKey = d.timestamp.slice(0, 10);
+          break;
+        }
+      } catch {}
+    }
+    if (!dateKey) {
+      dateKey = fstat.mtime.toISOString().slice(0, 10);
+    }
+
+    // Read last 32KB for usage data
+    const tailSize = Math.min(32768, fstat.size);
+    const buf = Buffer.alloc(tailSize);
+    fs.readSync(fd, buf, 0, tailSize, fstat.size - tailSize);
+    fs.closeSync(fd);
+    const lines = buf.toString('utf8').split('\n').reverse();
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      try {
+        const data = JSON.parse(line);
+        if (data.message && data.message.usage) {
+          const u = data.message.usage;
+          results.push({
+            dateKey,
+            inputTokens: u.input_tokens || 0,
+            outputTokens: u.output_tokens || 0,
+            cacheTokens: (u.cache_creation_input_tokens || 0) + (u.cache_read_input_tokens || 0),
+            model: data.message.model || null,
+          });
+          break;
+        }
+      } catch {}
+    }
+  } catch {}
+}
+
+function scanDirectoryRecursive(dirPath, results) {
+  try {
+    for (const entry of fs.readdirSync(dirPath)) {
+      const fullPath = path.join(dirPath, entry);
+      let stat;
+      try { stat = fs.statSync(fullPath); } catch { continue; }
+      if (stat.isDirectory()) {
+        scanDirectoryRecursive(fullPath, results);
+      } else if (entry.endsWith('.jsonl')) {
+        scanSessionFile(fullPath, results);
+      }
+    }
+  } catch {}
+}
+
 function scanSessionFilesForHistory() {
   // Scan actual Claude session JSONL files to build historical usage data
-  // This captures usage even when CTOP wasn't running
+  // Recursively scans all subdirectories including subagents/
   const results = [];
   const claudeDir = path.join(os.homedir(), '.claude', 'projects');
   try {
@@ -2937,60 +3003,7 @@ function scanSessionFilesForHistory() {
       let stat;
       try { stat = fs.statSync(projectPath); } catch { continue; }
       if (!stat.isDirectory()) continue;
-      let files;
-      try { files = fs.readdirSync(projectPath).filter(f => f.endsWith('.jsonl')); } catch { continue; }
-      for (const file of files) {
-        const fp = path.join(projectPath, file);
-        try {
-          const fstat = fs.statSync(fp);
-          if (fstat.size === 0) continue;
-          const fd = fs.openSync(fp, 'r');
-
-          // Read first 4KB to find the actual session timestamp
-          const headSize = Math.min(4096, fstat.size);
-          const headBuf = Buffer.alloc(headSize);
-          fs.readSync(fd, headBuf, 0, headSize, 0);
-          let dateKey = null;
-          for (const line of headBuf.toString('utf8').split('\n')) {
-            if (!line.trim()) continue;
-            try {
-              const d = JSON.parse(line);
-              if (d.timestamp) {
-                dateKey = d.timestamp.slice(0, 10); // YYYY-MM-DD
-                break;
-              }
-            } catch {}
-          }
-          // Fallback to mtime if no timestamp found in content
-          if (!dateKey) {
-            dateKey = fstat.mtime.toISOString().slice(0, 10);
-          }
-
-          // Read last 32KB for usage data
-          const tailSize = Math.min(32768, fstat.size);
-          const buf = Buffer.alloc(tailSize);
-          fs.readSync(fd, buf, 0, tailSize, fstat.size - tailSize);
-          fs.closeSync(fd);
-          const lines = buf.toString('utf8').split('\n').reverse();
-          for (const line of lines) {
-            if (!line.trim()) continue;
-            try {
-              const data = JSON.parse(line);
-              if (data.message && data.message.usage) {
-                const u = data.message.usage;
-                results.push({
-                  dateKey,
-                  inputTokens: u.input_tokens || 0,
-                  outputTokens: u.output_tokens || 0,
-                  cacheTokens: (u.cache_creation_input_tokens || 0) + (u.cache_read_input_tokens || 0),
-                  model: data.message.model || null,
-                });
-                break; // Only need the last usage entry per file
-              }
-            } catch {}
-          }
-        } catch {}
-      }
+      scanDirectoryRecursive(projectPath, results);
     }
   } catch {}
   return results;
