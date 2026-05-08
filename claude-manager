@@ -71,6 +71,44 @@ Sort keys (in TUI):
 
 const CONFIG = loadConfig();
 
+// Pricing per million tokens (USD) — as of 2025
+const MODEL_PRICING = {
+  'claude-sonnet-4-6': { input: 3, output: 15, cacheWrite: 3.75, cacheRead: 0.30 },
+  'claude-opus-4-6': { input: 15, output: 75, cacheWrite: 18.75, cacheRead: 1.50 },
+  'claude-haiku-4-5': { input: 0.80, output: 4, cacheWrite: 1, cacheRead: 0.08 },
+  // Older models
+  'claude-sonnet-4-5-20250514': { input: 3, output: 15, cacheWrite: 3.75, cacheRead: 0.30 },
+  'claude-3-5-sonnet-20241022': { input: 3, output: 15, cacheWrite: 3.75, cacheRead: 0.30 },
+  'claude-3-5-haiku-20241022': { input: 0.80, output: 4, cacheWrite: 1, cacheRead: 0.08 },
+  'claude-3-opus-20240229': { input: 15, output: 75, cacheWrite: 18.75, cacheRead: 1.50 },
+};
+
+function calculateCost(proc) {
+  if (!proc.model || proc.inputTokens == null) return null;
+  // Try exact match, then prefix match
+  let pricing = MODEL_PRICING[proc.model];
+  if (!pricing) {
+    // Try matching by model family
+    const modelLower = proc.model.toLowerCase();
+    if (modelLower.includes('opus')) pricing = MODEL_PRICING['claude-opus-4-6'];
+    else if (modelLower.includes('haiku')) pricing = MODEL_PRICING['claude-haiku-4-5'];
+    else pricing = MODEL_PRICING['claude-sonnet-4-6']; // default to sonnet
+  }
+  const cost = (
+    (proc.inputTokens || 0) * pricing.input / 1_000_000 +
+    (proc.outputTokens || 0) * pricing.output / 1_000_000 +
+    (proc.cacheCreateTokens || 0) * pricing.cacheWrite / 1_000_000 +
+    (proc.cacheReadTokens || 0) * pricing.cacheRead / 1_000_000
+  );
+  return cost;
+}
+
+function formatCost(cost) {
+  if (cost === null) return '--';
+  if (cost < 0.01) return '<$0.01';
+  return '$' + cost.toFixed(2);
+}
+
 // ANSI escape codes
 const ESC = '\x1b';
 const CLEAR = `${ESC}[2J${ESC}[H`;
@@ -185,6 +223,11 @@ function getClaudeProcesses() {
 
     // Assign session data (title + context) by matching sessions to processes per cwd
     assignSessionsToProcesses(procs);
+
+    // Calculate cost for each process
+    for (const proc of procs) {
+      proc.cost = calculateCost(proc);
+    }
 
     return procs;
   } catch (e) {
@@ -489,7 +532,12 @@ function renderPaneMode() {
   // Stats bar
   const activeCount = allProcesses.filter(p => p.isActive).length;
   const deadCount = allProcesses.filter(p => !p.isActive).length;
+  const paneTotalCost = allProcesses.reduce((sum, p) => sum + (p.cost || 0), 0);
   let statsLine = `${DIM} Active: ${RESET}${GREEN}${activeCount}${RESET}${DIM} | Dead/Stopped: ${RESET}${RED}${deadCount}${RESET}`;
+  let paneCostColor = GREEN;
+  if (paneTotalCost > 5) paneCostColor = RED;
+  else if (paneTotalCost >= 1) paneCostColor = YELLOW;
+  statsLine += `${DIM} | Total Cost: ${RESET}${paneCostColor}${formatCost(paneTotalCost > 0 ? paneTotalCost : null)}${RESET}`;
   if (sortMode !== 'age') statsLine += `${DIM} | Sort: ${RESET}${CYAN}${sortMode}${sortReverse ? ' ↑' : ''}${RESET}`;
   if (filterText) statsLine += `${DIM} | Filter: ${RESET}${YELLOW}"${filterText}"${RESET}${DIM} (${processes.length}/${allProcesses.length})${RESET}`;
   if (filterInput) statsLine += `${DIM} | ${RESET}${BG_BLUE}${WHITE} /${filterText}█ ${RESET}`;
@@ -745,6 +793,15 @@ function renderDetailPane(proc, startRow, paneCol, paneWidth, availRows) {
   if (r < startRow + availRows - 1)
     output += pairRow(r++, 'Turn:', turnMs, '', 'Stop:', proc.stopReason || '--', DIM);
 
+  // Cost row
+  if (r < startRow + availRows - 1) {
+    const costStr = formatCost(proc.cost);
+    let costColor = GREEN;
+    if (proc.cost !== null && proc.cost > 5) costColor = RED;
+    else if (proc.cost !== null && proc.cost >= 1) costColor = YELLOW;
+    output += fullRow(r++, 'Cost:', costStr, costColor);
+  }
+
   // Context bar
   const CTX_LIMIT = CONFIG.contextLimit;
   const hasTokens = proc.inputTokens != null;
@@ -849,7 +906,12 @@ function render() {
   // Stats bar
   const activeCount = allProcesses.filter(p => p.isActive).length;
   const deadCount = allProcesses.filter(p => !p.isActive).length;
+  const totalCost = allProcesses.reduce((sum, p) => sum + (p.cost || 0), 0);
   let statsLine = `${DIM} Active: ${RESET}${GREEN}${activeCount}${RESET}${DIM} | Dead/Stopped: ${RESET}${RED}${deadCount}${RESET}`;
+  let totalCostColor = GREEN;
+  if (totalCost > 5) totalCostColor = RED;
+  else if (totalCost >= 1) totalCostColor = YELLOW;
+  statsLine += `${DIM} | Total Cost: ${RESET}${totalCostColor}${formatCost(totalCost > 0 ? totalCost : null)}${RESET}`;
   if (sortMode !== 'age') statsLine += `${DIM} | Sort: ${RESET}${CYAN}${sortMode}${sortReverse ? ' ↑' : ''}${RESET}`;
   if (filterText) statsLine += `${DIM} | Filter: ${RESET}${YELLOW}"${filterText}"${RESET}${DIM} (${processes.length}/${allProcesses.length})${RESET}`;
   if (filterInput) statsLine += `${DIM} | ${RESET}${BG_BLUE}${WHITE} /${filterText}█ ${RESET}`;
@@ -868,16 +930,20 @@ function render() {
   const ctxBarMode = listWidth >= 160;
   const ctxColW = ctxBarMode ? 16 : 6;
   const isNarrow = listWidth < 120;
+  const showCostCol = listWidth >= 140;
+  const costColW = 9;
   // In narrow mode: PID(8) + STATUS(10) + CTX(6) + STARTED(12) + MODEL(14) + CPU%(7) + MEM%(5) + pad(2) = 64
-  // In wide mode: full columns with BRANCH, SLUG, DIRECTORY
+  // In wide mode: full columns with BRANCH, SLUG, DIRECTORY, and optionally COST
   const fixedColsTotal = isNarrow
     ? 8 + 10 + ctxColW + 12 + 14 + 7 + 7 + 2
-    : 8 + 10 + ctxColW + 12 + 32 + 22 + 14 + 7 + 7 + 2;
+    : 8 + 10 + ctxColW + 12 + 32 + 22 + 14 + (showCostCol ? costColW : 0) + 7 + 7 + 2;
   output += `${BOLD}${CYAN}`;
   if (isNarrow) {
     output += `  ${'PID'.padEnd(8)}${'STATUS'.padEnd(10)}${'CTX'.padEnd(ctxColW)}${'STARTED'.padEnd(12)}${'MODEL'.padEnd(14)}${'CPU%'.padEnd(7)}MEM%`;
   } else {
-    output += `  ${'PID'.padEnd(8)}${'STATUS'.padEnd(10)}${'CTX'.padEnd(ctxColW)}${'STARTED'.padEnd(12)}${'BRANCH'.padEnd(32)}${'SLUG'.padEnd(22)}${'MODEL'.padEnd(14)}${'DIRECTORY'.padEnd(Math.max(0, listWidth - fixedColsTotal))}${'CPU%'.padEnd(7)}MEM%`;
+    output += `  ${'PID'.padEnd(8)}${'STATUS'.padEnd(10)}${'CTX'.padEnd(ctxColW)}${'STARTED'.padEnd(12)}${'BRANCH'.padEnd(32)}${'SLUG'.padEnd(22)}${'MODEL'.padEnd(14)}`;
+    if (showCostCol) output += `${'COST'.padEnd(costColW)}`;
+    output += `${'DIRECTORY'.padEnd(Math.max(0, listWidth - fixedColsTotal))}${'CPU%'.padEnd(7)}MEM%`;
   }
   output += `${RESET}${CLR_LINE}\n`;
   output += `${DIM}${'─'.repeat(listWidth)}${RESET}${CLR_LINE}\n`;
@@ -950,6 +1016,18 @@ function render() {
     // Model
     const modelStr = proc.model ? proc.model.replace(/^claude-/, '') : '--';
     output += `${isSelected ? '' : CYAN}${modelStr.substring(0, 13).padEnd(14)}${isSelected ? '' : RESET}`;
+
+    // Cost column (wide mode only)
+    if (showCostCol && !isNarrow) {
+      const costStr = formatCost(proc.cost);
+      if (!isSelected) {
+        if (proc.cost !== null && proc.cost > 5) output += RED;
+        else if (proc.cost !== null && proc.cost >= 1) output += YELLOW;
+        else output += GREEN;
+      }
+      output += `${costStr.padEnd(costColW)}`;
+      if (!isSelected) output += RESET;
+    }
 
     if (!isNarrow) {
       // Directory
@@ -1443,11 +1521,15 @@ function main() {
   });
 }
 
+// Export for testing; run main() only when executed directly
 if (require.main === module) {
   main();
 }
 
 module.exports = {
+  calculateCost,
+  formatCost,
+  MODEL_PRICING,
   formatStartTime,
   ctxColor,
   loadConfig,
