@@ -67,7 +67,8 @@ Config file: ~/.ctoprc (JSON)
 Sort keys (in TUI):
   s    Cycle sort: age → cpu → mem → context
   /    Filter by branch, model, or directory
-  ESC  Clear filter
+  F    Full-text search session conversation content
+  ESC  Clear filter or search
 `);
       process.exit(0);
     }
@@ -197,6 +198,11 @@ let sortReverse = false;
 let filterText = '';
 let filterInput = false; // true when typing a filter
 let showDashboard = false; // toggled by 'd' key
+
+// Full-text search state
+let searchMode = false;   // true when typing a search query
+let searchQuery = '';
+let searchResults = new Map(); // PID -> snippets[]
 
 // Notification state
 let notificationsEnabled = CONFIG.notifications.enabled;
@@ -510,6 +516,84 @@ function getSessionData(filePath) {
   return result;
 }
 
+function searchSessionContent(projectPath, sessionFile, query) {
+  const result = { matched: false, snippets: [] };
+  if (!query) return result;
+
+  const filePath = path.join(projectPath, sessionFile);
+  try {
+    const fd = fs.openSync(filePath, 'r');
+    const stat = fs.fstatSync(fd);
+    const readSize = Math.min(262144, stat.size); // 256KB cap
+    const buf = Buffer.alloc(readSize);
+    fs.readSync(fd, buf, 0, readSize, 0);
+    fs.closeSync(fd);
+
+    const content = buf.toString('utf8');
+    const lines = content.split('\n');
+    const lowerQuery = query.toLowerCase();
+
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      if (result.snippets.length >= 3) break;
+      try {
+        const data = JSON.parse(line);
+        if (!data.message || !data.message.content) continue;
+        const role = data.message.role;
+        if (role !== 'user' && role !== 'assistant') continue;
+
+        let text = '';
+        if (typeof data.message.content === 'string') {
+          text = data.message.content;
+        } else if (Array.isArray(data.message.content)) {
+          text = data.message.content
+            .filter(c => c.type === 'text')
+            .map(c => c.text || '')
+            .join(' ');
+        }
+
+        const lowerText = text.toLowerCase();
+        let searchFrom = 0;
+        while (searchFrom < lowerText.length && result.snippets.length < 3) {
+          const idx = lowerText.indexOf(lowerQuery, searchFrom);
+          if (idx === -1) break;
+          const start = Math.max(0, idx - 20);
+          const end = Math.min(text.length, idx + query.length + 30);
+          let snippet = text.substring(start, end).replace(/\n/g, ' ');
+          if (start > 0) snippet = '...' + snippet;
+          if (end < text.length) snippet = snippet + '...';
+          result.snippets.push(snippet);
+          result.matched = true;
+          searchFrom = idx + query.length;
+        }
+      } catch (e) {}
+    }
+  } catch (e) {}
+
+  return result;
+}
+
+function executeSearch(query) {
+  searchResults.clear();
+  if (!query) return;
+
+  for (const proc of processes) {
+    if (!proc.cwd) continue;
+    const projectDirName = proc.cwd.replace(/\//g, '-');
+    const projectPath = path.join(process.env.HOME, '.claude', 'projects', projectDirName);
+    if (!fs.existsSync(projectPath)) continue;
+
+    const files = getSessionFilesForProject(projectPath);
+    // Search the most recent session file for this process
+    if (files.length > 0) {
+      const result = searchSessionContent(projectPath, files[0].name, query);
+      if (result.matched) {
+        searchResults.set(proc.pid, result.snippets);
+      }
+    }
+  }
+}
+
 // Cache of sorted session files per project path
 let sessionFileCache = new Map();
 let sessionFileCacheTime = 0;
@@ -757,6 +841,11 @@ function applySortAndFilter() {
     });
   }
 
+  // Search filter: show only matching sessions
+  if (searchQuery && searchResults.size > 0) {
+    result = result.filter(p => searchResults.has(p.pid));
+  }
+
   // Sort
   switch (sortMode) {
     case 'cpu':
@@ -860,6 +949,8 @@ function renderPaneMode() {
   if (sortMode !== 'age') statsLine += `${DIM} | Sort: ${RESET}${CYAN}${sortMode}${sortReverse ? ' ↑' : ''}${RESET}`;
   if (filterText) statsLine += `${DIM} | Filter: ${RESET}${YELLOW}"${filterText}"${RESET}${DIM} (${processes.length}/${allProcesses.length})${RESET}`;
   if (filterInput) statsLine += `${DIM} | ${RESET}${BG_BLUE}${WHITE} /${filterText}█ ${RESET}`;
+  if (searchMode) statsLine += `${DIM} | ${RESET}${BG_BLUE}${WHITE} Search: ${searchQuery}█ ${RESET}`;
+  else if (searchQuery) statsLine += `${DIM} | Search: ${RESET}${YELLOW}"${searchQuery}"${RESET}${DIM} (${searchResults.size} matches)${RESET}`;
   const notifLabel = notificationsEnabled ? `${GREEN}ON${RESET}` : `${RED}OFF${RESET}`;
   statsLine += `${DIM} | Notif: ${RESET}${notifLabel}`;
   statsLine += `${DIM} | ${lastRefresh.toLocaleTimeString()} ${RESET}`;
@@ -1023,7 +1114,7 @@ function renderPaneMode() {
   output += `${CYAN}hjkl${RESET} Nav  `;
   output += `${RED}x${RESET} Kill  ${RED}X${RESET} Force  `;
   output += `${CYAN}o${RESET} Open  `;
-  output += `${CYAN}s${RESET} Sort  ${CYAN}/${RESET} Filter  `;
+  output += `${CYAN}s${RESET} Sort  ${CYAN}/${RESET} Filter  ${CYAN}F${RESET} Search  `;
   output += `${CYAN}d${RESET} Dash  ${CYAN}n${RESET} Notif  ${CYAN}P${RESET} List  ${CYAN}r${RESET} Refresh  ${CYAN}q${RESET} Quit  ${CYAN}?${RESET} Help${CLR_LINE}`;
 
   process.stdout.write(output);
@@ -1213,6 +1304,23 @@ function renderDetailPane(proc, startRow, paneCol, paneWidth, availRows) {
   if (r < startRow + availRows - 1)
     output += pairRow(r++, 'Stat:', proc.stat, DIM, 'Type:', proc.userType || '--', DIM);
 
+  // Search matches section
+  if (searchQuery && searchResults.has(proc.pid)) {
+    const snippets = searchResults.get(proc.pid);
+    if (r < startRow + availRows - 1) {
+      const matchHeading = ' Search Matches ';
+      const mhLen = paneWidth - 2 - matchHeading.length;
+      output += drawLine(r++, `${DIM}├${'─'.repeat(Math.floor(mhLen / 2))}${RESET}${BOLD}${GREEN}${matchHeading}${RESET}${DIM}${'─'.repeat(mhLen - Math.floor(mhLen / 2))}┤${RESET}`);
+    }
+    for (let si = 0; si < snippets.length && r < startRow + availRows - 1; si++) {
+      let snip = snippets[si].replace(/\n/g, ' ');
+      const maxSnipLen = inner - 4;
+      if (snip.length > maxSnipLen) snip = snip.substring(0, maxSnipLen - 1) + '…';
+      const pad = Math.max(0, inner - 2 - snip.length - 2);
+      output += drawLine(r++, `${DIM}│${RESET} ${GREEN}▸${RESET} ${snip}${' '.repeat(pad)} ${DIM}│${RESET}`);
+    }
+  }
+
   // Fill remaining
   while (r < startRow + availRows - 1) {
     output += drawLine(r++, `${DIM}│${' '.repeat(paneWidth - 2)}│${RESET}`);
@@ -1247,6 +1355,8 @@ function render() {
   if (sortMode !== 'age') statsLine += `${DIM} | Sort: ${RESET}${CYAN}${sortMode}${sortReverse ? ' ↑' : ''}${RESET}`;
   if (filterText) statsLine += `${DIM} | Filter: ${RESET}${YELLOW}"${filterText}"${RESET}${DIM} (${processes.length}/${allProcesses.length})${RESET}`;
   if (filterInput) statsLine += `${DIM} | ${RESET}${BG_BLUE}${WHITE} /${filterText}█ ${RESET}`;
+  if (searchMode) statsLine += `${DIM} | ${RESET}${BG_BLUE}${WHITE} Search: ${searchQuery}█ ${RESET}`;
+  else if (searchQuery) statsLine += `${DIM} | Search: ${RESET}${YELLOW}"${searchQuery}"${RESET}${DIM} (${searchResults.size} matches)${RESET}`;
   const notifLabel2 = notificationsEnabled ? `${GREEN}ON${RESET}` : `${RED}OFF${RESET}`;
   statsLine += `${DIM} | Notif: ${RESET}${notifLabel2}`;
   statsLine += `${DIM} | ${lastRefresh.toLocaleTimeString()} ${RESET}`;
@@ -1301,8 +1411,11 @@ function render() {
     const isSelected = i === selectedIndex;
 
     // Selection indicator and styling
+    const hasSearchMatch = searchQuery && searchResults.has(proc.pid);
     if (isSelected) {
       output += `${BG_ORANGE}${WHITE}${BOLD}> `;
+    } else if (hasSearchMatch) {
+      output += `${GREEN}* ${RESET}`;
     } else {
       output += '  ';
     }
@@ -1461,7 +1574,7 @@ function render() {
   output += `${CYAN}jk${RESET} Nav  `;
   output += `${RED}x${RESET} Kill  ${RED}X${RESET} Force  `;
   output += `${CYAN}o${RESET} Open  `;
-  output += `${CYAN}s${RESET} Sort  ${CYAN}/${RESET} Filter  `;
+  output += `${CYAN}s${RESET} Sort  ${CYAN}/${RESET} Filter  ${CYAN}F${RESET} Search  `;
   output += `${CYAN}d${RESET} Dash  ${CYAN}n${RESET} Notif  ${CYAN}P${RESET} Pane  ${CYAN}r${RESET} Refresh  ${CYAN}q${RESET} Quit  ${CYAN}?${RESET} Help${CLR_LINE}`;
 
   process.stdout.write(output);
@@ -1618,7 +1731,8 @@ function showHelp() {
   output += `  ${CYAN}s${RESET}         Cycle sort: age → cpu → mem → context\n`;
   output += `  ${CYAN}S${RESET}         Reverse sort order\n`;
   output += `  ${CYAN}/${RESET}         Start typing to filter (branch, model, dir, slug)\n`;
-  output += `  ${CYAN}ESC${RESET}       Clear active filter\n\n`;
+  output += `  ${CYAN}F${RESET}         Full-text search session content\n`;
+  output += `  ${CYAN}ESC${RESET}       Clear active filter or search\n\n`;
 
   output += `${DIM}Press any key to return...${RESET}`;
 
@@ -1790,6 +1904,37 @@ function handleInput(key) {
     } else if (key.length === 1 && key >= ' ') {
       filterText += key;
       applySortAndFilter();
+      render();
+    }
+    return;
+  }
+
+  // Search input mode
+  if (searchMode) {
+    if (key === '\r' || key === '\n') {
+      // Enter: execute search
+      searchMode = false;
+      if (searchQuery) {
+        statusMessage = 'Searching...';
+        render();
+        executeSearch(searchQuery);
+        statusMessage = `Search: "${searchQuery}" (${searchResults.size} matches, ESC to clear)`;
+      }
+      applySortAndFilter();
+      render();
+    } else if (key === '\x1b' && key.length === 1) {
+      // ESC: cancel search input
+      searchMode = false;
+      searchQuery = '';
+      render();
+    } else if (key.startsWith('\x1b[')) {
+      // Arrow keys — ignore in search mode
+    } else if (key === '\x7f' || key === '\b') {
+      // Backspace
+      searchQuery = searchQuery.slice(0, -1);
+      render();
+    } else if (key.length === 1 && key >= ' ') {
+      searchQuery += key;
       render();
     }
     return;
@@ -2032,6 +2177,15 @@ function handleInput(key) {
       render();
       break;
 
+    case 'F':
+      // Enter full-text search mode
+      searchMode = true;
+      searchQuery = '';
+      searchResults.clear();
+      statusMessage = 'Search: type query, Enter to search, ESC to cancel';
+      render();
+      break;
+
     case 'n':
       notificationsEnabled = !notificationsEnabled;
       statusMessage = `Notifications: ${notificationsEnabled ? 'ON' : 'OFF'}`;
@@ -2052,6 +2206,15 @@ function handleInput(key) {
       break;
 
     case '\x1b': // ESC
+      if (searchQuery) {
+        // Clear search
+        searchQuery = '';
+        searchResults.clear();
+        statusMessage = 'Search cleared';
+        applySortAndFilter();
+        render();
+        break;
+      }
       if (filterText) {
         // Clear filter
         filterText = '';
@@ -2112,7 +2275,7 @@ function main() {
 
   // Auto-refresh every 5 seconds
   setInterval(() => {
-    if (!showingHelp && !confirmKillAll && !confirmKillStopped && !filterInput) {
+    if (!showingHelp && !confirmKillAll && !confirmKillStopped && !filterInput && !searchMode) {
       allProcesses = getClaudeProcesses(); applySortAndFilter();
       checkStateTransitions(allProcesses);
       lastRefresh = new Date();
@@ -2144,6 +2307,7 @@ module.exports = {
   ctxColor,
   loadConfig,
   getSessionData,
+  searchSessionContent,
   applySortAndFilter,
   getCardsPerRow,
   openDirectory,
@@ -2167,6 +2331,8 @@ module.exports = {
             get sortReverse() { return sortReverse; }, set sortReverse(v) { sortReverse = v; },
             get selectedIndex() { return selectedIndex; }, set selectedIndex(v) { selectedIndex = v; },
             get showDashboard() { return showDashboard; }, set showDashboard(v) { showDashboard = v; },
+            get searchQuery() { return searchQuery; }, set searchQuery(v) { searchQuery = v; },
+            get searchResults() { return searchResults; }, set searchResults(v) { searchResults = v; },
             get notificationsEnabled() { return notificationsEnabled; }, set notificationsEnabled(v) { notificationsEnabled = v; },
             get viewMode() { return viewMode; }, set viewMode(v) { viewMode = v; } },
   _notif: { previousStates, processStartTimes },
