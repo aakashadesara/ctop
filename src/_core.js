@@ -456,6 +456,40 @@ let showLogPane = false;
 let logLines = [];
 let logScrollOffset = 0;
 
+// Sparkline state
+const processHistory = new Map(); // PID -> { cpu: number[], mem: number[] }
+const SPARKLINE_MAX_POINTS = 20;
+const SPARKLINE_BLOCKS = '▁▂▃▄▅▆▇█';
+
+function renderSparkline(values, width = 8) {
+  if (!values || values.length === 0) return '';
+  const recent = values.slice(-width);
+  return recent.map(v => {
+    const clamped = Math.max(0, Math.min(100, v));
+    const idx = Math.min(7, Math.floor(clamped / 100 * 7.99));
+    return SPARKLINE_BLOCKS[idx];
+  }).join('');
+}
+
+function updateProcessHistory(procs) {
+  const currentPids = new Set();
+  for (const proc of procs) {
+    currentPids.add(proc.pid);
+    if (!processHistory.has(proc.pid)) {
+      processHistory.set(proc.pid, { cpu: [], mem: [] });
+    }
+    const hist = processHistory.get(proc.pid);
+    hist.cpu.push(proc.cpu);
+    hist.mem.push(proc.mem);
+    if (hist.cpu.length > SPARKLINE_MAX_POINTS) hist.cpu.shift();
+    if (hist.mem.length > SPARKLINE_MAX_POINTS) hist.mem.shift();
+  }
+  // Clean up stale PIDs
+  for (const pid of processHistory.keys()) {
+    if (!currentPids.has(pid)) processHistory.delete(pid);
+  }
+}
+
 // Notification state
 let notificationsEnabled = CONFIG.notifications.enabled;
 const previousStates = new Map();   // PID -> last known status string
@@ -1632,6 +1666,20 @@ function renderDetailPane(proc, startRow, paneCol, paneWidth, availRows) {
   if (r < startRow + availRows - 1)
     output += pairRow(r++, 'MEM:', proc.mem.toFixed(1) + '%', '', 'Stat:', proc.stat, DIM);
 
+  // Sparklines in detail pane
+  if (processHistory.has(proc.pid) && r < startRow + availRows - 1) {
+    const hist = processHistory.get(proc.pid);
+    const sparkW = Math.min(20, inner - 12);
+    const cpuSpark = renderSparkline(hist.cpu, sparkW);
+    const memSpark = renderSparkline(hist.mem, sparkW);
+    if (cpuSpark) {
+      output += fullRow(r++, 'CPU:', cpuSpark, YELLOW);
+    }
+    if (memSpark && r < startRow + availRows - 1) {
+      output += fullRow(r++, 'MEM:', memSpark, CYAN);
+    }
+  }
+
   // Separator
   if (r < startRow + availRows - 1)
     output += drawLine(r++, `${DIM}├${'─'.repeat(paneWidth - 2)}┤${RESET}`);
@@ -1877,14 +1925,16 @@ function render() {
   const isNarrow = listWidth < 120;
   const showCostCol = listWidth >= 140;
   const costColW = 9;
+  const sparkColW = 10; // 8 chars sparkline + 2 padding
+  const showSparklines = listWidth >= 180;
   // Plugin columns — extra width from loaded plugins
   const pluginCols = plugins.filter(p => p.column);
   const pluginColsWidth = pluginCols.reduce((sum, p) => sum + (p.column.width || 10), 0);
   // In narrow mode: PID(8) + STATUS(10) + CTX(6) + STARTED(12) + MODEL(14) + CPU%(7) + MEM%(5) + pad(2) = 64
-  // In wide mode: full columns with BRANCH, SLUG, DIRECTORY, and optionally COST
+  // In wide mode: full columns with BRANCH, SLUG, DIRECTORY, and optionally COST + sparklines
   const fixedColsTotal = isNarrow
     ? 8 + 10 + ctxColW + 12 + 14 + 7 + 7 + 2 + pluginColsWidth
-    : 8 + 10 + ctxColW + 12 + 32 + 22 + 14 + (showCostCol ? costColW : 0) + pluginColsWidth + 7 + 7 + 2;
+    : 8 + 10 + ctxColW + 12 + 32 + 22 + 14 + (showCostCol ? costColW : 0) + pluginColsWidth + 7 + (showSparklines ? sparkColW : 0) + 7 + (showSparklines ? sparkColW : 0) + 2;
   output += `${BOLD}${CYAN}`;
   if (isNarrow) {
     output += `  ${'PID'.padEnd(8)}${'STATUS'.padEnd(10)}${'CTX'.padEnd(ctxColW)}${'STARTED'.padEnd(12)}${'MODEL'.padEnd(14)}`;
@@ -1894,7 +1944,10 @@ function render() {
     output += `  ${'PID'.padEnd(8)}${'STATUS'.padEnd(10)}${'CTX'.padEnd(ctxColW)}${'STARTED'.padEnd(12)}${'BRANCH'.padEnd(32)}${'SLUG'.padEnd(22)}${'MODEL'.padEnd(14)}`;
     if (showCostCol) output += `${'COST'.padEnd(costColW)}`;
     for (const p of pluginCols) output += `${(p.column.header || '').padEnd(p.column.width || 10)}`;
-    output += `${'DIRECTORY'.padEnd(Math.max(0, listWidth - fixedColsTotal))}${'CPU%'.padEnd(7)}MEM%`;
+    output += `${'DIRECTORY'.padEnd(Math.max(0, listWidth - fixedColsTotal))}${'CPU%'.padEnd(7)}`;
+    if (showSparklines) output += `${'CPU-HIST'.padEnd(sparkColW)}`;
+    output += `${'MEM%'.padEnd(7)}`;
+    if (showSparklines) output += `${'MEM-HIST'.padEnd(sparkColW)}`;
   }
   output += `${RESET}${CLR_LINE}\n`;
   output += `${DIM}${'─'.repeat(listWidth)}${RESET}${CLR_LINE}\n`;
@@ -2033,8 +2086,20 @@ function render() {
     output += `${cpuStr.padEnd(7)}`;
     if (!isSelected) output += RESET;
 
+    // CPU sparkline
+    if (showSparklines) {
+      const cpuHist = processHistory.has(proc.pid) ? processHistory.get(proc.pid).cpu : [];
+      output += `${isSelected ? '' : YELLOW}${renderSparkline(cpuHist, 8).padEnd(sparkColW)}${isSelected ? '' : RESET}`;
+    }
+
     // MEM%
     output += `${proc.mem.toFixed(1)}`;
+
+    // MEM sparkline
+    if (showSparklines) {
+      const memHist = processHistory.has(proc.pid) ? processHistory.get(proc.pid).mem : [];
+      output += `  ${isSelected ? '' : CYAN}${renderSparkline(memHist, 8).padEnd(sparkColW)}${isSelected ? '' : RESET}`;
+    }
 
     output += `${isSelected ? RESET : ''}${CLR_LINE}\n`;
 
@@ -2804,6 +2869,7 @@ function handleInput(key) {
 
     case 'r':
       allProcesses = getClaudeProcesses(); applySortAndFilter();
+      updateProcessHistory(allProcesses);
       checkStateTransitions(allProcesses);
       lastRefresh = new Date();
       statusMessage = 'Refreshed';
@@ -2887,6 +2953,7 @@ function main() {
 
   // Initial load
   allProcesses = getClaudeProcesses(); applySortAndFilter();
+  updateProcessHistory(allProcesses);
   render();
 
   // Prune old history on startup
@@ -2903,6 +2970,7 @@ function main() {
   setInterval(() => {
     if (!showingHelp && !showHistory && !confirmKillAll && !confirmKillStopped && !filterInput && !searchMode) {
       allProcesses = getClaudeProcesses(); applySortAndFilter();
+      updateProcessHistory(allProcesses);
       checkStateTransitions(allProcesses);
       saveHistorySnapshot(allProcesses);
       lastRefresh = new Date();
@@ -2972,6 +3040,12 @@ module.exports = {
   IS_LINUX,
   IS_WIN,
   PLATFORM,
+  // Sparklines
+  renderSparkline,
+  updateProcessHistory,
+  processHistory,
+  SPARKLINE_BLOCKS,
+  SPARKLINE_MAX_POINTS,
   // Log tailing
   parseLogEntry,
   readSessionLog,
