@@ -142,16 +142,16 @@ describe('getSessionData', () => {
 
   it('calculates contextPct correctly from usage data', () => {
     const fp = path.join(tmpDir, 'ctx-pct.jsonl');
-    // total used = 100000 + 20000 + 30000 = 150000
-    // contextLimit default = 200000
-    // remaining = 50000, pct = 50000/200000 * 100 = 25
+    // total used = 500000 + 200000 + 100000 = 800000
+    // contextLimit default = 1000000
+    // remaining = 200000, pct = 200000/1000000 * 100 = 20
     const lines = [
       JSON.stringify({
         message: {
           usage: {
-            input_tokens: 100000,
-            cache_creation_input_tokens: 20000,
-            cache_read_input_tokens: 30000,
+            input_tokens: 500000,
+            cache_creation_input_tokens: 200000,
+            cache_read_input_tokens: 100000,
             output_tokens: 1000,
           },
         },
@@ -159,18 +159,18 @@ describe('getSessionData', () => {
     ];
     fs.writeFileSync(fp, lines.join('\n') + '\n');
     const result = getSessionData(fp);
-    assert.equal(result.contextPct, 25);
+    assert.equal(result.contextPct, 20);
   });
 
   it('clamps contextPct to 0 when usage exceeds limit', () => {
     const fp = path.join(tmpDir, 'over-limit.jsonl');
-    // total used = 200000 + 50000 = 250000 > 200000 limit
+    // total used = 900000 + 200000 = 1100000 > 1000000 limit
     const lines = [
       JSON.stringify({
         message: {
           usage: {
-            input_tokens: 200000,
-            cache_creation_input_tokens: 50000,
+            input_tokens: 900000,
+            cache_creation_input_tokens: 200000,
             cache_read_input_tokens: 0,
             output_tokens: 0,
           },

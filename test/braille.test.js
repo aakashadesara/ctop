@@ -190,18 +190,18 @@ describe('renderContextBarBraille', () => {
   });
 
   it('produces correct segment proportions', () => {
-    const limit = DEFAULT_CONFIG.contextLimit; // 200000
+    const limit = DEFAULT_CONFIG.contextLimit; // 1000000
     const proc = {
-      inputTokens: 40000,      // 20% of limit
-      cacheCreateTokens: 20000, // 10% of limit
-      cacheReadTokens: 10000,   // 5% of limit
-      outputTokens: 5000,       // 2.5% of limit
+      inputTokens: 200000,      // 20% of limit
+      cacheCreateTokens: 100000, // 10% of limit
+      cacheReadTokens: 50000,    // 5% of limit
+      outputTokens: 25000,       // 2.5% of limit
     };
-    // used = 40000 + 20000 + 10000 = 70000
-    // free = max(0, 200000 - 70000) = 130000
-    // adjustedFree = max(0, 130000 - 5000) = 125000
-    // values: input=40000/200000=0.20, cw=20000/200000=0.10, cr=10000/200000=0.05,
-    //         out=5000/200000=0.025, free=125000/200000=0.625
+    // used = 200000 + 100000 + 50000 = 350000
+    // free = max(0, 1000000 - 350000) = 650000
+    // adjustedFree = max(0, 650000 - 25000) = 625000
+    // values: input=200000/1000000=0.20, cw=100000/1000000=0.10, cr=50000/1000000=0.05,
+    //         out=25000/1000000=0.025, free=625000/1000000=0.625
     const result = renderContextBarBraille(proc, 40);
     const inputSeg = result.segments.find(s => s.name === 'input');
     const cwSeg = result.segments.find(s => s.name === 'cache_write');

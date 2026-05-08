@@ -87,7 +87,7 @@ let currentThemeName = 'default';
 // Config: loaded from ~/.ctoprc (JSON) or CLI flags
 const DEFAULT_CONFIG = {
   refreshInterval: 5000,
-  contextLimit: 200000,
+  contextLimit: 1000000,
   defaultView: 'list', // 'list' or 'pane'
   theme: 'default',    // built-in name or custom color object
   contextBarStyle: 'block', // 'block' or 'braille'
@@ -133,14 +133,14 @@ Usage: ctop [options]
 
 Options:
   --refresh, -r <seconds>    Refresh interval (default: 5)
-  --context-limit, -c <n>    Context window token limit (default: 200000)
+  --context-limit, -c <n>    Context window token limit (default: 1000000)
   --pane                     Start in pane/grid view
   -h, --help                 Show this help
 
 Config file: ~/.ctoprc (JSON)
   {
     "refreshInterval": 5000,
-    "contextLimit": 200000,
+    "contextLimit": 1000000,
     "defaultView": "list"
   }
 

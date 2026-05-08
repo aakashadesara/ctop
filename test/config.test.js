@@ -13,7 +13,7 @@ describe('loadConfig', () => {
   it('returns default values when no rc file or flags exist', () => {
     const { DEFAULT_CONFIG } = require('../claude-manager');
     assert.equal(DEFAULT_CONFIG.refreshInterval, 5000);
-    assert.equal(DEFAULT_CONFIG.contextLimit, 200000);
+    assert.equal(DEFAULT_CONFIG.contextLimit, 1000000);
     assert.equal(DEFAULT_CONFIG.defaultView, 'list');
     assert.equal(DEFAULT_CONFIG.theme, 'default');
   });
