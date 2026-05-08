@@ -302,6 +302,9 @@ let filterText = '';
 let filterInput = false; // true when typing a filter
 let showDashboard = false; // toggled by 'd' key
 let showHistory = false; // toggled by 'H' key
+let showTimeline = false; // toggled by 'W' key
+let timelineScrollOffset = 0; // scroll offset for event list in timeline view
+let timelineCache = null; // cached timeline data for current process
 let showHeatmap = false; // toggled by 'C' key
 let exportMode = false; // true when awaiting export format key
 
@@ -1215,6 +1218,283 @@ function readSessionLog(proc, maxLines) {
   }
 }
 
+function parseSessionTimeline(filePath) {
+  // Parse a session JSONL file and extract a timeline of events
+  // Returns: { events: [...], startTime, endTime, totalDuration }
+  const empty = { events: [], startTime: null, endTime: null, totalDuration: 0 };
+
+  if (!filePath) return empty;
+
+  try {
+    if (!fs.existsSync(filePath)) return empty;
+  } catch (e) {
+    return empty;
+  }
+
+  try {
+    const fd = fs.openSync(filePath, 'r');
+    const stat = fs.fstatSync(fd);
+    const readSize = Math.min(524288, stat.size); // 512KB cap
+    const buf = Buffer.alloc(readSize);
+    fs.readSync(fd, buf, 0, readSize, 0);
+    fs.closeSync(fd);
+
+    const content = buf.toString('utf8');
+    const lines = content.split('\n');
+    const events = [];
+
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      let data;
+      try {
+        data = JSON.parse(line);
+      } catch (e) {
+        continue;
+      }
+
+      const timestamp = data.timestamp || null;
+
+      // Detect event type
+      if (data.type === 'user' && data.message && data.message.role === 'user') {
+        // User message
+        let text = '';
+        const content = data.message.content;
+        if (typeof content === 'string') {
+          text = content;
+        } else if (Array.isArray(content)) {
+          text = content.filter(c => c.type === 'text').map(c => c.text || '').join(' ');
+        }
+        // Skip system-like XML messages
+        if (text.trim().startsWith('<')) continue;
+        if (!text.trim()) continue;
+        events.push({
+          type: 'user',
+          timestamp,
+          summary: text.replace(/\n/g, ' ').trim().substring(0, 40),
+        });
+      } else if (data.message && data.message.role === 'assistant') {
+        // Assistant message — check if it contains tool_use blocks
+        const content = data.message.content;
+        let text = '';
+        if (Array.isArray(content)) {
+          for (const block of content) {
+            if (block.type === 'tool_use') {
+              events.push({
+                type: 'tool_use',
+                timestamp,
+                summary: (block.name || 'tool').substring(0, 40),
+              });
+            } else if (block.type === 'text') {
+              text += (block.text || '') + ' ';
+            }
+          }
+        } else if (typeof content === 'string') {
+          text = content;
+        }
+        // Add assistant text event if there is meaningful text
+        text = text.trim();
+        if (text) {
+          events.push({
+            type: 'assistant',
+            timestamp,
+            summary: text.replace(/\n/g, ' ').substring(0, 40),
+          });
+        }
+      } else if (data.type === 'tool_result' || (data.message && data.message.role === 'tool')) {
+        events.push({
+          type: 'tool_result',
+          timestamp,
+          summary: 'tool result',
+        });
+      }
+    }
+
+    // Calculate timing
+    const timestamps = events.filter(e => e.timestamp).map(e => new Date(e.timestamp).getTime()).filter(t => !isNaN(t));
+    const startTime = timestamps.length > 0 ? Math.min(...timestamps) : null;
+    const endTime = timestamps.length > 0 ? Math.max(...timestamps) : null;
+    const totalDuration = (startTime !== null && endTime !== null) ? endTime - startTime : 0;
+
+    // Calculate duration_ms between consecutive events
+    for (let i = 0; i < events.length; i++) {
+      if (events[i].timestamp && i + 1 < events.length && events[i + 1].timestamp) {
+        const t1 = new Date(events[i].timestamp).getTime();
+        const t2 = new Date(events[i + 1].timestamp).getTime();
+        if (!isNaN(t1) && !isNaN(t2)) {
+          events[i].duration_ms = t2 - t1;
+        }
+      }
+    }
+
+    return { events, startTime, endTime, totalDuration };
+  } catch (e) {
+    return empty;
+  }
+}
+
+function getSessionFileForProc(proc) {
+  // Find the most recent session JSONL file path for a given process
+  if (!proc || !proc.cwd) return null;
+  const projectDirName = cwdToProjectDirName(proc.cwd);
+  const projectPath = path.join(os.homedir(), '.claude', 'projects', projectDirName);
+  try {
+    if (!fs.existsSync(projectPath)) return null;
+  } catch (e) {
+    return null;
+  }
+  const files = getSessionFilesForProject(projectPath);
+  return files.length > 0 ? files[0].path : null;
+}
+
+function formatElapsed(ms) {
+  if (ms < 1000) return ms + 'ms';
+  if (ms < 60000) return (ms / 1000).toFixed(1) + 's';
+  if (ms < 3600000) return Math.floor(ms / 60000) + 'm ' + Math.floor((ms % 60000) / 1000) + 's';
+  return Math.floor(ms / 3600000) + 'h ' + Math.floor((ms % 3600000) / 60000) + 'm';
+}
+
+function renderTimeline(proc, columns, rows) {
+  let output = CLEAR;
+
+  // Header
+  output += renderHeader(columns);
+  output += '\n';
+
+  const modelStr = proc.model ? proc.model.replace(/^claude-/, '') : 'unknown';
+  output += `${BOLD}${WHITE}  Session Timeline ${RESET}${DIM}— PID: ${proc.pid} — Model: ${modelStr}${RESET}${CLR_LINE}\n`;
+  output += `${DIM}${'─'.repeat(columns)}${RESET}${CLR_LINE}\n`;
+
+  // Get timeline data
+  if (!timelineCache) {
+    const filePath = getSessionFileForProc(proc);
+    timelineCache = parseSessionTimeline(filePath);
+  }
+
+  const tl = timelineCache;
+
+  if (tl.events.length === 0) {
+    output += `\n${DIM}  No timeline events found for this session.${RESET}${CLR_LINE}\n`;
+    output += `\n${DIM}  Press ${RESET}${CYAN}W${RESET}${DIM} or ${RESET}${CYAN}ESC${RESET}${DIM} to return...${RESET}${CLR_LINE}\n`;
+    process.stdout.write(output);
+    return;
+  }
+
+  // Calculate category totals
+  const catTotals = { user: 0, assistant: 0, tool_use: 0, tool_result: 0, gap: 0 };
+  const catCounts = { user: 0, assistant: 0, tool_use: 0, tool_result: 0 };
+  for (const evt of tl.events) {
+    catCounts[evt.type] = (catCounts[evt.type] || 0) + 1;
+    if (evt.duration_ms && evt.duration_ms > 0) {
+      catTotals[evt.type] = (catTotals[evt.type] || 0) + evt.duration_ms;
+    }
+  }
+
+  // Duration summary line
+  const durationStr = tl.totalDuration > 0 ? formatElapsed(tl.totalDuration) : '--';
+  output += `  ${BOLD}Duration:${RESET} ${durationStr}`;
+  output += `  ${DIM}|${RESET}  ${CYAN}User:${RESET} ${catCounts.user}`;
+  output += `  ${GREEN}Assistant:${RESET} ${catCounts.assistant}`;
+  output += `  ${YELLOW}Tool:${RESET} ${catCounts.tool_use + catCounts.tool_result}`;
+  output += `  ${DIM}Events: ${tl.events.length}${RESET}${CLR_LINE}\n\n`;
+
+  // Time axis and waterfall bar
+  const barWidth = Math.max(20, columns - 6); // 3 padding each side
+  if (tl.totalDuration > 0) {
+    // Time axis markers
+    const numMarkers = Math.min(6, Math.floor(barWidth / 12));
+    let axisLine = '   ';
+    for (let i = 0; i <= numMarkers; i++) {
+      const frac = i / numMarkers;
+      const ms = Math.round(frac * tl.totalDuration);
+      const label = formatElapsed(ms);
+      const pos = Math.round(frac * barWidth);
+      // Pad to position
+      while (axisLine.length < pos + 3) axisLine += ' ';
+      axisLine = axisLine.substring(0, pos + 3) + DIM + label + RESET;
+    }
+    output += axisLine + CLR_LINE + '\n';
+
+    // Waterfall bar — each event gets a proportional colored segment
+    let barLine = '   ';
+    for (const evt of tl.events) {
+      const evtDur = evt.duration_ms || 0;
+      const charCount = tl.totalDuration > 0
+        ? Math.max(evtDur > 0 ? 1 : 0, Math.round((evtDur / tl.totalDuration) * barWidth))
+        : 0;
+      let color = DIM;
+      let ch = '\u2591'; // ░ for gaps
+      if (evt.type === 'user') { color = CYAN; ch = '\u2588'; }
+      else if (evt.type === 'assistant') { color = GREEN; ch = '\u2588'; }
+      else if (evt.type === 'tool_use') { color = YELLOW; ch = '\u2588'; }
+      else if (evt.type === 'tool_result') { color = YELLOW; ch = '\u2588'; }
+      barLine += color + ch.repeat(charCount) + RESET;
+    }
+    output += barLine + CLR_LINE + '\n';
+
+    // Legend
+    output += `   ${CYAN}\u2588${RESET} User  ${GREEN}\u2588${RESET} Assistant  ${YELLOW}\u2588${RESET} Tool  ${DIM}\u2591${RESET} Gap${CLR_LINE}\n`;
+  }
+
+  output += `${DIM}${'─'.repeat(columns)}${RESET}${CLR_LINE}\n`;
+
+  // Event list header
+  output += `${BOLD}${CYAN}  ${'#'.padEnd(5)}${'TYPE'.padEnd(12)}${'TIME'.padEnd(20)}${'DURATION'.padEnd(12)}SUMMARY${RESET}${CLR_LINE}\n`;
+  output += `${DIM}${'─'.repeat(columns)}${RESET}${CLR_LINE}\n`;
+
+  // Scrollable event list
+  const headerUsed = 14; // lines used by header/bar/legend above
+  const footerLines = 3; // separator + keys + buffer
+  const availRows = Math.max(3, rows - headerUsed - footerLines);
+
+  // Clamp scroll offset
+  const maxScroll = Math.max(0, tl.events.length - availRows);
+  if (timelineScrollOffset > maxScroll) timelineScrollOffset = maxScroll;
+  if (timelineScrollOffset < 0) timelineScrollOffset = 0;
+
+  const startIdx = timelineScrollOffset;
+  const endIdx = Math.min(tl.events.length, startIdx + availRows);
+
+  for (let i = startIdx; i < endIdx; i++) {
+    const evt = tl.events[i];
+    const num = String(i + 1).padEnd(5);
+    let typeColor = DIM;
+    let typeLabel = evt.type;
+    if (evt.type === 'user') { typeColor = CYAN; typeLabel = 'user'; }
+    else if (evt.type === 'assistant') { typeColor = GREEN; typeLabel = 'assistant'; }
+    else if (evt.type === 'tool_use') { typeColor = YELLOW; typeLabel = 'tool_use'; }
+    else if (evt.type === 'tool_result') { typeColor = YELLOW; typeLabel = 'tool_result'; }
+
+    const timeStr = evt.timestamp
+      ? new Date(evt.timestamp).toLocaleTimeString()
+      : '--';
+    const durStr = evt.duration_ms ? formatElapsed(evt.duration_ms) : '--';
+    const summaryMaxLen = Math.max(10, columns - 5 - 12 - 20 - 12 - 4);
+    const summary = (evt.summary || '').substring(0, summaryMaxLen);
+
+    output += `  ${DIM}${num}${RESET}${typeColor}${typeLabel.padEnd(12)}${RESET}`;
+    output += `${DIM}${timeStr.padEnd(20)}${RESET}`;
+    output += `${DIM}${durStr.padEnd(12)}${RESET}`;
+    output += `${summary}${CLR_LINE}\n`;
+  }
+
+  // Scroll indicator
+  if (tl.events.length > availRows) {
+    const pct = Math.round((timelineScrollOffset / maxScroll) * 100);
+    output += `${DIM}  Showing ${startIdx + 1}-${endIdx} of ${tl.events.length} events (${pct}% scrolled)${RESET}${CLR_LINE}\n`;
+  }
+
+  // Footer
+  output += `${ESC}[${rows - 1};1H`;
+  output += `${DIM}${'─'.repeat(columns)}${RESET}${CLR_LINE}`;
+  output += `${ESC}[${rows};1H`;
+  output += `${BOLD} KEYS:${RESET} `;
+  output += `${CYAN}\u2191\u2193${RESET} Scroll  `;
+  output += `${CYAN}W${RESET}/${CYAN}ESC${RESET} Back  `;
+  output += `${CYAN}q${RESET} Quit${CLR_LINE}`;
+
+  process.stdout.write(output);
+}
+
 function ctxColor(pct) {
   // pct = remaining %
   if (pct < 10) return THEME.ctxLow;
@@ -1674,7 +1954,7 @@ function renderPaneMode() {
   output += `${RED}x${RESET} Kill  ${RED}X${RESET} Force  `;
   output += `${CYAN}o${RESET} Open  `;
   output += `${CYAN}s${RESET} Sort  ${CYAN}/${RESET} Filter  ${CYAN}F${RESET} Search  `;
-  output += `${CYAN}L${RESET} Log  ${CYAN}E${RESET} Export  `;
+  output += `${CYAN}L${RESET} Log  ${CYAN}W${RESET} Timeline  ${CYAN}E${RESET} Export  `;
   output += `${CYAN}T${RESET} Theme  ${CYAN}d${RESET} Dash  ${CYAN}H${RESET} History  ${CYAN}C${RESET} Heatmap  ${CYAN}n${RESET} Notif  ${CYAN}P${RESET} List  ${CYAN}r${RESET} Refresh  ${CYAN}q${RESET} Quit  ${CYAN}?${RESET} Help${CLR_LINE}`;
 
   process.stdout.write(output);
@@ -2036,6 +2316,10 @@ function renderLogPane(startRow, paneWidth, paneHeight, proc) {
 }
 
 function render() {
+  if (showTimeline && processes[selectedIndex]) {
+    const { columns, rows } = process.stdout;
+    return renderTimeline(processes[selectedIndex], columns, rows);
+  }
   if (viewMode === 'pane') return renderPaneMode();
   const { columns, rows } = process.stdout;
   const detailPaneWidth = 42;
@@ -2336,7 +2620,7 @@ function render() {
   output += `${RED}x${RESET} Kill  ${RED}X${RESET} Force  `;
   output += `${CYAN}o${RESET} Open  `;
   output += `${CYAN}s${RESET} Sort  ${CYAN}/${RESET} Filter  ${CYAN}F${RESET} Search  `;
-  output += `${CYAN}L${RESET} Log  ${CYAN}E${RESET} Export  `;
+  output += `${CYAN}L${RESET} Log  ${CYAN}W${RESET} Timeline  ${CYAN}E${RESET} Export  `;
   output += `${CYAN}T${RESET} Theme  ${CYAN}d${RESET} Dash  ${CYAN}H${RESET} History  ${CYAN}C${RESET} Heatmap  ${CYAN}n${RESET} Notif  ${CYAN}P${RESET} Pane  ${CYAN}r${RESET} Refresh  ${CYAN}q${RESET} Quit  ${CYAN}?${RESET} Help${CLR_LINE}`;
 
   process.stdout.write(output);
@@ -2700,6 +2984,7 @@ function showHelp() {
   output += `  ${CYAN}C${RESET}         Toggle usage heatmap (12-week calendar)\n`;
   output += `  ${CYAN}n${RESET}         Toggle desktop notifications on/off\n`;
   output += `  ${CYAN}L${RESET}         Toggle live session log pane\n`;
+  output += `  ${CYAN}W${RESET}         Show session timeline waterfall view\n`;
   output += `  ${CYAN}E${RESET}         Export session report to clipboard\n\n`;
 
   output += `${BOLD}APPEARANCE:${RESET}\n`;
@@ -2941,6 +3226,33 @@ function handleInput(key) {
     return;
   }
 
+  if (showTimeline) {
+    if (key === 'W' || key === 'w' || key === '\x1b') {
+      showTimeline = false;
+      timelineCache = null;
+      timelineScrollOffset = 0;
+      render();
+    } else if (key === '\x1b[A' || key === 'k') {
+      // Scroll up
+      if (timelineScrollOffset > 0) timelineScrollOffset--;
+      render();
+    } else if (key === '\x1b[B' || key === 'j') {
+      // Scroll down
+      timelineScrollOffset++;
+      render();
+    } else if (key === 'g') {
+      timelineScrollOffset = 0;
+      render();
+    } else if (key === 'G') {
+      timelineScrollOffset = 999999; // will be clamped in renderTimeline
+      render();
+    } else if (key === 'q' || key === '\x03') {
+      cleanup();
+      process.exit(0);
+    }
+    return;
+  }
+
   if (showHeatmap) {
     showHeatmap = false;
     render();
@@ -3046,6 +3358,15 @@ function handleInput(key) {
         statusMessage = 'Log pane OFF';
       }
       render();
+      break;
+
+    case 'W':
+      if (processes[selectedIndex]) {
+        showTimeline = true;
+        timelineScrollOffset = 0;
+        timelineCache = null; // force re-parse
+        render();
+      }
       break;
 
     case '\x1b[A': // Up arrow
@@ -3359,7 +3680,7 @@ function main() {
 
   // Auto-refresh every 5 seconds
   setInterval(() => {
-    if (!showingHelp && !showHistory && !showHeatmap && !confirmKillAll && !confirmKillStopped && !filterInput && !searchMode) {
+    if (!showingHelp && !showHistory && !showTimeline && !showHeatmap && !confirmKillAll && !confirmKillStopped && !filterInput && !searchMode) {
       allProcesses = getClaudeProcesses(); applySortAndFilter();
       updateProcessHistory(allProcesses);
       checkStateTransitions(allProcesses);
@@ -3455,6 +3776,11 @@ module.exports = {
   // Log tailing
   parseLogEntry,
   readSessionLog,
+  // Timeline
+  parseSessionTimeline,
+  getSessionFileForProc,
+  formatElapsed,
+  renderTimeline,
   // Expose internals for testing
   _state: { get allProcesses() { return allProcesses; }, set allProcesses(v) { allProcesses = v; },
             get processes() { return processes; }, set processes(v) { processes = v; },
@@ -3464,6 +3790,9 @@ module.exports = {
             get selectedIndex() { return selectedIndex; }, set selectedIndex(v) { selectedIndex = v; },
             get showDashboard() { return showDashboard; }, set showDashboard(v) { showDashboard = v; },
             get showHistory() { return showHistory; }, set showHistory(v) { showHistory = v; },
+            get showTimeline() { return showTimeline; }, set showTimeline(v) { showTimeline = v; },
+            get timelineScrollOffset() { return timelineScrollOffset; }, set timelineScrollOffset(v) { timelineScrollOffset = v; },
+            get timelineCache() { return timelineCache; }, set timelineCache(v) { timelineCache = v; },
             get showHeatmap() { return showHeatmap; }, set showHeatmap(v) { showHeatmap = v; },
             get lastSnapshotTime() { return lastSnapshotTime; }, set lastSnapshotTime(v) { lastSnapshotTime = v; },
             get searchQuery() { return searchQuery; }, set searchQuery(v) { searchQuery = v; },
