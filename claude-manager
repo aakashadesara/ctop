@@ -450,6 +450,11 @@ let searchMode = false;   // true when typing a search query
 let searchQuery = '';
 let searchResults = new Map(); // PID -> snippets[]
 
+// Log pane state
+let showLogPane = false;
+let logLines = [];
+let logScrollOffset = 0;
+
 // Notification state
 let notificationsEnabled = CONFIG.notifications.enabled;
 const previousStates = new Map();   // PID -> last known status string
@@ -1022,6 +1027,75 @@ function assignSessionsToProcesses(procs) {
   }
 }
 
+function parseLogEntry(data) {
+  // Extract human-readable conversation text from a JSONL entry.
+  // Returns { role: 'user'|'assistant', text: string } or null if not a conversation line.
+  if (!data || !data.message) return null;
+  const role = data.message.role;
+  if (role !== 'user' && role !== 'assistant') return null;
+
+  const content = data.message.content;
+  let text = '';
+
+  if (typeof content === 'string') {
+    text = content;
+  } else if (Array.isArray(content)) {
+    // Only extract text blocks; skip tool_use, tool_result, images, etc.
+    const textParts = content.filter(c => c.type === 'text').map(c => c.text || '');
+    text = textParts.join(' ');
+  }
+
+  if (!text || !text.trim()) return null;
+
+  // Strip system-like messages (XML tags typically indicate system prompts)
+  if (role === 'user' && text.trim().startsWith('<')) return null;
+
+  return { role, text: text.replace(/\n/g, ' ').trim() };
+}
+
+function readSessionLog(proc, maxLines) {
+  if (maxLines === undefined) maxLines = 50;
+  // Find the session JSONL file for this process (same logic as assignSessionsToProcesses)
+  if (!proc || !proc.cwd) return [];
+
+  const projectDirName = proc.cwd.replace(/\//g, '-');
+  const projectPath = path.join(process.env.HOME || '', '.claude', 'projects', projectDirName);
+
+  try {
+    if (!fs.existsSync(projectPath)) return [];
+  } catch (e) {
+    return [];
+  }
+
+  const files = getSessionFilesForProject(projectPath);
+  if (files.length === 0) return [];
+
+  // Use the most recent session file (matching what assignSessionsToProcesses does)
+  const filePath = files[0].path;
+
+  try {
+    const content = fs.readFileSync(filePath, 'utf8');
+    const lines = content.split('\n').filter(l => l.trim());
+    const entries = [];
+
+    for (const line of lines) {
+      try {
+        const data = JSON.parse(line);
+        const entry = parseLogEntry(data);
+        if (entry) {
+          const prefix = entry.role === 'user' ? 'USER' : 'ASSISTANT';
+          entries.push({ role: entry.role, text: `${prefix}: ${entry.text}` });
+        }
+      } catch (e) {}
+    }
+
+    // Return last N entries
+    return entries.slice(-maxLines);
+  } catch (e) {
+    return [];
+  }
+}
+
 function ctxColor(pct) {
   // pct = remaining %
   if (pct < 10) return THEME.ctxLow;
@@ -1321,7 +1395,8 @@ function renderPaneMode() {
   const totalRows = Math.ceil(processes.length / cardsPerRow);
   const headerLines = 6 + (showDashboard ? 2 : 0); // header box (3) + stats + dashboard + separator + status
   const footerLines = 2; // separator + keys (pinned to bottom)
-  const availableSpace = rows - headerLines - footerLines;
+  const paneLogHeight = showLogPane ? Math.max(5, Math.floor(rows * 0.4)) : 0;
+  const availableSpace = rows - headerLines - footerLines - paneLogHeight;
   // Last card row doesn't need gap after it, so add cardGapY back once
   const maxVisibleCardRows = Math.max(1, Math.floor((availableSpace + cardGapY) / (cardHeight + cardGapY)));
 
@@ -1443,7 +1518,7 @@ function renderPaneMode() {
   }
 
   // Bottom detail pane for narrow pane view
-  if (!showPaneDetail && processes[selectedIndex]) {
+  if (!showLogPane && !showPaneDetail && processes[selectedIndex]) {
     const cardRows = Math.ceil(processes.length / cardsPerRow);
     const visibleCardRows = Math.min(cardRows, Math.max(1, Math.floor((rows - 6 - 2 + cardGapY) / (cardHeight + cardGapY))));
     const contentEnd = 6 + visibleCardRows * (cardHeight + cardGapY);
@@ -1457,6 +1532,14 @@ function renderPaneMode() {
     }
   }
 
+  // Log pane at bottom in pane mode
+  if (showLogPane && processes[selectedIndex]) {
+    logLines = readSessionLog(processes[selectedIndex]);
+    const logStartRow = rows - paneLogHeight - 1;
+    logScrollOffset = Math.max(0, logLines.length - (paneLogHeight - 1));
+    output += renderLogPane(logStartRow, columns, paneLogHeight, processes[selectedIndex]);
+  }
+
   // Footer pinned to bottom
   output += `${ESC}[${rows - 1};1H`; // move cursor to second-to-last row
   output += `${DIM}${'─'.repeat(columns)}${RESET}${CLR_LINE}`;
@@ -1466,6 +1549,7 @@ function renderPaneMode() {
   output += `${RED}x${RESET} Kill  ${RED}X${RESET} Force  `;
   output += `${CYAN}o${RESET} Open  `;
   output += `${CYAN}s${RESET} Sort  ${CYAN}/${RESET} Filter  ${CYAN}F${RESET} Search  `;
+  output += `${CYAN}L${RESET} Log  `;
   output += `${CYAN}T${RESET} Theme  ${CYAN}d${RESET} Dash  ${CYAN}H${RESET} History  ${CYAN}n${RESET} Notif  ${CYAN}P${RESET} List  ${CYAN}r${RESET} Refresh  ${CYAN}q${RESET} Quit  ${CYAN}?${RESET} Help${CLR_LINE}`;
 
   process.stdout.write(output);
@@ -1701,6 +1785,51 @@ function renderDetailPane(proc, startRow, paneCol, paneWidth, availRows) {
   return output;
 }
 
+function renderLogPane(startRow, paneWidth, paneHeight, proc) {
+  if (!proc || paneHeight < 3) return '';
+  let output = '';
+
+  // Header separator
+  const heading = ` Session Log (PID: ${proc.pid}) `;
+  const hLen = paneWidth - heading.length;
+  const leftDash = Math.floor(hLen / 2);
+  const rightDash = hLen - leftDash;
+  output += `${ESC}[${startRow};1H${DIM}${'─'.repeat(Math.max(0, leftDash))}${RESET}${BOLD}${CYAN}${heading}${RESET}${DIM}${'─'.repeat(Math.max(0, rightDash))}${RESET}${CLR_LINE}`;
+
+  const contentRows = paneHeight - 1; // 1 for header
+  if (contentRows <= 0) return output;
+
+  // Determine visible slice with scroll offset
+  const totalLines = logLines.length;
+  const maxScroll = Math.max(0, totalLines - contentRows);
+  if (logScrollOffset > maxScroll) logScrollOffset = maxScroll;
+  if (logScrollOffset < 0) logScrollOffset = 0;
+
+  const visStart = logScrollOffset;
+  const visEnd = Math.min(totalLines, visStart + contentRows);
+
+  for (let row = 0; row < contentRows; row++) {
+    const lineIdx = visStart + row;
+    const r = startRow + 1 + row;
+    output += `${ESC}[${r};1H`;
+
+    if (lineIdx < totalLines) {
+      const entry = logLines[lineIdx];
+      const color = entry.role === 'user' ? CYAN : GREEN;
+      // Truncate line to terminal width
+      let displayText = entry.text;
+      if (displayText.length > paneWidth - 2) {
+        displayText = displayText.substring(0, paneWidth - 5) + '...';
+      }
+      output += ` ${color}${displayText}${RESET}${CLR_LINE}`;
+    } else {
+      output += `${CLR_LINE}`;
+    }
+  }
+
+  return output;
+}
+
 function render() {
   if (viewMode === 'pane') return renderPaneMode();
   const { columns, rows } = process.stdout;
@@ -1773,7 +1902,8 @@ function render() {
   // Header: 3 (header box) + 1 (stats) + 1 (separator) + 1 (col headers) + 1 (separator) = 7
   // Footer: 2 (separator + keys, pinned to bottom)
   // Reserve 1 extra for selected item detail line
-  const maxVisible = rows - 10 - (showDashboard ? 2 : 0);
+  const logPaneHeight = showLogPane ? Math.max(5, Math.floor(rows * 0.4)) : 0;
+  const maxVisible = rows - 10 - (showDashboard ? 2 : 0) - logPaneHeight;
   const startIdx = Math.max(0, selectedIndex - Math.floor(maxVisible / 2));
   const endIdx = Math.min(processes.length, startIdx + maxVisible);
 
@@ -1934,7 +2064,7 @@ function render() {
   }
 
   // Bottom detail pane for narrow terminals
-  if (!showDetailPane && processes[selectedIndex]) {
+  if (!showLogPane && !showDetailPane && processes[selectedIndex]) {
     // Calculate how many content lines we used
     const headerLines = 8; // header(3) + stats(1) + status?(0-1) + separator(1) + colheader(1) + separator(1)
     const listLines = endIdx - startIdx + (processes.length > maxVisible ? 1 : 0);
@@ -1955,6 +2085,16 @@ function render() {
     }
   }
 
+  // Log pane at bottom
+  if (showLogPane && processes[selectedIndex]) {
+    // Refresh log content for selected process
+    logLines = readSessionLog(processes[selectedIndex]);
+    // Auto-scroll to bottom
+    const logStartRow = rows - logPaneHeight - 1; // -1 for footer separator
+    logScrollOffset = Math.max(0, logLines.length - (logPaneHeight - 1));
+    output += renderLogPane(logStartRow, columns, logPaneHeight, processes[selectedIndex]);
+  }
+
   // Footer pinned to bottom
   output += `${ESC}[${rows - 1};1H`;
   output += `${DIM}${'─'.repeat(columns)}${RESET}${CLR_LINE}`;
@@ -1964,6 +2104,7 @@ function render() {
   output += `${RED}x${RESET} Kill  ${RED}X${RESET} Force  `;
   output += `${CYAN}o${RESET} Open  `;
   output += `${CYAN}s${RESET} Sort  ${CYAN}/${RESET} Filter  ${CYAN}F${RESET} Search  `;
+  output += `${CYAN}L${RESET} Log  `;
   output += `${CYAN}T${RESET} Theme  ${CYAN}d${RESET} Dash  ${CYAN}H${RESET} History  ${CYAN}n${RESET} Notif  ${CYAN}P${RESET} Pane  ${CYAN}r${RESET} Refresh  ${CYAN}q${RESET} Quit  ${CYAN}?${RESET} Help${CLR_LINE}`;
 
   process.stdout.write(output);
@@ -2148,7 +2289,8 @@ function showHelp() {
   output += `  ${CYAN}r${RESET}         Refresh process list\n`;
   output += `  ${CYAN}d${RESET}         Toggle aggregate dashboard stats\n`;
   output += `  ${CYAN}H${RESET}         Toggle usage history view (24h charts)\n`;
-  output += `  ${CYAN}n${RESET}         Toggle desktop notifications on/off\n\n`;
+  output += `  ${CYAN}n${RESET}         Toggle desktop notifications on/off\n`;
+  output += `  ${CYAN}L${RESET}         Toggle live session log pane\n\n`;
 
   output += `${BOLD}APPEARANCE:${RESET}\n`;
   output += `  ${CYAN}T${RESET}         Cycle color theme (${THEME_NAMES.join(', ')})\n`;
@@ -2445,6 +2587,20 @@ function handleInput(key) {
 
     case 'T':
       cycleTheme();
+      render();
+      break;
+
+    case 'L':
+      showLogPane = !showLogPane;
+      if (showLogPane) {
+        logScrollOffset = 0;
+        logLines = [];
+        statusMessage = 'Log pane ON (L to close)';
+      } else {
+        logLines = [];
+        logScrollOffset = 0;
+        statusMessage = 'Log pane OFF';
+      }
       render();
       break;
 
@@ -2819,6 +2975,9 @@ module.exports = {
   IS_LINUX,
   IS_WIN,
   PLATFORM,
+  // Log tailing
+  parseLogEntry,
+  readSessionLog,
   // Expose internals for testing
   _state: { get allProcesses() { return allProcesses; }, set allProcesses(v) { allProcesses = v; },
             get processes() { return processes; }, set processes(v) { processes = v; },
@@ -2834,6 +2993,9 @@ module.exports = {
             get notificationsEnabled() { return notificationsEnabled; }, set notificationsEnabled(v) { notificationsEnabled = v; },
             get viewMode() { return viewMode; }, set viewMode(v) { viewMode = v; },
             get currentThemeName() { return currentThemeName; }, set currentThemeName(v) { currentThemeName = v; },
+            get showLogPane() { return showLogPane; }, set showLogPane(v) { showLogPane = v; },
+            get logLines() { return logLines; }, set logLines(v) { logLines = v; },
+            get logScrollOffset() { return logScrollOffset; }, set logScrollOffset(v) { logScrollOffset = v; },
             get THEME() { return THEME; }, set THEME(v) { THEME = v; },
             get plugins() { return plugins; }, set plugins(v) { plugins = v; } },
   _notif: { previousStates, processStartTimes },
