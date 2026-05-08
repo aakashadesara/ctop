@@ -109,6 +109,29 @@ function formatCost(cost) {
   return '$' + cost.toFixed(2);
 }
 
+function formatTokenCount(n) {
+  if (n == null) return '--';
+  return n.toLocaleString('en-US');
+}
+
+function calculateAggregateStats(procs) {
+  let totalInput = 0, totalOutput = 0, totalCacheRead = 0, totalCacheWrite = 0;
+  let totalCost = 0, ctxSum = 0, ctxCount = 0, active = 0, dead = 0;
+  for (const p of procs) {
+    if (p.inputTokens != null) totalInput += p.inputTokens;
+    if (p.outputTokens != null) totalOutput += p.outputTokens;
+    if (p.cacheReadTokens != null) totalCacheRead += p.cacheReadTokens;
+    if (p.cacheCreateTokens != null) totalCacheWrite += p.cacheCreateTokens;
+    totalCost += (p.cost || 0);
+    if (p.contextPct != null) { ctxSum += (100 - p.contextPct); ctxCount++; }
+    if (p.isActive) active++; else dead++;
+  }
+  return { totalInput, totalOutput, totalCacheRead, totalCacheWrite,
+    totalCache: totalCacheRead + totalCacheWrite, totalCost,
+    avgContextUtil: ctxCount > 0 ? Math.round(ctxSum / ctxCount) : null,
+    active, dead, total: procs.length };
+}
+
 // ANSI escape codes
 const ESC = '\x1b';
 const CLEAR = `${ESC}[2J${ESC}[H`;
@@ -146,6 +169,7 @@ let sortMode = 'age'; // default: oldest first
 let sortReverse = false;
 let filterText = '';
 let filterInput = false; // true when typing a filter
+let showDashboard = false; // toggled by 'd' key
 
 function getClaudeProcesses() {
   try {
@@ -489,6 +513,19 @@ function applySortAndFilter() {
   }
 }
 
+function renderDashboard(cols) {
+  const s = calculateAggregateStats(allProcesses);
+  let o = '';
+  o += `${DIM} Tokens  ${RESET}${GREEN}In: ${formatTokenCount(s.totalInput)}${RESET}${DIM} | ${RESET}${YELLOW}Out: ${formatTokenCount(s.totalOutput)}${RESET}${DIM} | ${RESET}${CYAN}Cache: ${formatTokenCount(s.totalCache)}${RESET}${CLR_LINE}\n`;
+  const uStr = s.avgContextUtil !== null ? `${s.avgContextUtil}%` : '--';
+  let uC = GREEN;
+  if (s.avgContextUtil !== null) { if (s.avgContextUtil > 80) uC = RED; else if (s.avgContextUtil > 50) uC = YELLOW; }
+  let cC = GREEN;
+  if (s.totalCost > 5) cC = RED; else if (s.totalCost >= 1) cC = YELLOW;
+  o += `${DIM} Avg Ctx ${RESET}${uC}${uStr}${RESET}${DIM} | Cost: ${RESET}${cC}${formatCost(s.totalCost > 0 ? s.totalCost : null)}${RESET}${DIM} | Sessions: ${RESET}${GREEN}${s.active}${RESET}${DIM} active ${RESET}${RED}${s.dead}${RESET}${DIM} dead ${RESET}${WHITE}${s.total}${RESET}${DIM} total${RESET}${CLR_LINE}\n`;
+  return o;
+}
+
 function renderHeader(columns) {
   const title = ' CTOP — Claude Terminal Operations Panel ';
   let h = '';
@@ -544,6 +581,8 @@ function renderPaneMode() {
   statsLine += `${DIM} | ${lastRefresh.toLocaleTimeString()} ${RESET}`;
   output += statsLine + `${CLR_LINE}\n`;
 
+  if (showDashboard) { output += renderDashboard(columns); }
+
   // Status message if any
   if (statusMessage) {
     output += `${YELLOW} ${statusMessage}${RESET}${CLR_LINE}\n`;
@@ -554,7 +593,7 @@ function renderPaneMode() {
 
   // Calculate grid
   const totalRows = Math.ceil(processes.length / cardsPerRow);
-  const headerLines = 6; // header box (3) + stats + separator + status
+  const headerLines = 6 + (showDashboard ? 2 : 0); // header box (3) + stats + dashboard + separator + status
   const footerLines = 2; // separator + keys (pinned to bottom)
   const availableSpace = rows - headerLines - footerLines;
   // Last card row doesn't need gap after it, so add cardGapY back once
@@ -700,7 +739,7 @@ function renderPaneMode() {
   output += `${CYAN}hjkl${RESET} Nav  `;
   output += `${RED}x${RESET} Kill  ${RED}X${RESET} Force  `;
   output += `${CYAN}s${RESET} Sort  ${CYAN}/${RESET} Filter  `;
-  output += `${CYAN}P${RESET} List  ${CYAN}r${RESET} Refresh  ${CYAN}q${RESET} Quit  ${CYAN}?${RESET} Help${CLR_LINE}`;
+  output += `${CYAN}d${RESET} Dash  ${CYAN}P${RESET} List  ${CYAN}r${RESET} Refresh  ${CYAN}q${RESET} Quit  ${CYAN}?${RESET} Help${CLR_LINE}`;
 
   process.stdout.write(output);
 }
@@ -918,6 +957,8 @@ function render() {
   statsLine += `${DIM} | ${lastRefresh.toLocaleTimeString()} ${RESET}`;
   output += statsLine + `${CLR_LINE}\n`;
 
+  if (showDashboard) { output += renderDashboard(columns); }
+
   // Status message if any
   if (statusMessage) {
     output += `${YELLOW} ${statusMessage}${RESET}${CLR_LINE}\n`;
@@ -952,7 +993,7 @@ function render() {
   // Header: 3 (header box) + 1 (stats) + 1 (separator) + 1 (col headers) + 1 (separator) = 7
   // Footer: 2 (separator + keys, pinned to bottom)
   // Reserve 1 extra for selected item detail line
-  const maxVisible = rows - 10;
+  const maxVisible = rows - 10 - (showDashboard ? 2 : 0);
   const startIdx = Math.max(0, selectedIndex - Math.floor(maxVisible / 2));
   const endIdx = Math.min(processes.length, startIdx + maxVisible);
 
@@ -1112,7 +1153,7 @@ function render() {
   output += `${CYAN}jk${RESET} Nav  `;
   output += `${RED}x${RESET} Kill  ${RED}X${RESET} Force  `;
   output += `${CYAN}s${RESET} Sort  ${CYAN}/${RESET} Filter  `;
-  output += `${CYAN}P${RESET} Pane  ${CYAN}r${RESET} Refresh  ${CYAN}q${RESET} Quit  ${CYAN}?${RESET} Help${CLR_LINE}`;
+  output += `${CYAN}d${RESET} Dash  ${CYAN}P${RESET} Pane  ${CYAN}r${RESET} Refresh  ${CYAN}q${RESET} Quit  ${CYAN}?${RESET} Help${CLR_LINE}`;
 
   process.stdout.write(output);
 }
@@ -1169,7 +1210,8 @@ function showHelp() {
   output += `  ${CYAN}X${RESET}         Force kill selected process (SIGKILL)\n`;
   output += `  ${CYAN}K${RESET}         Kill ALL Claude processes (with confirmation)\n`;
   output += `  ${CYAN}A${RESET}         Kill ALL stopped/dead processes (with confirmation)\n`;
-  output += `  ${CYAN}r${RESET}         Refresh process list\n\n`;
+  output += `  ${CYAN}r${RESET}         Refresh process list\n`;
+  output += `  ${CYAN}d${RESET}         Toggle aggregate dashboard stats\n\n`;
 
   output += `${BOLD}OTHER:${RESET}\n`;
   output += `  ${CYAN}q / ESC${RESET}   Quit the manager\n`;
@@ -1346,6 +1388,11 @@ function handleInput(key) {
         }
         render();
       }
+      break;
+
+    case 'd':
+      showDashboard = !showDashboard;
+      render();
       break;
 
     case 'g':
@@ -1529,6 +1576,8 @@ if (require.main === module) {
 module.exports = {
   calculateCost,
   formatCost,
+  formatTokenCount,
+  calculateAggregateStats,
   MODEL_PRICING,
   formatStartTime,
   ctxColor,
@@ -1543,6 +1592,7 @@ module.exports = {
             get filterText() { return filterText; }, set filterText(v) { filterText = v; },
             get sortMode() { return sortMode; }, set sortMode(v) { sortMode = v; },
             get sortReverse() { return sortReverse; }, set sortReverse(v) { sortReverse = v; },
-            get selectedIndex() { return selectedIndex; }, set selectedIndex(v) { selectedIndex = v; } },
+            get selectedIndex() { return selectedIndex; }, set selectedIndex(v) { selectedIndex = v; },
+            get showDashboard() { return showDashboard; }, set showDashboard(v) { showDashboard = v; } },
   _colors: { RED, ORANGE, YELLOW, GREEN },
 };
