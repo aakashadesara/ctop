@@ -1,6 +1,6 @@
 {
   "name": "ctop-claude",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "Terminal UI for monitoring and managing Claude Code sessions",
   "main": "src/main.js",
   "bin": {
