@@ -92,6 +92,7 @@ const DEFAULT_CONFIG = {
   theme: 'default',    // built-in name or custom color object
   contextBarStyle: 'block', // 'block' or 'braille'
   notifications: { enabled: true, minDuration: 30 }, // seconds
+  bootAnimation: true,
 };
 
 function loadConfig() {
@@ -115,6 +116,7 @@ function loadConfig() {
       if (rc.notifications !== undefined && typeof rc.notifications === 'object') {
         config.notifications = { ...DEFAULT_CONFIG.notifications, ...rc.notifications };
       }
+      if (rc.bootAnimation === false) config.bootAnimation = false;
     }
   } catch (e) {}
   // CLI flags override
@@ -126,6 +128,8 @@ function loadConfig() {
       config.contextLimit = Number(args[++i]);
     } else if (args[i] === '--pane') {
       config.defaultView = 'pane';
+    } else if (args[i] === '--no-animation') {
+      config.bootAnimation = false;
     } else if (args[i] === '--help' || args[i] === '-h') {
       console.log(`ctop — Claude Code process manager
 
@@ -135,6 +139,7 @@ Options:
   --refresh, -r <seconds>    Refresh interval (default: 5)
   --context-limit, -c <n>    Context window token limit (default: 1000000)
   --pane                     Start in pane/grid view
+  --no-animation             Skip boot animation
   -h, --help                 Show this help
 
 Config file: ~/.ctoprc (JSON)
@@ -4173,6 +4178,47 @@ function handleInput(key) {
   }
 }
 
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function playBootAnimation(columns, rows) {
+  const write = (s) => process.stdout.write(s);
+
+  // Phase 1: Clear screen, show cursor at top
+  write(CLEAR + HIDE_CURSOR);
+  await sleep(100);
+
+  // Phase 2: Type out "CTOP" character by character
+  const title = 'CTOP';
+  const centerCol = Math.floor((columns - title.length) / 2);
+  const centerRow = Math.floor(rows / 2) - 1;
+  write(`${ESC}[${centerRow};${centerCol}H`);
+  for (const ch of title) {
+    write(`${BOLD}${ORANGE}${ch}${RESET}`);
+    await sleep(80);
+  }
+
+  // Phase 3: Subtitle types out
+  const sub = 'Claude Terminal Operations Panel';
+  const subCol = Math.floor((columns - sub.length) / 2);
+  write(`${ESC}[${centerRow + 1};${subCol}H`);
+  for (const ch of sub) {
+    write(`${DIM}${ch}${RESET}`);
+    await sleep(15);
+  }
+  await sleep(200);
+
+  // Phase 4: "Scanning sessions..." flash
+  const scan = 'scanning sessions...';
+  const scanCol = Math.floor((columns - scan.length) / 2);
+  write(`${ESC}[${centerRow + 3};${scanCol}H${GREEN}${scan}${RESET}`);
+  await sleep(400);
+
+  // Phase 5: Clear and let normal render take over
+  write(CLEAR);
+}
+
 function cleanup() {
   // Call plugin cleanup functions
   for (const p of plugins) {
@@ -4186,7 +4232,7 @@ function cleanup() {
   process.stdin.setRawMode(false);
 }
 
-function main() {
+async function main() {
   // Setup terminal
   if (!process.stdin.isTTY) {
     console.error('This program requires an interactive terminal.');
@@ -4215,6 +4261,13 @@ function main() {
     cleanup();
     process.exit(0);
   });
+
+  // Boot animation
+  if (CONFIG.bootAnimation && process.stdin.isTTY) {
+    const columns = process.stdout.columns || 80;
+    const rows = process.stdout.rows || 24;
+    await playBootAnimation(columns, rows);
+  }
 
   // Initial load
   allProcesses = getClaudeProcesses(); applySortAndFilter();
@@ -4347,6 +4400,9 @@ module.exports = {
   fuzzyScore,
   filterCommands,
   executeCommand,
+  // Boot animation
+  playBootAnimation,
+  sleep,
   // Expose internals for testing
   _state: { get allProcesses() { return allProcesses; }, set allProcesses(v) { allProcesses = v; },
             get processes() { return processes; }, set processes(v) { processes = v; },
