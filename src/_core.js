@@ -1859,6 +1859,77 @@ function getCardsPerRow() {
   return Math.max(1, Math.floor((availWidth + gap) / (cardWidth + gap)));
 }
 
+function buildCostGauge(cost, cap) {
+  const barLen = 8;
+  const filled = Math.min(barLen, Math.round((cost / cap) * barLen));
+  const empty = barLen - filled;
+  return '\u2593'.repeat(filled) + '\u2591'.repeat(empty);
+}
+
+function contextHealthDot(procs) {
+  // Find the worst (lowest) contextPct among active processes
+  let worst = 100;
+  let hasCtx = false;
+  for (const p of procs) {
+    if (p.isActive && p.contextPct != null) {
+      hasCtx = true;
+      if (p.contextPct < worst) worst = p.contextPct;
+    }
+  }
+  if (!hasCtx) return { color: GREEN, label: 'ctx ok', pct: 100 };
+  // contextPct is "free %" — so remaining context
+  if (worst < 10) return { color: RED, label: 'ctx crit', pct: worst };
+  if (worst < 40) return { color: YELLOW, label: 'ctx warn', pct: worst };
+  return { color: GREEN, label: 'ctx ok', pct: worst };
+}
+
+function formatTimeShort(date) {
+  let h = date.getHours();
+  const m = date.getMinutes();
+  const ampm = h >= 12 ? 'PM' : 'AM';
+  h = h % 12 || 12;
+  return `${h}:${String(m).padStart(2, '0')} ${ampm}`;
+}
+
+function renderStatsBar(columns) {
+  const activeCount = allProcesses.filter(p => p.isActive).length;
+  const deadCount = allProcesses.filter(p => !p.isActive).length;
+  const totalCost = allProcesses.reduce((sum, p) => sum + (p.cost || 0), 0);
+  const costCap = 50;
+
+  // Status pills
+  let line = ` ${GREEN}\u25CF ${activeCount} active${RESET}  ${DIM}${RED}\u25CB ${deadCount} dead${RESET}`;
+
+  // Cost gauge
+  let costColor = GREEN;
+  if (totalCost > 5) costColor = RED;
+  else if (totalCost >= 1) costColor = YELLOW;
+  const gauge = buildCostGauge(totalCost, costCap);
+  line += `  ${DIM}\u2502${RESET}  ${costColor}${formatCost(totalCost > 0 ? totalCost : null)}${RESET} ${DIM}${gauge}${RESET}`;
+
+  // Context health dot
+  const ctx = contextHealthDot(allProcesses);
+  line += `  ${DIM}\u2502${RESET}  ${ctx.color}\u25C9 ${ctx.label}${RESET}`;
+
+  // Sort indicator
+  line += `  ${DIM}\u2502${RESET}  ${CYAN}\u2195 ${sortMode}${sortReverse ? ' \u2191' : ''}${RESET}`;
+
+  // Filter / search indicators (keep as-is when active)
+  if (filterText) line += `  ${DIM}\u2502${RESET}  ${YELLOW}/${filterText}${RESET}${DIM} (${processes.length}/${allProcesses.length})${RESET}`;
+  if (filterInput) line += `  ${DIM}\u2502${RESET}  ${BG_BLUE}${WHITE} /${filterText}\u2588 ${RESET}`;
+  if (searchMode) line += `  ${DIM}\u2502${RESET}  ${BG_BLUE}${WHITE} Search: ${searchQuery}\u2588 ${RESET}`;
+  else if (searchQuery) line += `  ${DIM}\u2502${RESET}  ${YELLOW}Search: "${searchQuery}"${RESET}${DIM} (${searchResults.size} matches)${RESET}`;
+
+  // Notification indicator
+  const notifLabel = notificationsEnabled ? `${GREEN}\u266A on${RESET}` : `${RED}\u266A off${RESET}`;
+  line += `  ${DIM}\u2502${RESET}  ${notifLabel}`;
+
+  // Time (HH:MM AM/PM, no seconds)
+  line += `  ${DIM}\u2502${RESET}  ${DIM}${formatTimeShort(lastRefresh)}${RESET}`;
+
+  return line;
+}
+
 function renderPaneMode() {
   const { columns, rows } = process.stdout;
   const cardWidth = 34;
@@ -1882,23 +1953,7 @@ function renderPaneMode() {
   output += renderHeader(columns);
 
   // Stats bar
-  const activeCount = allProcesses.filter(p => p.isActive).length;
-  const deadCount = allProcesses.filter(p => !p.isActive).length;
-  const paneTotalCost = allProcesses.reduce((sum, p) => sum + (p.cost || 0), 0);
-  let statsLine = `${DIM} Active: ${RESET}${GREEN}${activeCount}${RESET}${DIM} | Dead/Stopped: ${RESET}${RED}${deadCount}${RESET}`;
-  let paneCostColor = GREEN;
-  if (paneTotalCost > 5) paneCostColor = RED;
-  else if (paneTotalCost >= 1) paneCostColor = YELLOW;
-  statsLine += `${DIM} | Total Cost: ${RESET}${paneCostColor}${formatCost(paneTotalCost > 0 ? paneTotalCost : null)}${RESET}`;
-  if (sortMode !== 'age') statsLine += `${DIM} | Sort: ${RESET}${CYAN}${sortMode}${sortReverse ? ' ↑' : ''}${RESET}`;
-  if (filterText) statsLine += `${DIM} | Filter: ${RESET}${YELLOW}"${filterText}"${RESET}${DIM} (${processes.length}/${allProcesses.length})${RESET}`;
-  if (filterInput) statsLine += `${DIM} | ${RESET}${BG_BLUE}${WHITE} /${filterText}█ ${RESET}`;
-  if (searchMode) statsLine += `${DIM} | ${RESET}${BG_BLUE}${WHITE} Search: ${searchQuery}█ ${RESET}`;
-  else if (searchQuery) statsLine += `${DIM} | Search: ${RESET}${YELLOW}"${searchQuery}"${RESET}${DIM} (${searchResults.size} matches)${RESET}`;
-  const notifLabel = notificationsEnabled ? `${GREEN}ON${RESET}` : `${RED}OFF${RESET}`;
-  statsLine += `${DIM} | Notif: ${RESET}${notifLabel}`;
-  statsLine += `${DIM} | ${lastRefresh.toLocaleTimeString()} ${RESET}`;
-  output += statsLine + `${CLR_LINE}\n`;
+  output += renderStatsBar(columns) + `${CLR_LINE}\n`;
 
   if (showDashboard) { output += renderDashboard(columns); }
 
@@ -2527,23 +2582,7 @@ function render() {
   output += renderHeader(columns);
 
   // Stats bar
-  const activeCount = allProcesses.filter(p => p.isActive).length;
-  const deadCount = allProcesses.filter(p => !p.isActive).length;
-  const totalCost = allProcesses.reduce((sum, p) => sum + (p.cost || 0), 0);
-  let statsLine = `${DIM} Active: ${RESET}${GREEN}${activeCount}${RESET}${DIM} | Dead/Stopped: ${RESET}${RED}${deadCount}${RESET}`;
-  let totalCostColor = GREEN;
-  if (totalCost > 5) totalCostColor = RED;
-  else if (totalCost >= 1) totalCostColor = YELLOW;
-  statsLine += `${DIM} | Total Cost: ${RESET}${totalCostColor}${formatCost(totalCost > 0 ? totalCost : null)}${RESET}`;
-  if (sortMode !== 'age') statsLine += `${DIM} | Sort: ${RESET}${CYAN}${sortMode}${sortReverse ? ' ↑' : ''}${RESET}`;
-  if (filterText) statsLine += `${DIM} | Filter: ${RESET}${YELLOW}"${filterText}"${RESET}${DIM} (${processes.length}/${allProcesses.length})${RESET}`;
-  if (filterInput) statsLine += `${DIM} | ${RESET}${BG_BLUE}${WHITE} /${filterText}█ ${RESET}`;
-  if (searchMode) statsLine += `${DIM} | ${RESET}${BG_BLUE}${WHITE} Search: ${searchQuery}█ ${RESET}`;
-  else if (searchQuery) statsLine += `${DIM} | Search: ${RESET}${YELLOW}"${searchQuery}"${RESET}${DIM} (${searchResults.size} matches)${RESET}`;
-  const notifLabel2 = notificationsEnabled ? `${GREEN}ON${RESET}` : `${RED}OFF${RESET}`;
-  statsLine += `${DIM} | Notif: ${RESET}${notifLabel2}`;
-  statsLine += `${DIM} | ${lastRefresh.toLocaleTimeString()} ${RESET}`;
-  output += statsLine + `${CLR_LINE}\n`;
+  output += renderStatsBar(columns) + `${CLR_LINE}\n`;
 
   if (showDashboard) { output += renderDashboard(columns); }
 
@@ -4443,6 +4482,11 @@ module.exports = {
   set sessionScanCacheTime(v) { sessionScanCacheTime = v; },
   gitDiffCache,
   GIT_DIFF_CACHE_TTL,
+  // Status bar
+  renderStatsBar,
+  buildCostGauge,
+  contextHealthDot,
+  formatTimeShort,
   // Sparklines
   renderSparkline,
   updateProcessHistory,
