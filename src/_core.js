@@ -93,6 +93,7 @@ const DEFAULT_CONFIG = {
   contextBarStyle: 'block', // 'block' or 'braille'
   notifications: { enabled: true, minDuration: 30 }, // seconds
   animations: true, // smooth TUI animations; can be disabled in ~/.ctoprc
+  bootAnimation: true,
 };
 
 function loadConfig() {
@@ -117,6 +118,7 @@ function loadConfig() {
         config.notifications = { ...DEFAULT_CONFIG.notifications, ...rc.notifications };
       }
       if (rc.animations !== undefined) config.animations = !!rc.animations;
+      if (rc.bootAnimation === false) config.bootAnimation = false;
     }
   } catch (e) {}
   // CLI flags override
@@ -128,6 +130,8 @@ function loadConfig() {
       config.contextLimit = Number(args[++i]);
     } else if (args[i] === '--pane') {
       config.defaultView = 'pane';
+    } else if (args[i] === '--no-animation') {
+      config.bootAnimation = false;
     } else if (args[i] === '--help' || args[i] === '-h') {
       console.log(`ctop — Claude Code process manager
 
@@ -137,6 +141,7 @@ Options:
   --refresh, -r <seconds>    Refresh interval (default: 5)
   --context-limit, -c <n>    Context window token limit (default: 1000000)
   --pane                     Start in pane/grid view
+  --no-animation             Skip boot animation
   -h, --help                 Show this help
 
 Config file: ~/.ctoprc (JSON)
@@ -622,6 +627,44 @@ function updateProcessHistory(procs) {
   for (const pid of processHistory.keys()) {
     if (!currentPids.has(pid)) processHistory.delete(pid);
   }
+}
+
+// Token rate tracking
+const tokenHistory = new Map(); // PID -> { lastTotal: number, lastTime: number, rate: number }
+
+function updateTokenRates(procs) {
+  const now = Date.now();
+  const currentPids = new Set();
+  for (const proc of procs) {
+    currentPids.add(proc.pid);
+    const total = (proc.inputTokens || 0) + (proc.outputTokens || 0) + (proc.cacheCreateTokens || 0) + (proc.cacheReadTokens || 0);
+
+    if (tokenHistory.has(proc.pid)) {
+      const prev = tokenHistory.get(proc.pid);
+      const dt = (now - prev.lastTime) / 1000; // seconds
+      if (dt > 0) {
+        const delta = total - prev.lastTotal;
+        prev.rate = Math.max(0, delta / dt);
+      }
+      prev.lastTotal = total;
+      prev.lastTime = now;
+    } else {
+      tokenHistory.set(proc.pid, { lastTotal: total, lastTime: now, rate: 0 });
+    }
+
+    // Attach rate to proc for rendering
+    proc.tokenRate = tokenHistory.get(proc.pid).rate;
+  }
+  // Cleanup stale
+  for (const pid of tokenHistory.keys()) {
+    if (!currentPids.has(pid)) tokenHistory.delete(pid);
+  }
+}
+
+function formatTokenRate(rate) {
+  if (rate === 0 || rate == null) return '0';
+  if (rate < 1000) return Math.round(rate) + '';
+  return (rate / 1000).toFixed(1) + 'k';
 }
 
 // Notification state
@@ -1877,6 +1920,77 @@ function getCardsPerRow() {
   return Math.max(1, Math.floor((availWidth + gap) / (cardWidth + gap)));
 }
 
+function buildCostGauge(cost, cap) {
+  const barLen = 8;
+  const filled = Math.min(barLen, Math.round((cost / cap) * barLen));
+  const empty = barLen - filled;
+  return '\u2593'.repeat(filled) + '\u2591'.repeat(empty);
+}
+
+function contextHealthDot(procs) {
+  // Find the worst (lowest) contextPct among active processes
+  let worst = 100;
+  let hasCtx = false;
+  for (const p of procs) {
+    if (p.isActive && p.contextPct != null) {
+      hasCtx = true;
+      if (p.contextPct < worst) worst = p.contextPct;
+    }
+  }
+  if (!hasCtx) return { color: GREEN, label: 'ctx ok', pct: 100 };
+  // contextPct is "free %" — so remaining context
+  if (worst < 10) return { color: RED, label: 'ctx crit', pct: worst };
+  if (worst < 40) return { color: YELLOW, label: 'ctx warn', pct: worst };
+  return { color: GREEN, label: 'ctx ok', pct: worst };
+}
+
+function formatTimeShort(date) {
+  let h = date.getHours();
+  const m = date.getMinutes();
+  const ampm = h >= 12 ? 'PM' : 'AM';
+  h = h % 12 || 12;
+  return `${h}:${String(m).padStart(2, '0')} ${ampm}`;
+}
+
+function renderStatsBar(columns) {
+  const activeCount = allProcesses.filter(p => p.isActive).length;
+  const deadCount = allProcesses.filter(p => !p.isActive).length;
+  const totalCost = allProcesses.reduce((sum, p) => sum + (p.cost || 0), 0);
+  const costCap = 50;
+
+  // Status pills
+  let line = ` ${GREEN}\u25CF ${activeCount} active${RESET}  ${DIM}${RED}\u25CB ${deadCount} dead${RESET}`;
+
+  // Cost gauge
+  let costColor = GREEN;
+  if (totalCost > 5) costColor = RED;
+  else if (totalCost >= 1) costColor = YELLOW;
+  const gauge = buildCostGauge(totalCost, costCap);
+  line += `  ${DIM}\u2502${RESET}  ${costColor}${formatCost(totalCost > 0 ? totalCost : null)}${RESET} ${DIM}${gauge}${RESET}`;
+
+  // Context health dot
+  const ctx = contextHealthDot(allProcesses);
+  line += `  ${DIM}\u2502${RESET}  ${ctx.color}\u25C9 ${ctx.label}${RESET}`;
+
+  // Sort indicator
+  line += `  ${DIM}\u2502${RESET}  ${CYAN}\u2195 ${sortMode}${sortReverse ? ' \u2191' : ''}${RESET}`;
+
+  // Filter / search indicators (keep as-is when active)
+  if (filterText) line += `  ${DIM}\u2502${RESET}  ${YELLOW}/${filterText}${RESET}${DIM} (${processes.length}/${allProcesses.length})${RESET}`;
+  if (filterInput) line += `  ${DIM}\u2502${RESET}  ${BG_BLUE}${WHITE} /${filterText}\u2588 ${RESET}`;
+  if (searchMode) line += `  ${DIM}\u2502${RESET}  ${BG_BLUE}${WHITE} Search: ${searchQuery}\u2588 ${RESET}`;
+  else if (searchQuery) line += `  ${DIM}\u2502${RESET}  ${YELLOW}Search: "${searchQuery}"${RESET}${DIM} (${searchResults.size} matches)${RESET}`;
+
+  // Notification indicator
+  const notifLabel = notificationsEnabled ? `${GREEN}\u266A on${RESET}` : `${RED}\u266A off${RESET}`;
+  line += `  ${DIM}\u2502${RESET}  ${notifLabel}`;
+
+  // Time (HH:MM AM/PM, no seconds)
+  line += `  ${DIM}\u2502${RESET}  ${DIM}${formatTimeShort(lastRefresh)}${RESET}`;
+
+  return line;
+}
+
 function renderPaneMode() {
   const { columns, rows } = process.stdout;
   const cardWidth = 34;
@@ -1900,23 +2014,7 @@ function renderPaneMode() {
   output += renderHeader(columns);
 
   // Stats bar
-  const activeCount = allProcesses.filter(p => p.isActive).length;
-  const deadCount = allProcesses.filter(p => !p.isActive).length;
-  const paneTotalCost = allProcesses.reduce((sum, p) => sum + (p.cost || 0), 0);
-  let statsLine = `${DIM} Active: ${RESET}${GREEN}${activeCount}${RESET}${DIM} | Dead/Stopped: ${RESET}${RED}${deadCount}${RESET}`;
-  let paneCostColor = GREEN;
-  if (paneTotalCost > 5) paneCostColor = RED;
-  else if (paneTotalCost >= 1) paneCostColor = YELLOW;
-  statsLine += `${DIM} | Total Cost: ${RESET}${paneCostColor}${formatCost(paneTotalCost > 0 ? paneTotalCost : null)}${RESET}`;
-  if (sortMode !== 'age') statsLine += `${DIM} | Sort: ${RESET}${CYAN}${sortMode}${sortReverse ? ' ↑' : ''}${RESET}`;
-  if (filterText) statsLine += `${DIM} | Filter: ${RESET}${YELLOW}"${filterText}"${RESET}${DIM} (${processes.length}/${allProcesses.length})${RESET}`;
-  if (filterInput) statsLine += `${DIM} | ${RESET}${BG_BLUE}${WHITE} /${filterText}█ ${RESET}`;
-  if (searchMode) statsLine += `${DIM} | ${RESET}${BG_BLUE}${WHITE} Search: ${searchQuery}█ ${RESET}`;
-  else if (searchQuery) statsLine += `${DIM} | Search: ${RESET}${YELLOW}"${searchQuery}"${RESET}${DIM} (${searchResults.size} matches)${RESET}`;
-  const notifLabel = notificationsEnabled ? `${GREEN}ON${RESET}` : `${RED}OFF${RESET}`;
-  statsLine += `${DIM} | Notif: ${RESET}${notifLabel}`;
-  statsLine += `${DIM} | ${lastRefresh.toLocaleTimeString()} ${RESET}`;
-  output += statsLine + `${CLR_LINE}\n`;
+  output += renderStatsBar(columns) + `${CLR_LINE}\n`;
 
   if (showDashboard) { output += renderDashboard(columns); }
 
@@ -2271,6 +2369,14 @@ function renderDetailPane(proc, startRow, paneCol, paneWidth, availRows) {
   if (r < startRow + availRows - 1)
     output += pairRow(r++, 'Turn:', turnMs, '', 'Stop:', proc.stopReason || '--', DIM);
 
+  // Token rate row
+  if (r < startRow + availRows - 1) {
+    const rateVal = proc.tokenRate || 0;
+    const rateStr = formatTokenRate(rateVal) + ' tok/s';
+    const rateColor = rateVal > 0 ? GREEN : DIM;
+    output += fullRow(r++, 'Rate:', rateStr, rateColor);
+  }
+
   // Cost row
   if (r < startRow + availRows - 1) {
     const costStr = formatCost(proc.cost);
@@ -2539,23 +2645,7 @@ function render() {
   output += renderHeader(columns);
 
   // Stats bar
-  const activeCount = allProcesses.filter(p => p.isActive).length;
-  const deadCount = allProcesses.filter(p => !p.isActive).length;
-  const totalCost = allProcesses.reduce((sum, p) => sum + (p.cost || 0), 0);
-  let statsLine = `${DIM} Active: ${RESET}${GREEN}${activeCount}${RESET}${DIM} | Dead/Stopped: ${RESET}${RED}${deadCount}${RESET}`;
-  let totalCostColor = GREEN;
-  if (totalCost > 5) totalCostColor = RED;
-  else if (totalCost >= 1) totalCostColor = YELLOW;
-  statsLine += `${DIM} | Total Cost: ${RESET}${totalCostColor}${formatCost(totalCost > 0 ? totalCost : null)}${RESET}`;
-  if (sortMode !== 'age') statsLine += `${DIM} | Sort: ${RESET}${CYAN}${sortMode}${sortReverse ? ' ↑' : ''}${RESET}`;
-  if (filterText) statsLine += `${DIM} | Filter: ${RESET}${YELLOW}"${filterText}"${RESET}${DIM} (${processes.length}/${allProcesses.length})${RESET}`;
-  if (filterInput) statsLine += `${DIM} | ${RESET}${BG_BLUE}${WHITE} /${filterText}█ ${RESET}`;
-  if (searchMode) statsLine += `${DIM} | ${RESET}${BG_BLUE}${WHITE} Search: ${searchQuery}█ ${RESET}`;
-  else if (searchQuery) statsLine += `${DIM} | Search: ${RESET}${YELLOW}"${searchQuery}"${RESET}${DIM} (${searchResults.size} matches)${RESET}`;
-  const notifLabel2 = notificationsEnabled ? `${GREEN}ON${RESET}` : `${RED}OFF${RESET}`;
-  statsLine += `${DIM} | Notif: ${RESET}${notifLabel2}`;
-  statsLine += `${DIM} | ${lastRefresh.toLocaleTimeString()} ${RESET}`;
-  output += statsLine + `${CLR_LINE}\n`;
+  output += renderStatsBar(columns) + `${CLR_LINE}\n`;
 
   if (showDashboard) { output += renderDashboard(columns); }
 
@@ -2575,14 +2665,16 @@ function render() {
   const costColW = 9;
   const sparkColW = 10; // 8 chars sparkline + 2 padding
   const showSparklines = columns >= 180;
+  const tokRateColW = 7; // TOK/S column width
+  const showTokRateCol = columns >= 200;
   // Plugin columns — extra width from loaded plugins
   const pluginCols = plugins.filter(p => p.column);
   const pluginColsWidth = pluginCols.reduce((sum, p) => sum + (p.column.width || 10), 0);
   // In narrow mode: PID(8) + STATUS(10) + CTX(6) + STARTED(12) + MODEL(14) + CPU%(7) + MEM%(5) + pad(2) = 64
-  // In wide mode: full columns with BRANCH, SLUG, DIRECTORY, and optionally COST + sparklines
+  // In wide mode: full columns with BRANCH, SLUG, DIRECTORY, and optionally COST + sparklines + TOK/S
   const fixedColsTotal = isNarrow
     ? 8 + 10 + ctxColW + 12 + 14 + 7 + 7 + 2 + pluginColsWidth
-    : 8 + 10 + ctxColW + 12 + 32 + 22 + 14 + (showCostCol ? costColW : 0) + pluginColsWidth + 7 + (showSparklines ? sparkColW : 0) + 7 + (showSparklines ? sparkColW : 0) + 2;
+    : 8 + 10 + ctxColW + 12 + 32 + 22 + 14 + (showCostCol ? costColW : 0) + pluginColsWidth + 7 + (showSparklines ? sparkColW : 0) + 7 + (showSparklines ? sparkColW : 0) + (showTokRateCol ? tokRateColW : 0) + 2;
   output += `${BOLD}${CYAN}`;
   if (isNarrow) {
     output += `  ${'PID'.padEnd(8)}${'STATUS'.padEnd(10)}${'CTX'.padEnd(ctxColW)}${'STARTED'.padEnd(12)}${'MODEL'.padEnd(14)}`;
@@ -2596,6 +2688,7 @@ function render() {
     if (showSparklines) output += `${'CPU-HIST'.padEnd(sparkColW)}`;
     output += `${'MEM%'.padEnd(7)}`;
     if (showSparklines) output += `${'MEM-HIST'.padEnd(sparkColW)}`;
+    if (showTokRateCol) output += `${'TOK/S'.padEnd(tokRateColW)}`;
   }
   output += `${RESET}${CLR_LINE}\n`;
   output += `${DIM}${'─'.repeat(listWidth)}${RESET}${CLR_LINE}\n`;
@@ -2757,6 +2850,17 @@ function render() {
     if (showSparklines) {
       const memHist = processHistory.has(proc.pid) ? processHistory.get(proc.pid).mem : [];
       output += `${isSelected ? '' : CYAN}${renderSparkline(memHist, 8).padEnd(sparkColW)}${isSelected ? '' : RESET}`;
+    }
+
+    // TOK/S column
+    if (showTokRateCol) {
+      const rateVal = proc.tokenRate || 0;
+      const rateStr = formatTokenRate(rateVal);
+      if (!isSelected) {
+        output += rateVal > 0 ? GREEN : DIM;
+      }
+      output += `${rateStr.padEnd(tokRateColW)}`;
+      if (!isSelected) output += RESET;
     }
 
     output += `${(isSelected || isPrevSelected) ? RESET : ''}${CLR_LINE}\n`;
@@ -4212,6 +4316,7 @@ function handleInput(key) {
     case 'r':
       allProcesses = getClaudeProcesses(); applySortAndFilter();
       updateProcessHistory(allProcesses);
+      updateTokenRates(allProcesses);
       checkStateTransitions(allProcesses);
       lastRefresh = new Date();
       statusMessage = 'Refreshed';
@@ -4250,6 +4355,47 @@ function handleInput(key) {
   }
 }
 
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function playBootAnimation(columns, rows) {
+  const write = (s) => process.stdout.write(s);
+
+  // Phase 1: Clear screen, show cursor at top
+  write(CLEAR + HIDE_CURSOR);
+  await sleep(100);
+
+  // Phase 2: Type out "CTOP" character by character
+  const title = 'CTOP';
+  const centerCol = Math.floor((columns - title.length) / 2);
+  const centerRow = Math.floor(rows / 2) - 1;
+  write(`${ESC}[${centerRow};${centerCol}H`);
+  for (const ch of title) {
+    write(`${BOLD}${ORANGE}${ch}${RESET}`);
+    await sleep(80);
+  }
+
+  // Phase 3: Subtitle types out
+  const sub = 'Claude Terminal Operations Panel';
+  const subCol = Math.floor((columns - sub.length) / 2);
+  write(`${ESC}[${centerRow + 1};${subCol}H`);
+  for (const ch of sub) {
+    write(`${DIM}${ch}${RESET}`);
+    await sleep(15);
+  }
+  await sleep(200);
+
+  // Phase 4: "Scanning sessions..." flash
+  const scan = 'scanning sessions...';
+  const scanCol = Math.floor((columns - scan.length) / 2);
+  write(`${ESC}[${centerRow + 3};${scanCol}H${GREEN}${scan}${RESET}`);
+  await sleep(400);
+
+  // Phase 5: Clear and let normal render take over
+  write(CLEAR);
+}
+
 function cleanup() {
   // Clear animation timer
   clearAnimationTimer();
@@ -4265,7 +4411,7 @@ function cleanup() {
   process.stdin.setRawMode(false);
 }
 
-function main() {
+async function main() {
   // Setup terminal
   if (!process.stdin.isTTY) {
     console.error('This program requires an interactive terminal.');
@@ -4295,9 +4441,17 @@ function main() {
     process.exit(0);
   });
 
+  // Boot animation
+  if (CONFIG.bootAnimation && process.stdin.isTTY) {
+    const columns = process.stdout.columns || 80;
+    const rows = process.stdout.rows || 24;
+    await playBootAnimation(columns, rows);
+  }
+
   // Initial load
   allProcesses = getClaudeProcesses(); applySortAndFilter();
   updateProcessHistory(allProcesses);
+  updateTokenRates(allProcesses);
   render();
 
   // Prune old history on startup
@@ -4315,6 +4469,7 @@ function main() {
     if (!showingHelp && !showHistory && !showTimeline && !showHeatmap && !confirmKillAll && !confirmKillStopped && !filterInput && !searchMode && !showPalette) {
       allProcesses = getClaudeProcesses(); applySortAndFilter();
       updateProcessHistory(allProcesses);
+      updateTokenRates(allProcesses);
       checkStateTransitions(allProcesses);
       saveHistorySnapshot(allProcesses);
       lastRefresh = new Date();
@@ -4406,12 +4561,21 @@ module.exports = {
   set sessionScanCacheTime(v) { sessionScanCacheTime = v; },
   gitDiffCache,
   GIT_DIFF_CACHE_TTL,
+  // Status bar
+  renderStatsBar,
+  buildCostGauge,
+  contextHealthDot,
+  formatTimeShort,
   // Sparklines
   renderSparkline,
   updateProcessHistory,
   processHistory,
   SPARKLINE_BLOCKS,
   SPARKLINE_MAX_POINTS,
+  // Token rate
+  updateTokenRates,
+  formatTokenRate,
+  tokenHistory,
   // Log tailing
   parseLogEntry,
   readSessionLog,
@@ -4433,6 +4597,9 @@ module.exports = {
   ctxAnimState,
   ANIM_FPS,
   ANIM_FRAME_MS,
+  // Boot animation
+  playBootAnimation,
+  sleep,
   // Expose internals for testing
   _state: { get allProcesses() { return allProcesses; }, set allProcesses(v) { allProcesses = v; },
             get processes() { return processes; }, set processes(v) { processes = v; },
