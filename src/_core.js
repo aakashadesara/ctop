@@ -568,6 +568,44 @@ function updateProcessHistory(procs) {
   }
 }
 
+// Token rate tracking
+const tokenHistory = new Map(); // PID -> { lastTotal: number, lastTime: number, rate: number }
+
+function updateTokenRates(procs) {
+  const now = Date.now();
+  const currentPids = new Set();
+  for (const proc of procs) {
+    currentPids.add(proc.pid);
+    const total = (proc.inputTokens || 0) + (proc.outputTokens || 0) + (proc.cacheCreateTokens || 0) + (proc.cacheReadTokens || 0);
+
+    if (tokenHistory.has(proc.pid)) {
+      const prev = tokenHistory.get(proc.pid);
+      const dt = (now - prev.lastTime) / 1000; // seconds
+      if (dt > 0) {
+        const delta = total - prev.lastTotal;
+        prev.rate = Math.max(0, delta / dt);
+      }
+      prev.lastTotal = total;
+      prev.lastTime = now;
+    } else {
+      tokenHistory.set(proc.pid, { lastTotal: total, lastTime: now, rate: 0 });
+    }
+
+    // Attach rate to proc for rendering
+    proc.tokenRate = tokenHistory.get(proc.pid).rate;
+  }
+  // Cleanup stale
+  for (const pid of tokenHistory.keys()) {
+    if (!currentPids.has(pid)) tokenHistory.delete(pid);
+  }
+}
+
+function formatTokenRate(rate) {
+  if (rate === 0 || rate == null) return '0';
+  if (rate < 1000) return Math.round(rate) + '';
+  return (rate / 1000).toFixed(1) + 'k';
+}
+
 // Notification state
 let notificationsEnabled = CONFIG.notifications.enabled;
 const previousStates = new Map();   // PID -> last known status string
@@ -2213,6 +2251,14 @@ function renderDetailPane(proc, startRow, paneCol, paneWidth, availRows) {
   if (r < startRow + availRows - 1)
     output += pairRow(r++, 'Turn:', turnMs, '', 'Stop:', proc.stopReason || '--', DIM);
 
+  // Token rate row
+  if (r < startRow + availRows - 1) {
+    const rateVal = proc.tokenRate || 0;
+    const rateStr = formatTokenRate(rateVal) + ' tok/s';
+    const rateColor = rateVal > 0 ? GREEN : DIM;
+    output += fullRow(r++, 'Rate:', rateStr, rateColor);
+  }
+
   // Cost row
   if (r < startRow + availRows - 1) {
     const costStr = formatCost(proc.cost);
@@ -2517,14 +2563,16 @@ function render() {
   const costColW = 9;
   const sparkColW = 10; // 8 chars sparkline + 2 padding
   const showSparklines = columns >= 180;
+  const tokRateColW = 7; // TOK/S column width
+  const showTokRateCol = columns >= 200;
   // Plugin columns — extra width from loaded plugins
   const pluginCols = plugins.filter(p => p.column);
   const pluginColsWidth = pluginCols.reduce((sum, p) => sum + (p.column.width || 10), 0);
   // In narrow mode: PID(8) + STATUS(10) + CTX(6) + STARTED(12) + MODEL(14) + CPU%(7) + MEM%(5) + pad(2) = 64
-  // In wide mode: full columns with BRANCH, SLUG, DIRECTORY, and optionally COST + sparklines
+  // In wide mode: full columns with BRANCH, SLUG, DIRECTORY, and optionally COST + sparklines + TOK/S
   const fixedColsTotal = isNarrow
     ? 8 + 10 + ctxColW + 12 + 14 + 7 + 7 + 2 + pluginColsWidth
-    : 8 + 10 + ctxColW + 12 + 32 + 22 + 14 + (showCostCol ? costColW : 0) + pluginColsWidth + 7 + (showSparklines ? sparkColW : 0) + 7 + (showSparklines ? sparkColW : 0) + 2;
+    : 8 + 10 + ctxColW + 12 + 32 + 22 + 14 + (showCostCol ? costColW : 0) + pluginColsWidth + 7 + (showSparklines ? sparkColW : 0) + 7 + (showSparklines ? sparkColW : 0) + (showTokRateCol ? tokRateColW : 0) + 2;
   output += `${BOLD}${CYAN}`;
   if (isNarrow) {
     output += `  ${'PID'.padEnd(8)}${'STATUS'.padEnd(10)}${'CTX'.padEnd(ctxColW)}${'STARTED'.padEnd(12)}${'MODEL'.padEnd(14)}`;
@@ -2538,6 +2586,7 @@ function render() {
     if (showSparklines) output += `${'CPU-HIST'.padEnd(sparkColW)}`;
     output += `${'MEM%'.padEnd(7)}`;
     if (showSparklines) output += `${'MEM-HIST'.padEnd(sparkColW)}`;
+    if (showTokRateCol) output += `${'TOK/S'.padEnd(tokRateColW)}`;
   }
   output += `${RESET}${CLR_LINE}\n`;
   output += `${DIM}${'─'.repeat(listWidth)}${RESET}${CLR_LINE}\n`;
@@ -2693,6 +2742,17 @@ function render() {
     if (showSparklines) {
       const memHist = processHistory.has(proc.pid) ? processHistory.get(proc.pid).mem : [];
       output += `${isSelected ? '' : CYAN}${renderSparkline(memHist, 8).padEnd(sparkColW)}${isSelected ? '' : RESET}`;
+    }
+
+    // TOK/S column
+    if (showTokRateCol) {
+      const rateVal = proc.tokenRate || 0;
+      const rateStr = formatTokenRate(rateVal);
+      if (!isSelected) {
+        output += rateVal > 0 ? GREEN : DIM;
+      }
+      output += `${rateStr.padEnd(tokRateColW)}`;
+      if (!isSelected) output += RESET;
     }
 
     output += `${isSelected ? RESET : ''}${CLR_LINE}\n`;
@@ -4140,6 +4200,7 @@ function handleInput(key) {
     case 'r':
       allProcesses = getClaudeProcesses(); applySortAndFilter();
       updateProcessHistory(allProcesses);
+      updateTokenRates(allProcesses);
       checkStateTransitions(allProcesses);
       lastRefresh = new Date();
       statusMessage = 'Refreshed';
@@ -4272,6 +4333,7 @@ async function main() {
   // Initial load
   allProcesses = getClaudeProcesses(); applySortAndFilter();
   updateProcessHistory(allProcesses);
+  updateTokenRates(allProcesses);
   render();
 
   // Prune old history on startup
@@ -4289,6 +4351,7 @@ async function main() {
     if (!showingHelp && !showHistory && !showTimeline && !showHeatmap && !confirmKillAll && !confirmKillStopped && !filterInput && !searchMode && !showPalette) {
       allProcesses = getClaudeProcesses(); applySortAndFilter();
       updateProcessHistory(allProcesses);
+      updateTokenRates(allProcesses);
       checkStateTransitions(allProcesses);
       saveHistorySnapshot(allProcesses);
       lastRefresh = new Date();
@@ -4386,6 +4449,10 @@ module.exports = {
   processHistory,
   SPARKLINE_BLOCKS,
   SPARKLINE_MAX_POINTS,
+  // Token rate
+  updateTokenRates,
+  formatTokenRate,
+  tokenHistory,
   // Log tailing
   parseLogEntry,
   readSessionLog,
