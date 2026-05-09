@@ -92,6 +92,7 @@ const DEFAULT_CONFIG = {
   theme: 'default',    // built-in name or custom color object
   contextBarStyle: 'block', // 'block' or 'braille'
   notifications: { enabled: true, minDuration: 30 }, // seconds
+  animations: true, // smooth TUI animations; can be disabled in ~/.ctoprc
   bootAnimation: true,
 };
 
@@ -116,6 +117,7 @@ function loadConfig() {
       if (rc.notifications !== undefined && typeof rc.notifications === 'object') {
         config.notifications = { ...DEFAULT_CONFIG.notifications, ...rc.notifications };
       }
+      if (rc.animations !== undefined) config.animations = !!rc.animations;
       if (rc.bootAnimation === false) config.bootAnimation = false;
     }
   } catch (e) {}
@@ -313,6 +315,65 @@ let timelineScrollOffset = 0; // scroll offset for event list in timeline view
 let timelineCache = null; // cached timeline data for current process
 let showHeatmap = false; // toggled by 'C' key
 let exportMode = false; // true when awaiting export format key
+
+// Animation state
+let animationTimer = null;
+const ANIM_FPS = 30;
+const ANIM_FRAME_MS = Math.floor(1000 / ANIM_FPS);
+const ctxAnimState = new Map(); // PID -> { current: number, target: number }
+let prevSelectedIndex = -1;
+let selectionAnimFrame = 0; // 0 = no animation, 1-3 = fading
+
+function getAnimatedCtxPct(pid, targetPct) {
+  if (!CONFIG.animations) return targetPct;
+  if (!ctxAnimState.has(pid)) {
+    ctxAnimState.set(pid, { current: targetPct, target: targetPct });
+    return targetPct;
+  }
+  const state = ctxAnimState.get(pid);
+  state.target = targetPct;
+  // Ease toward target
+  const diff = state.target - state.current;
+  if (Math.abs(diff) < 1) {
+    state.current = state.target;
+  } else {
+    state.current += diff * 0.3; // ease factor
+    scheduleAnimationFrame();
+  }
+  return Math.round(state.current);
+}
+
+function scheduleAnimationFrame() {
+  if (animationTimer) return; // already scheduled
+  animationTimer = setTimeout(() => {
+    animationTimer = null;
+    // Check if any animations still running
+    let needsMore = false;
+    for (const [, state] of ctxAnimState) {
+      if (Math.abs(state.target - state.current) >= 1) {
+        state.current += (state.target - state.current) * 0.3;
+        if (Math.abs(state.target - state.current) < 1) {
+          state.current = state.target;
+        } else {
+          needsMore = true;
+        }
+      }
+    }
+    if (selectionAnimFrame > 0) {
+      selectionAnimFrame--;
+      needsMore = true;
+    }
+    render(); // re-render with updated animation state
+    if (needsMore) scheduleAnimationFrame();
+  }, ANIM_FRAME_MS);
+}
+
+function clearAnimationTimer() {
+  if (animationTimer) {
+    clearTimeout(animationTimer);
+    animationTimer = null;
+  }
+}
 
 // Command palette
 const COMMANDS = [
@@ -2031,7 +2092,8 @@ function renderPaneMode() {
             content = `${selStart}│ ${cpuStr}${' '.repeat(Math.max(1, gap))}${memStr} │${selEnd}`;
           } else if (line === 3) {
             // Context window
-            const ctxPct = proc.contextPct !== null ? proc.contextPct : 100;
+            const rawCtxPct = proc.contextPct !== null ? proc.contextPct : 100;
+            const ctxPct = getAnimatedCtxPct(proc.pid, rawCtxPct);
             const cc = isSelected ? '' : ctxColor(ctxPct);
             const ctxLabel = `CTX: ${ctxPct}%`;
             const ctxStr = `${cc}${ctxLabel}${isSelected ? '' : RESET}`;
@@ -2254,7 +2316,8 @@ function renderDetailPane(proc, startRow, paneCol, paneWidth, availRows) {
   else if (!proc.isActive) sc = DIM;
 
   // CTX
-  const ctxPct = proc.contextPct !== null ? proc.contextPct : 100;
+  const rawCtxPct = proc.contextPct !== null ? proc.contextPct : 100;
+  const ctxPct = getAnimatedCtxPct(proc.pid, rawCtxPct);
   const cc = ctxColor(ctxPct);
 
   // Token counts
@@ -2649,8 +2712,13 @@ function render() {
 
     // Selection indicator and styling
     const hasSearchMatch = searchQuery && searchResults.has(proc.pid);
+    const isPrevSelected = CONFIG.animations && selectionAnimFrame > 0 && i === prevSelectedIndex;
     if (isSelected) {
       output += `${THEME.selection}${WHITE}${BOLD}> `;
+    } else if (isPrevSelected) {
+      // Fading highlight on previous selection
+      const fade = selectionAnimFrame === 3 ? `${ESC}[48;5;238m` : selectionAnimFrame === 2 ? `${ESC}[48;5;237m` : `${ESC}[48;5;236m`;
+      output += `${fade}  `;
     } else if (hasSearchMatch) {
       output += `${THEME.active}* ${RESET}`;
     } else {
@@ -2668,7 +2736,8 @@ function render() {
     output += `${isSelected ? '' : stClr}${proc.status.padEnd(10)}${isSelected ? '' : RESET}`;
 
     // CTX LEFT
-    const ctxPct = proc.contextPct !== null ? proc.contextPct : 100;
+    const rawCtxPct = proc.contextPct !== null ? proc.contextPct : 100;
+    const ctxPct = getAnimatedCtxPct(proc.pid, rawCtxPct);
     if (ctxBarMode) {
       // Loading bar mode: 10-char bar + space + 4-char pct + 1 space = 16
       const barLen = 10;
@@ -2794,7 +2863,7 @@ function render() {
       if (!isSelected) output += RESET;
     }
 
-    output += `${isSelected ? RESET : ''}${CLR_LINE}\n`;
+    output += `${(isSelected || isPrevSelected) ? RESET : ''}${CLR_LINE}\n`;
 
     // Show model + stopReason on detail line for selected item (only when no detail pane)
     if (!showDetailPane && isSelected && (proc.model || proc.stopReason)) {
@@ -4029,6 +4098,7 @@ function handleInput(key) {
     case 'k':
       if (viewMode === 'pane') {
         if (paneRow > 0) {
+          const oldIdx = selectedIndex;
           paneRow--;
           const cardsPerRow = getCardsPerRow();
           selectedIndex = paneRow * cardsPerRow + paneCol;
@@ -4036,9 +4106,10 @@ function handleInput(key) {
             selectedIndex = processes.length - 1;
             paneCol = selectedIndex % cardsPerRow;
           }
+          if (CONFIG.animations && oldIdx !== selectedIndex) { prevSelectedIndex = oldIdx; selectionAnimFrame = 3; scheduleAnimationFrame(); }
         }
       } else {
-        if (selectedIndex > 0) selectedIndex--;
+        if (selectedIndex > 0) { const oldIdx = selectedIndex; selectedIndex--; if (CONFIG.animations) { prevSelectedIndex = oldIdx; selectionAnimFrame = 3; scheduleAnimationFrame(); } }
       }
       render();
       break;
@@ -4049,15 +4120,17 @@ function handleInput(key) {
         const cardsPerRow = getCardsPerRow();
         const totalRows = Math.ceil(processes.length / cardsPerRow);
         if (paneRow < totalRows - 1) {
+          const oldIdx = selectedIndex;
           paneRow++;
           selectedIndex = paneRow * cardsPerRow + paneCol;
           if (selectedIndex >= processes.length) {
             selectedIndex = processes.length - 1;
             paneCol = selectedIndex % cardsPerRow;
           }
+          if (CONFIG.animations && oldIdx !== selectedIndex) { prevSelectedIndex = oldIdx; selectionAnimFrame = 3; scheduleAnimationFrame(); }
         }
       } else {
-        if (selectedIndex < processes.length - 1) selectedIndex++;
+        if (selectedIndex < processes.length - 1) { const oldIdx = selectedIndex; selectedIndex++; if (CONFIG.animations) { prevSelectedIndex = oldIdx; selectionAnimFrame = 3; scheduleAnimationFrame(); } }
       }
       render();
       break;
@@ -4104,19 +4177,23 @@ function handleInput(key) {
       break;
 
     case 'g':
+      { const oldIdx = selectedIndex;
       selectedIndex = 0;
       if (viewMode === 'pane') { paneRow = 0; paneCol = 0; }
-      render();
+      if (CONFIG.animations && oldIdx !== selectedIndex) { prevSelectedIndex = oldIdx; selectionAnimFrame = 3; scheduleAnimationFrame(); }
+      render(); }
       break;
 
     case 'G':
+      { const oldIdx = selectedIndex;
       selectedIndex = Math.max(0, processes.length - 1);
       if (viewMode === 'pane') {
         const cardsPerRow = getCardsPerRow();
         paneRow = Math.floor(selectedIndex / cardsPerRow);
         paneCol = selectedIndex % cardsPerRow;
       }
-      render();
+      if (CONFIG.animations && oldIdx !== selectedIndex) { prevSelectedIndex = oldIdx; selectionAnimFrame = 3; scheduleAnimationFrame(); }
+      render(); }
       break;
 
     case 'x':
@@ -4320,6 +4397,8 @@ async function playBootAnimation(columns, rows) {
 }
 
 function cleanup() {
+  // Clear animation timer
+  clearAnimationTimer();
   // Call plugin cleanup functions
   for (const p of plugins) {
     if (typeof p.cleanup === 'function') {
@@ -4511,6 +4590,13 @@ module.exports = {
   fuzzyScore,
   filterCommands,
   executeCommand,
+  // Animations
+  getAnimatedCtxPct,
+  scheduleAnimationFrame,
+  clearAnimationTimer,
+  ctxAnimState,
+  ANIM_FPS,
+  ANIM_FRAME_MS,
   // Boot animation
   playBootAnimation,
   sleep,
@@ -4541,7 +4627,10 @@ module.exports = {
             get plugins() { return plugins; }, set plugins(v) { plugins = v; },
             get showPalette() { return showPalette; }, set showPalette(v) { showPalette = v; },
             get paletteQuery() { return paletteQuery; }, set paletteQuery(v) { paletteQuery = v; },
-            get paletteSelected() { return paletteSelected; }, set paletteSelected(v) { paletteSelected = v; } },
+            get paletteSelected() { return paletteSelected; }, set paletteSelected(v) { paletteSelected = v; },
+            get prevSelectedIndex() { return prevSelectedIndex; }, set prevSelectedIndex(v) { prevSelectedIndex = v; },
+            get selectionAnimFrame() { return selectionAnimFrame; }, set selectionAnimFrame(v) { selectionAnimFrame = v; },
+            get animationTimer() { return animationTimer; }, set animationTimer(v) { animationTimer = v; } },
   _notif: { previousStates, processStartTimes },
   _colors: { RED, ORANGE, YELLOW, GREEN, BLUE, CYAN, DIM, RESET },
 };
