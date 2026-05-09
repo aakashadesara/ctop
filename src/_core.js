@@ -316,6 +316,48 @@ let timelineCache = null; // cached timeline data for current process
 let showHeatmap = false; // toggled by 'C' key
 let exportMode = false; // true when awaiting export format key
 
+// Process grouping state
+let groupByProject = false; // toggled with 'G'
+const expandedGroups = new Set(); // cwds that are expanded
+let groupedFlatList = []; // flat list of renderable items when grouped
+
+function groupProcesses(procs) {
+  const groups = new Map(); // cwd -> { cwd, procs, totalCost, totalTokens, activeCount }
+  for (const proc of procs) {
+    const key = proc.cwd || 'unknown';
+    if (!groups.has(key)) {
+      groups.set(key, { cwd: key, procs: [], totalCost: 0, totalTokens: 0, activeCount: 0 });
+    }
+    const g = groups.get(key);
+    g.procs.push(proc);
+    g.totalCost += (proc.cost || 0);
+    g.totalTokens += (proc.inputTokens || 0) + (proc.outputTokens || 0);
+    if (proc.isActive) g.activeCount++;
+  }
+  return [...groups.values()].sort((a, b) => b.totalCost - a.totalCost);
+}
+
+function shortenCwd(cwd) {
+  if (!cwd) return 'unknown';
+  const home = os.homedir();
+  if (cwd.startsWith(home)) return '~' + cwd.substring(home.length);
+  return cwd;
+}
+
+function buildGroupedFlatList(procs) {
+  const groups = groupProcesses(procs);
+  const items = [];
+  for (const group of groups) {
+    items.push({ type: 'group', group });
+    if (expandedGroups.has(group.cwd)) {
+      for (const proc of group.procs) {
+        items.push({ type: 'process', proc, group });
+      }
+    }
+  }
+  return items;
+}
+
 // Animation state
 let animationTimer = null;
 const ANIM_FPS = 30;
@@ -381,6 +423,7 @@ const COMMANDS = [
   { name: 'Force kill selected process', shortcut: 'X', action: 'force-kill' },
   { name: 'Kill all processes', shortcut: 'K', action: 'kill-all' },
   { name: 'Toggle pane view', shortcut: 'P', action: 'toggle-pane' },
+  { name: 'Group by project directory', shortcut: 'G', action: 'toggle-group' },
   { name: 'Toggle dashboard', shortcut: 'd', action: 'toggle-dashboard' },
   { name: 'Toggle log pane', shortcut: 'L', action: 'toggle-log' },
   { name: 'Toggle history view', shortcut: 'H', action: 'toggle-history' },
@@ -1975,6 +2018,9 @@ function renderStatsBar(columns) {
   // Sort indicator
   line += `  ${DIM}\u2502${RESET}  ${CYAN}\u2195 ${sortMode}${sortReverse ? ' \u2191' : ''}${RESET}`;
 
+  // Grouping indicator
+  if (groupByProject) line += `  ${DIM}\u2502${RESET}  ${CYAN}\u25A6 Grouped${RESET}`;
+
   // Filter / search indicators (keep as-is when active)
   if (filterText) line += `  ${DIM}\u2502${RESET}  ${YELLOW}/${filterText}${RESET}${DIM} (${processes.length}/${allProcesses.length})${RESET}`;
   if (filterInput) line += `  ${DIM}\u2502${RESET}  ${BG_BLUE}${WHITE} /${filterText}\u2588 ${RESET}`;
@@ -2699,6 +2745,95 @@ function render() {
   // Reserve 1 extra for selected item detail line
   const logPaneHeight = showLogPane ? Math.max(5, Math.floor(rows * 0.4)) : 0;
   const maxVisible = rows - 10 - (showDashboard ? 2 : 0) - logPaneHeight;
+
+  if (groupByProject) {
+    // Rebuild flat list on each render to stay in sync
+    groupedFlatList = buildGroupedFlatList(processes);
+    if (selectedIndex >= groupedFlatList.length) {
+      selectedIndex = Math.max(0, groupedFlatList.length - 1);
+    }
+
+    const gStartIdx = Math.max(0, selectedIndex - Math.floor(maxVisible / 2));
+    const gEndIdx = Math.min(groupedFlatList.length, gStartIdx + maxVisible);
+
+    if (groupedFlatList.length === 0) {
+      output += `${CLR_LINE}\n${DIM}  No Claude Code processes found.${RESET}${CLR_LINE}\n`;
+    }
+
+    for (let i = gStartIdx; i < gEndIdx; i++) {
+      const item = groupedFlatList[i];
+      const isSelected = i === selectedIndex;
+
+      if (item.type === 'group') {
+        const g = item.group;
+        const arrow = expandedGroups.has(g.cwd) ? '\u25BE' : '\u25B8';
+        const label = shortenCwd(g.cwd);
+        const sessionWord = g.procs.length === 1 ? 'session' : 'sessions';
+        const tokenStr = formatCompactTokens(g.totalTokens);
+        const costStr = formatCost(g.totalCost > 0 ? g.totalCost : null);
+        const summary = `(${g.procs.length} ${sessionWord}, ${costStr}, ${tokenStr} tokens)`;
+
+        if (isSelected) {
+          output += `${THEME.selection}${WHITE}${BOLD}> ${arrow} ${label}  ${summary}${RESET}${CLR_LINE}\n`;
+        } else {
+          output += `  ${BOLD}${THEME.accent}${arrow} ${label}${RESET}  ${DIM}${summary}${RESET}${CLR_LINE}\n`;
+        }
+      } else {
+        // Indented process row within expanded group
+        const proc = item.proc;
+
+        if (isSelected) {
+          output += `${THEME.selection}${WHITE}${BOLD}>   `;
+        } else {
+          output += '    ';
+        }
+
+        // PID
+        output += `${isSelected ? '' : THEME.accent}${proc.pid.padEnd(8)}`;
+
+        // Status
+        let stClr = THEME.active;
+        if (proc.isZombie) stClr = THEME.zombie;
+        else if (proc.isStopped) stClr = THEME.stopped;
+        else if (!proc.isActive) stClr = THEME.sleeping;
+        output += `${isSelected ? '' : stClr}${proc.status.padEnd(10)}${isSelected ? '' : RESET}`;
+
+        // CTX
+        const ctxPct = proc.contextPct !== null ? proc.contextPct : 100;
+        if (!isSelected) output += ctxColor(ctxPct);
+        output += `${(ctxPct + '%').padEnd(6)}`;
+        if (!isSelected) output += RESET;
+
+        // Started
+        output += `${proc.startTime.padEnd(12)}`;
+
+        // Branch
+        if (!isNarrow) {
+          const branchStr = proc.gitBranch || '--';
+          output += `${isSelected ? '' : THEME.stopped}${branchStr.substring(0, 15).padEnd(16)}${isSelected ? '' : RESET}`;
+        }
+
+        // Model
+        const modelStr = proc.model ? proc.model.replace(/^claude-/, '') : '--';
+        output += `${isSelected ? '' : THEME.accent}${modelStr.substring(0, 13).padEnd(14)}${isSelected ? '' : RESET}`;
+
+        // Cost
+        const costStr = formatCost(proc.cost);
+        if (!isSelected) output += THEME.cost;
+        output += `${costStr.padEnd(9)}`;
+        if (!isSelected) output += RESET;
+
+        output += `${isSelected ? RESET : ''}${CLR_LINE}\n`;
+      }
+    }
+
+    // Scrollbar indicator if needed for grouped view
+    if (groupedFlatList.length > maxVisible) {
+      output += `${CLR_LINE}\n${DIM}  Showing ${gStartIdx + 1}-${gEndIdx} of ${groupedFlatList.length} items${RESET}${CLR_LINE}`;
+    }
+  } else {
+  // Non-grouped (normal) process list
+
   const startIdx = Math.max(0, selectedIndex - Math.floor(maxVisible / 2));
   const endIdx = Math.min(processes.length, startIdx + maxVisible);
 
@@ -2879,22 +3014,36 @@ function render() {
     output += `${CLR_LINE}\n${DIM}  Showing ${startIdx + 1}-${endIdx} of ${processes.length} processes${RESET}${CLR_LINE}`;
   }
 
+  } // end of non-grouped else block
+
   // Clear any leftover lines between content and footer
   output += CLR_DOWN;
 
+  // Resolve the selected process (handles grouped mode where selection may be on a group header)
+  let selectedProc = null;
+  if (groupByProject && groupedFlatList.length > 0 && selectedIndex < groupedFlatList.length) {
+    const item = groupedFlatList[selectedIndex];
+    if (item.type === 'process') selectedProc = item.proc;
+    else if (item.type === 'group') selectedProc = item.group.procs[0]; // use first proc in group for detail
+  } else {
+    selectedProc = processes[selectedIndex] || null;
+  }
+
   // Render detail pane on the right if terminal is wide enough
-  if (showDetailPane && processes[selectedIndex]) {
+  if (showDetailPane && selectedProc) {
     const paneStartRow = 5; // right after header box (3 lines) + stats line
     const footerLines = 2;
     const availRows = rows - paneStartRow - footerLines;
     const paneStartCol = listWidth + 2;
-    output += renderDetailPane(processes[selectedIndex], paneStartRow, paneStartCol, detailPaneWidth, availRows);
+    output += renderDetailPane(selectedProc, paneStartRow, paneStartCol, detailPaneWidth, availRows);
   }
 
   // Bottom detail pane for narrow terminals
-  if (!showLogPane && !showDetailPane && processes[selectedIndex]) {
+  if (!groupByProject && !showLogPane && !showDetailPane && selectedProc) {
     // Calculate how many content lines we used
     const headerLines = 8; // header(3) + stats(1) + status?(0-1) + separator(1) + colheader(1) + separator(1)
+    const startIdx = Math.max(0, selectedIndex - Math.floor(maxVisible / 2));
+    const endIdx = Math.min(processes.length, startIdx + maxVisible);
     const listLines = endIdx - startIdx + (processes.length > maxVisible ? 1 : 0);
     // Account for the inline detail line
     let extraLines = 0;
@@ -2909,18 +3058,18 @@ function render() {
       // Render a full-width bottom detail pane
       const bottomPaneWidth = Math.min(columns, 80);
       const bottomPaneCol = Math.max(1, Math.floor((columns - bottomPaneWidth) / 2) + 1);
-      output += renderDetailPane(processes[selectedIndex], bottomPaneStart, bottomPaneCol, bottomPaneWidth, availBottomRows);
+      output += renderDetailPane(selectedProc, bottomPaneStart, bottomPaneCol, bottomPaneWidth, availBottomRows);
     }
   }
 
   // Log pane at bottom
-  if (showLogPane && processes[selectedIndex]) {
+  if (showLogPane && selectedProc) {
     // Refresh log content for selected process
-    logLines = readSessionLog(processes[selectedIndex]);
+    logLines = readSessionLog(selectedProc);
     // Auto-scroll to bottom
     const logStartRow = rows - logPaneHeight - 1; // -1 for footer separator
     logScrollOffset = Math.max(0, logLines.length - (logPaneHeight - 1));
-    output += renderLogPane(logStartRow, columns, logPaneHeight, processes[selectedIndex]);
+    output += renderLogPane(logStartRow, columns, logPaneHeight, selectedProc);
   }
 
   // Footer pinned to bottom
@@ -2932,6 +3081,7 @@ function render() {
   output += `${RED}x${RESET} Kill  ${RED}X${RESET} Force  `;
   output += `${CYAN}o${RESET} Open  `;
   output += `${CYAN}s${RESET} Sort  ${CYAN}/${RESET} Filter  ${CYAN}F${RESET} Search  `;
+  output += `${CYAN}G${RESET} Group  `;
   output += `${CYAN}L${RESET} Log  ${CYAN}W${RESET} Timeline  ${CYAN}E${RESET} Export  `;
   output += `${CYAN}T${RESET} Theme  ${CYAN}d${RESET} Dash  ${CYAN}H${RESET} History  ${CYAN}C${RESET} Heatmap  ${CYAN}n${RESET} Notif  ${CYAN}P${RESET} Pane  ${CYAN}r${RESET} Refresh  ${CYAN}q${RESET} Quit  ${CYAN}?${RESET} Help${CLR_LINE}`;
 
@@ -3513,6 +3663,21 @@ function executeCommand(action) {
       }
       render();
       break;
+    case 'toggle-group':
+      if (viewMode === 'list') {
+        groupByProject = !groupByProject;
+        if (groupByProject) {
+          groupedFlatList = buildGroupedFlatList(processes);
+          statusMessage = 'Group by project ON (Tab to expand/collapse)';
+        } else {
+          groupedFlatList = [];
+          expandedGroups.clear();
+          statusMessage = 'Group by project OFF';
+        }
+        selectedIndex = 0;
+        render();
+      }
+      break;
     case 'toggle-dashboard':
       dashboardManualToggle = true;
       showDashboard = !showDashboard;
@@ -3638,7 +3803,8 @@ function showHelp() {
   output += `  ${CYAN}← / h${RESET}     Move selection left (pane mode)\n`;
   output += `  ${CYAN}→ / l${RESET}     Move selection right (pane mode)\n`;
   output += `  ${CYAN}g${RESET}         Jump to first process\n`;
-  output += `  ${CYAN}G${RESET}         Jump to last process\n`;
+  output += `  ${CYAN}G${RESET}         Toggle group by project directory\n`;
+  output += `  ${CYAN}Tab${RESET}       Expand/collapse group (in grouped mode)\n`;
   output += `  ${CYAN}P${RESET}         Toggle pane/grid view\n\n`;
 
   output += `${BOLD}ACTIONS:${RESET}\n`;
@@ -4094,6 +4260,26 @@ function handleInput(key) {
       }
       break;
 
+    case '\t': // Tab key — toggle group expand/collapse
+      if (groupByProject && groupedFlatList.length > 0 && selectedIndex < groupedFlatList.length) {
+        const item = groupedFlatList[selectedIndex];
+        if (item.type === 'group') {
+          const cwd = item.group.cwd;
+          if (expandedGroups.has(cwd)) {
+            expandedGroups.delete(cwd);
+          } else {
+            expandedGroups.add(cwd);
+          }
+          groupedFlatList = buildGroupedFlatList(processes);
+          // Keep selectedIndex in bounds
+          if (selectedIndex >= groupedFlatList.length) {
+            selectedIndex = Math.max(0, groupedFlatList.length - 1);
+          }
+        }
+        render();
+      }
+      break;
+
     case '\x1b[A': // Up arrow
     case 'k':
       if (viewMode === 'pane') {
@@ -4108,6 +4294,8 @@ function handleInput(key) {
           }
           if (CONFIG.animations && oldIdx !== selectedIndex) { prevSelectedIndex = oldIdx; selectionAnimFrame = 3; scheduleAnimationFrame(); }
         }
+      } else if (groupByProject && groupedFlatList.length > 0) {
+        if (selectedIndex > 0) selectedIndex--;
       } else {
         if (selectedIndex > 0) { const oldIdx = selectedIndex; selectedIndex--; if (CONFIG.animations) { prevSelectedIndex = oldIdx; selectionAnimFrame = 3; scheduleAnimationFrame(); } }
       }
@@ -4129,6 +4317,8 @@ function handleInput(key) {
           }
           if (CONFIG.animations && oldIdx !== selectedIndex) { prevSelectedIndex = oldIdx; selectionAnimFrame = 3; scheduleAnimationFrame(); }
         }
+      } else if (groupByProject && groupedFlatList.length > 0) {
+        if (selectedIndex < groupedFlatList.length - 1) selectedIndex++;
       } else {
         if (selectedIndex < processes.length - 1) { const oldIdx = selectedIndex; selectedIndex++; if (CONFIG.animations) { prevSelectedIndex = oldIdx; selectionAnimFrame = 3; scheduleAnimationFrame(); } }
       }
@@ -4185,15 +4375,19 @@ function handleInput(key) {
       break;
 
     case 'G':
-      { const oldIdx = selectedIndex;
-      selectedIndex = Math.max(0, processes.length - 1);
-      if (viewMode === 'pane') {
-        const cardsPerRow = getCardsPerRow();
-        paneRow = Math.floor(selectedIndex / cardsPerRow);
-        paneCol = selectedIndex % cardsPerRow;
+      if (viewMode === 'list') {
+        groupByProject = !groupByProject;
+        if (groupByProject) {
+          groupedFlatList = buildGroupedFlatList(processes);
+          statusMessage = 'Group by project ON (Tab to expand/collapse)';
+        } else {
+          groupedFlatList = [];
+          expandedGroups.clear();
+          statusMessage = 'Group by project OFF';
+        }
+        selectedIndex = 0;
+        render();
       }
-      if (CONFIG.animations && oldIdx !== selectedIndex) { prevSelectedIndex = oldIdx; selectionAnimFrame = 3; scheduleAnimationFrame(); }
-      render(); }
       break;
 
     case 'x':
@@ -4520,6 +4714,10 @@ module.exports = {
   formatSessionCSV,
   csvEscape,
   copyToClipboard,
+  // Process grouping
+  groupProcesses,
+  shortenCwd,
+  buildGroupedFlatList,
   // Plugin system
   loadPlugins,
   // History tracking
@@ -4628,6 +4826,9 @@ module.exports = {
             get showPalette() { return showPalette; }, set showPalette(v) { showPalette = v; },
             get paletteQuery() { return paletteQuery; }, set paletteQuery(v) { paletteQuery = v; },
             get paletteSelected() { return paletteSelected; }, set paletteSelected(v) { paletteSelected = v; },
+            get groupByProject() { return groupByProject; }, set groupByProject(v) { groupByProject = v; },
+            get groupedFlatList() { return groupedFlatList; }, set groupedFlatList(v) { groupedFlatList = v; },
+            expandedGroups,
             get prevSelectedIndex() { return prevSelectedIndex; }, set prevSelectedIndex(v) { prevSelectedIndex = v; },
             get selectionAnimFrame() { return selectionAnimFrame; }, set selectionAnimFrame(v) { selectionAnimFrame = v; },
             get animationTimer() { return animationTimer; }, set animationTimer(v) { animationTimer = v; } },
