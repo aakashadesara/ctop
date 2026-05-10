@@ -684,19 +684,39 @@ function updateTokenRates(procs) {
 
     if (tokenHistory.has(proc.pid)) {
       const prev = tokenHistory.get(proc.pid);
-      const dt = (now - prev.lastTime) / 1000; // seconds
+      const dt = (now - prev.lastTime) / 1000;
       if (dt > 0) {
         const delta = total - prev.lastTotal;
-        prev.rate = Math.max(0, delta / dt);
+        if (delta > 0) {
+          // Active: compute live rate
+          prev.rate = delta / dt;
+          prev.lastActive = now;
+        } else if (now - prev.lastActive < 15000) {
+          // Recently active: decay the rate gradually
+          prev.rate = prev.rate * 0.5;
+        } else {
+          // Idle for >15s
+          prev.rate = 0;
+        }
       }
       prev.lastTotal = total;
       prev.lastTime = now;
     } else {
-      tokenHistory.set(proc.pid, { lastTotal: total, lastTime: now, rate: 0 });
+      tokenHistory.set(proc.pid, { lastTotal: total, lastTime: now, rate: 0, lastActive: 0 });
     }
 
-    // Attach rate to proc for rendering
-    proc.tokenRate = tokenHistory.get(proc.pid).rate;
+    // Compute rate from last turn duration as fallback
+    const hist = tokenHistory.get(proc.pid);
+    if (hist.rate === 0 && proc.lastTurnMs && proc.lastTurnMs > 0 && proc.outputTokens > 0) {
+      // Show the throughput from the most recent completed turn
+      hist.rate = proc.outputTokens / (proc.lastTurnMs / 1000);
+      hist.isTurnRate = true;
+    } else {
+      hist.isTurnRate = false;
+    }
+
+    proc.tokenRate = hist.rate;
+    proc.tokenRateIsTurn = hist.isTurnRate;
   }
   // Cleanup stale
   for (const pid of tokenHistory.keys()) {
@@ -706,6 +726,7 @@ function updateTokenRates(procs) {
 
 function formatTokenRate(rate) {
   if (rate === 0 || rate == null) return '0';
+  if (rate < 1) return '<1';
   if (rate < 1000) return Math.round(rate) + '';
   return (rate / 1000).toFixed(1) + 'k';
 }
@@ -1629,19 +1650,34 @@ function renderTimeline(proc, columns, rows) {
     output += axisLine + CLR_LINE + '\n';
 
     // Waterfall bar — each event gets a proportional colored segment
-    let barLine = '   ';
-    for (const evt of tl.events) {
+    // Pre-calculate char counts and clamp total to barWidth
+    const charCounts = tl.events.map(evt => {
       const evtDur = evt.duration_ms || 0;
-      const charCount = tl.totalDuration > 0
+      return tl.totalDuration > 0
         ? Math.max(evtDur > 0 ? 1 : 0, Math.round((evtDur / tl.totalDuration) * barWidth))
         : 0;
+    });
+    let totalChars = charCounts.reduce((s, c) => s + c, 0);
+    // Shrink largest segments if total exceeds barWidth
+    while (totalChars > barWidth) {
+      let maxIdx = 0;
+      for (let i = 1; i < charCounts.length; i++) {
+        if (charCounts[i] > charCounts[maxIdx]) maxIdx = i;
+      }
+      if (charCounts[maxIdx] <= 1) break;
+      charCounts[maxIdx]--;
+      totalChars--;
+    }
+    let barLine = '   ';
+    for (let i = 0; i < tl.events.length; i++) {
+      const evt = tl.events[i];
       let color = DIM;
-      let ch = '\u2591'; // ░ for gaps
+      let ch = '\u2591';
       if (evt.type === 'user') { color = CYAN; ch = '\u2588'; }
       else if (evt.type === 'assistant') { color = GREEN; ch = '\u2588'; }
       else if (evt.type === 'tool_use') { color = YELLOW; ch = '\u2588'; }
       else if (evt.type === 'tool_result') { color = YELLOW; ch = '\u2588'; }
-      barLine += color + ch.repeat(charCount) + RESET;
+      barLine += color + ch.repeat(charCounts[i]) + RESET;
     }
     output += barLine + CLR_LINE + '\n';
 
@@ -2418,7 +2454,8 @@ function renderDetailPane(proc, startRow, paneCol, paneWidth, availRows) {
   // Token rate row
   if (r < startRow + availRows - 1) {
     const rateVal = proc.tokenRate || 0;
-    const rateStr = formatTokenRate(rateVal) + ' tok/s';
+    const rateSuffix = proc.tokenRateIsTurn ? ' tok/s (last turn)' : ' tok/s';
+    const rateStr = formatTokenRate(rateVal) + rateSuffix;
     const rateColor = rateVal > 0 ? GREEN : DIM;
     output += fullRow(r++, 'Rate:', rateStr, rateColor);
   }
@@ -4567,8 +4604,9 @@ async function playBootAnimation(columns, rows) {
   write(`${ESC}[${centerRow};${centerCol}H`);
   for (const ch of title) {
     write(`${BOLD}${ORANGE}${ch}${RESET}`);
-    await sleep(80);
+    await sleep(150);
   }
+  await sleep(500);
 
   // Phase 3: Subtitle types out
   const sub = 'Claude Terminal Operations Panel';
@@ -4576,15 +4614,15 @@ async function playBootAnimation(columns, rows) {
   write(`${ESC}[${centerRow + 1};${subCol}H`);
   for (const ch of sub) {
     write(`${DIM}${ch}${RESET}`);
-    await sleep(15);
+    await sleep(25);
   }
-  await sleep(200);
+  await sleep(600);
 
   // Phase 4: "Scanning sessions..." flash
   const scan = 'scanning sessions...';
   const scanCol = Math.floor((columns - scan.length) / 2);
   write(`${ESC}[${centerRow + 3};${scanCol}H${GREEN}${scan}${RESET}`);
-  await sleep(400);
+  await sleep(800);
 
   // Phase 5: Clear and let normal render take over
   write(CLEAR);
