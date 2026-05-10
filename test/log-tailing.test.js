@@ -12,7 +12,7 @@ describe('parseLogEntry', () => {
       message: { role: 'user', content: 'Please fix the bug' },
     };
     const result = parseLogEntry(data);
-    assert.deepEqual(result, { role: 'user', text: 'Please fix the bug' });
+    assert.deepEqual(result, { role: 'user', text: 'Please fix the bug', timestamp: null });
   });
 
   it('parses an assistant message with string content', () => {
@@ -20,7 +20,7 @@ describe('parseLogEntry', () => {
       message: { role: 'assistant', content: 'I will fix the bug now.' },
     };
     const result = parseLogEntry(data);
-    assert.deepEqual(result, { role: 'assistant', text: 'I will fix the bug now.' });
+    assert.deepEqual(result, { role: 'assistant', text: 'I will fix the bug now.', timestamp: null });
   });
 
   it('parses user message with content array (text blocks only)', () => {
@@ -35,7 +35,7 @@ describe('parseLogEntry', () => {
       },
     };
     const result = parseLogEntry(data);
-    assert.deepEqual(result, { role: 'user', text: 'Hello there and more text' });
+    assert.deepEqual(result, { role: 'user', text: 'Hello there and more text', timestamp: null });
   });
 
   it('filters out tool_use blocks from assistant content array', () => {
@@ -49,7 +49,7 @@ describe('parseLogEntry', () => {
       },
     };
     const result = parseLogEntry(data);
-    assert.deepEqual(result, { role: 'assistant', text: 'Let me check that file.' });
+    assert.deepEqual(result, { role: 'assistant', text: 'Let me check that file.', timestamp: null });
   });
 
   it('returns null for system messages', () => {

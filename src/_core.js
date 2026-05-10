@@ -837,6 +837,132 @@ function renderWaveformSparkline(width) {
   return result;
 }
 
+// --- Message activity waveform ---
+// Reads a session JSONL and returns per-message activity data for waveform rendering.
+// Each entry: { role: 'user'|'assistant', tokens: number, minuteKey: string }
+// minuteKey groups messages into the same minute bucket for stacking.
+function readSessionMessageActivity(proc) {
+  if (!proc || !proc.cwd) return [];
+
+  const projectDirName = proc.cwd.replace(/\//g, '-');
+  const projectPath = path.join(process.env.HOME || '', '.claude', 'projects', projectDirName);
+
+  try { if (!fs.existsSync(projectPath)) return []; } catch (e) { return []; }
+
+  const files = getSessionFilesForProject(projectPath);
+  if (files.length === 0) return [];
+  const filePath = files[0].path;
+
+  try {
+    const content = fs.readFileSync(filePath, 'utf8');
+    const lines = content.split('\n').filter(l => l.trim());
+    const entries = [];
+
+    for (const line of lines) {
+      try {
+        const data = JSON.parse(line);
+        const entry = parseLogEntry(data);
+        if (!entry) continue;
+        const charLen = entry.text.length;
+        const tokens = Math.max(1, Math.ceil(charLen / 4));
+        let minuteKey = '';
+        if (entry.timestamp) {
+          try {
+            const d = new Date(entry.timestamp);
+            minuteKey = `${d.getHours()}:${String(d.getMinutes()).padStart(2, '0')}`;
+          } catch (e) {}
+        }
+        entries.push({ role: entry.role, tokens, minuteKey });
+      } catch (e) {}
+    }
+    return entries;
+  } catch (e) {
+    return [];
+  }
+}
+
+// Render a message activity waveform as a sparkline string.
+// Buckets messages by minuteKey and stacks user + assistant tokens per bucket.
+// width = number of characters wide the chart should be.
+// Returns an ANSI-colored string.
+function renderMessageWaveform(activity, width) {
+  const BARS = '▁▁▂▃▄▅▆▇█';
+
+  if (!activity || activity.length === 0) {
+    return `${DIM}${'▁'.repeat(width)}${RESET}`;
+  }
+
+  // Build ordered buckets keyed by minuteKey (preserve insertion order)
+  const bucketMap = new Map();
+  for (const msg of activity) {
+    const key = msg.minuteKey || `_seq_${bucketMap.size}`;
+    if (!bucketMap.has(key)) bucketMap.set(key, { user: 0, assistant: 0 });
+    const b = bucketMap.get(key);
+    if (msg.role === 'user') b.user += msg.tokens;
+    else b.assistant += msg.tokens;
+  }
+
+  let buckets = Array.from(bucketMap.values());
+
+  // Resample buckets to fit width if needed
+  if (buckets.length > width) {
+    const resampled = [];
+    const step = buckets.length / width;
+    for (let i = 0; i < width; i++) {
+      const start = Math.floor(i * step);
+      const end = Math.floor((i + 1) * step);
+      let u = 0, a = 0;
+      for (let j = start; j < end; j++) { u += buckets[j].user; a += buckets[j].assistant; }
+      resampled.push({ user: u, assistant: a });
+    }
+    buckets = resampled;
+  } else if (buckets.length < width) {
+    // Stretch buckets to fill width via linear interpolation
+    const stretched = [];
+    const step = (buckets.length - 1) / (width - 1 || 1);
+    for (let i = 0; i < width; i++) {
+      const fIdx = i * step;
+      const lo = Math.floor(fIdx);
+      const hi = Math.min(lo + 1, buckets.length - 1);
+      const t = fIdx - lo;
+      stretched.push({
+        user: buckets[lo].user * (1 - t) + buckets[hi].user * t,
+        assistant: buckets[lo].assistant * (1 - t) + buckets[hi].assistant * t,
+      });
+    }
+    buckets = stretched;
+  }
+
+  // Smooth with a 3-wide moving average
+  const smoothed = [];
+  for (let i = 0; i < buckets.length; i++) {
+    const prev = i > 0 ? buckets[i - 1] : buckets[i];
+    const next = i < buckets.length - 1 ? buckets[i + 1] : buckets[i];
+    smoothed.push({
+      user: (prev.user + buckets[i].user + next.user) / 3,
+      assistant: (prev.assistant + buckets[i].assistant + next.assistant) / 3,
+    });
+  }
+
+  const maxVal = Math.max(1, ...smoothed.map(b => b.user + b.assistant));
+
+  let result = '';
+  for (const b of smoothed) {
+    const total = b.user + b.assistant;
+    const normalized = Math.min(1, total / maxVal);
+    const level = Math.round(normalized * 8);
+    const ch = BARS[level];
+    // Color: cyan for user-dominant, green for assistant-dominant
+    let color;
+    if (level === 0) { color = DIM; }
+    else if (b.user > b.assistant) { color = CYAN; }
+    else { color = GREEN; }
+    result += `${color}${ch}${RESET}`;
+  }
+
+  return result;
+}
+
 // Notification state
 let notificationsEnabled = CONFIG.notifications.enabled;
 const previousStates = new Map();   // PID -> last known status string
@@ -1776,7 +1902,7 @@ function assignCodexSessionsToProcesses(procs) {
 
 function parseLogEntry(data) {
   // Extract human-readable conversation text from a JSONL entry.
-  // Returns { role: 'user'|'assistant', text: string } or null if not a conversation line.
+  // Returns { role: 'user'|'assistant', text: string, timestamp: string|null } or null if not a conversation line.
   if (!data || !data.message) return null;
   const role = data.message.role;
   if (role !== 'user' && role !== 'assistant') return null;
@@ -1797,7 +1923,7 @@ function parseLogEntry(data) {
   // Strip system-like messages (XML tags typically indicate system prompts)
   if (role === 'user' && text.trim().startsWith('<')) return null;
 
-  return { role, text: text.replace(/\n/g, ' ').trim() };
+  return { role, text: text.replace(/\n/g, ' ').trim(), timestamp: data.timestamp || null };
 }
 
 function readSessionLog(proc, maxLines) {
@@ -1831,7 +1957,13 @@ function readSessionLog(proc, maxLines) {
         const entry = parseLogEntry(data);
         if (entry) {
           const prefix = entry.role === 'user' ? 'USER' : 'ASSISTANT';
-          entries.push({ role: entry.role, text: `${prefix}: ${entry.text}` });
+          let timeStr = '';
+          if (entry.timestamp) {
+            try {
+              timeStr = new Date(entry.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+            } catch (e) { timeStr = ''; }
+          }
+          entries.push({ role: entry.role, text: `${prefix}: ${entry.text}`, timestamp: timeStr });
         }
       } catch (e) {}
     }
@@ -2355,9 +2487,25 @@ function renderDashboard(columns) {
   let costColor = GREEN;
   if (stats.totalCost > 5) costColor = RED;
   else if (stats.totalCost >= 1) costColor = YELLOW;
+  const leftPart = ` Avg Ctx ${utilStr} | Cost: ${formatCost(stats.totalCost > 0 ? stats.totalCost : null)} | Sessions: ${stats.active} active ${stats.dead} dead ${stats.total} total`;
   out += `${DIM} Avg Ctx ${RESET}${utilColor}${utilStr}${RESET}`;
   out += `${DIM} | Cost: ${RESET}${costColor}${formatCost(stats.totalCost > 0 ? stats.totalCost : null)}${RESET}`;
   out += `${DIM} | Sessions: ${RESET}${GREEN}${stats.active}${RESET}${DIM} active ${RESET}${RED}${stats.dead}${RESET}${DIM} dead ${RESET}${WHITE}${stats.total}${RESET}${DIM} total${RESET}`;
+
+  // Aggregate message activity waveform on the right side
+  const leftLen = leftPart.length;
+  const waveWidth = Math.max(8, columns - leftLen - 4);
+  if (waveWidth >= 8) {
+    let allActivity = [];
+    for (const proc of allProcesses) {
+      const activity = readSessionMessageActivity(proc);
+      allActivity = allActivity.concat(activity);
+    }
+    allActivity.sort((a, b) => (a.minuteKey || '').localeCompare(b.minuteKey || ''));
+    const waveStr = renderMessageWaveform(allActivity, waveWidth);
+    out += `  ${waveStr}`;
+  }
+
   out += `${CLR_LINE}\n`;
   return out;
 }
@@ -2481,7 +2629,7 @@ function renderStatsBar(columns) {
 function renderPaneMode() {
   const { columns, rows } = process.stdout;
   const cardWidth = 34;
-  const cardHeight = 8;
+  const cardHeight = 9;
   const cardGapX = 1;
   const cardGapY = 1;
   const cardsPerRow = getCardsPerRow();
@@ -2515,7 +2663,7 @@ function renderPaneMode() {
 
   // Calculate grid
   const totalRows = Math.ceil(processes.length / cardsPerRow);
-  const headerLines = 6 + (showDashboard ? 2 : 0); // header box (3) + stats + dashboard + separator + status
+  const headerLines = 6 + (showDashboard ? 2 : 0); // header box (3) + stats + dashboard (2) + separator + status
   const footerLines = 2; // separator + keys (pinned to bottom)
   const paneLogHeight = showLogPane ? Math.max(5, Math.floor(rows * 0.4)) : 0;
   const availableSpace = rows - headerLines - footerLines - paneLogHeight;
@@ -2609,6 +2757,11 @@ function renderPaneMode() {
               title = title.substring(0, inner - 1) + '…';
             }
             content = `${selStart}│ ${title.padEnd(inner)} │${selEnd}`;
+          } else if (line === 7) {
+            // Message activity waveform
+            const activity = readSessionMessageActivity(proc);
+            const waveStr = renderMessageWaveform(activity, inner);
+            content = `${selStart}│ ${waveStr}${selStart} │${selEnd}`;
           }
           cell = content;
         }
@@ -3093,12 +3246,16 @@ function renderLogPane(startRow, paneWidth, paneHeight, proc) {
     if (lineIdx < totalLines) {
       const entry = logLines[lineIdx];
       const color = entry.role === 'user' ? CYAN : GREEN;
-      // Truncate line to terminal width
+      // Show timestamp on the left if available
+      const tsPrefix = entry.timestamp ? `${DIM}${entry.timestamp}${RESET} ` : '';
+      const tsPrefixLen = entry.timestamp ? entry.timestamp.length + 1 : 0;
+      // Truncate line to terminal width accounting for timestamp
       let displayText = entry.text;
-      if (displayText.length > paneWidth - 2) {
-        displayText = displayText.substring(0, paneWidth - 5) + '...';
+      const maxTextLen = paneWidth - 2 - tsPrefixLen;
+      if (displayText.length > maxTextLen) {
+        displayText = displayText.substring(0, maxTextLen - 3) + '...';
       }
-      output += ` ${color}${displayText}${RESET}${CLR_LINE}`;
+      output += ` ${tsPrefix}${color}${displayText}${RESET}${CLR_LINE}`;
     } else {
       output += `${CLR_LINE}`;
     }
@@ -4334,7 +4491,7 @@ function listViewRowToIndex(row) {
 function paneViewClickToIndex(row, col) {
   const { columns } = process.stdout;
   const cardWidth = 34;
-  const cardHeight = 8;
+  const cardHeight = 9;
   const cardGapX = 1;
   const cardGapY = 1;
   const cardsPerRow = getCardsPerRow();
@@ -5211,6 +5368,9 @@ module.exports = {
   renderWaveformSparkline,
   tokenWaveform,
   WAVEFORM_MAX_POINTS,
+  // Message activity waveform
+  readSessionMessageActivity,
+  renderMessageWaveform,
   // Windows / cross-platform exports
   buildKillCommand,
   cwdToProjectDirName,
