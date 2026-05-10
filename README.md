@@ -10,7 +10,7 @@
 
 Track CPU, memory, token usage, context window saturation, rate limits, compaction events, active branches, and more — all from a single terminal pane.
 
-![CTOP Detail Pane](assets/detail-pane.svg)
+![CTOP Demo](assets/hero.gif)
 
 ---
 
@@ -44,9 +44,7 @@ Track CPU, memory, token usage, context window saturation, rate limits, compacti
 - **Zero dependencies** — pure Node.js, no `npm install` required
 - **Auto-refresh** — configurable interval (default 5s)
 
-![CTOP List View](assets/list-view.svg)
-
-![CTOP Pane View](assets/pane-view.svg)
+![CTOP Features](assets/features.gif)
 
 ---
 
@@ -153,7 +151,6 @@ source ~/.zshrc
 
 Mouse support: click to select, scroll wheel to navigate.
 
-![CTOP Help Screen](assets/help-screen.svg)
 
 ### Context window visualization
 
@@ -175,7 +172,7 @@ Color coding:
 
 On wide terminals (140+ cols), a detail pane appears showing full session info: model, branch, slug, token breakdown, turn duration, session ID, and more.
 
-![CTOP Detail Pane](assets/detail-pane.svg)
+![CTOP Detail Pane](assets/hero.gif)
 
 ---
 

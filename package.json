@@ -8,7 +8,8 @@
   },
   "scripts": {
     "start": "node claude-manager",
-    "test": "node --test test/*.test.js"
+    "test": "node --test test/*.test.js",
+    "gif": "scripts/mock-sessions.sh && vhs assets/hero.tape && vhs assets/features.tape && gifsicle -O3 --lossy=80 --colors 64 -b assets/hero.gif && gifsicle -O3 --lossy=80 --colors 64 -b assets/features.gif && scripts/mock-sessions.sh cleanup"
   },
   "keywords": [
     "claude",

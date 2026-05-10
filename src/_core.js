@@ -2487,25 +2487,9 @@ function renderDashboard(columns) {
   let costColor = GREEN;
   if (stats.totalCost > 5) costColor = RED;
   else if (stats.totalCost >= 1) costColor = YELLOW;
-  const leftPart = ` Avg Ctx ${utilStr} | Cost: ${formatCost(stats.totalCost > 0 ? stats.totalCost : null)} | Sessions: ${stats.active} active ${stats.dead} dead ${stats.total} total`;
   out += `${DIM} Avg Ctx ${RESET}${utilColor}${utilStr}${RESET}`;
   out += `${DIM} | Cost: ${RESET}${costColor}${formatCost(stats.totalCost > 0 ? stats.totalCost : null)}${RESET}`;
   out += `${DIM} | Sessions: ${RESET}${GREEN}${stats.active}${RESET}${DIM} active ${RESET}${RED}${stats.dead}${RESET}${DIM} dead ${RESET}${WHITE}${stats.total}${RESET}${DIM} total${RESET}`;
-
-  // Aggregate message activity waveform on the right side
-  const leftLen = leftPart.length;
-  const waveWidth = Math.max(8, columns - leftLen - 4);
-  if (waveWidth >= 8) {
-    let allActivity = [];
-    for (const proc of allProcesses) {
-      const activity = readSessionMessageActivity(proc);
-      allActivity = allActivity.concat(activity);
-    }
-    allActivity.sort((a, b) => (a.minuteKey || '').localeCompare(b.minuteKey || ''));
-    const waveStr = renderMessageWaveform(allActivity, waveWidth);
-    out += `  ${waveStr}`;
-  }
-
   out += `${CLR_LINE}\n`;
   return out;
 }
