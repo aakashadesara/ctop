@@ -29,10 +29,10 @@ describe('updateTokenRates', () => {
     const procs2 = [{ pid: '200', inputTokens: 300, outputTokens: 300, cacheCreateTokens: 100, cacheReadTokens: 100 }];
     updateTokenRates(procs2);
 
-    // Total now = 800, previous = 200, delta = 600, dt ~ 2s, rate ~ 300 tok/s
+    // Total now = 300+300 = 600 (input+output only, cache excluded), previous = 200, delta = 400, dt ~ 2s, rate ~ 200 tok/s
     const rate = procs2[0].tokenRate;
-    assert.ok(rate > 250, `Expected rate > 250, got ${rate}`);
-    assert.ok(rate < 350, `Expected rate < 350, got ${rate}`);
+    assert.ok(rate > 150, `Expected rate > 150, got ${rate}`);
+    assert.ok(rate < 250, `Expected rate < 250, got ${rate}`);
   });
 
   it('rate is 0 when tokens do not change', () => {
