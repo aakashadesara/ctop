@@ -1,4 +1,4 @@
-# CTOP — Claude Terminal Operations Panel
+# CTOP — AI Agent Terminal Operations Panel
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Platform: macOS | Linux | Windows](https://img.shields.io/badge/Platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey.svg)](#requirements)
@@ -6,9 +6,9 @@
 [![Zero Dependencies](https://img.shields.io/badge/Dependencies-Zero-brightgreen.svg)](#)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](#contributing)
 
-**A terminal UI for monitoring and managing Claude Code sessions.** Think `htop`, but for your Claude processes.
+**A terminal UI for monitoring and managing AI coding agent sessions.** Think `htop`, but for your Claude Code and Codex CLI processes.
 
-Track CPU, memory, token usage, context window saturation, active branches, and more — all from a single terminal pane.
+Track CPU, memory, token usage, context window saturation, rate limits, compaction events, active branches, and more — all from a single terminal pane.
 
 ![CTOP Detail Pane](assets/detail-pane.svg)
 
@@ -16,9 +16,13 @@ Track CPU, memory, token usage, context window saturation, active branches, and 
 
 ## Features
 
-- **Real-time process monitoring** — CPU, memory, status, uptime for every Claude session
-- **Context window tracking** — visual bar showing input, cache, output, and free context (out of 200k)
-- **Cost estimation** — per-session and total API cost based on model pricing
+- **Multi-agent support** — monitors both **Claude Code** and **Codex CLI** sessions simultaneously
+- **Real-time process monitoring** — CPU, memory, status, uptime for every agent session
+- **Context window tracking** — visual bar showing input, cache, output, and free context
+- **Compaction detection** — flags when an agent compacts its context window (↻ indicator)
+- **Rate limit monitoring** — shows Claude and Codex rate limit quota usage in the status bar
+- **Token activity waveform** — real-time braille sparkline in the header showing aggregate token pulse
+- **Cost estimation** — per-session and total API cost based on model pricing (Claude + OpenAI models)
 - **Sparkline graphs** — inline CPU/memory trend charts using Unicode block characters
 - **Token breakdown** — input, output, cache creation, and cache read token counts per session
 - **Session metadata** — model, branch, slug, session ID, service tier, version
@@ -89,7 +93,7 @@ chmod +x /usr/local/bin/ctop
 ctop
 ```
 
-If no Claude processes are running, you'll see an empty state. Start a Claude Code session and `ctop` will pick it up on the next refresh.
+If no agent processes are running, you'll see an empty state. Start a Claude Code or Codex CLI session and `ctop` will pick it up on the next refresh.
 
 ---
 
@@ -134,7 +138,7 @@ source ~/.zshrc
 | `r` | Refresh process list |
 | `x` | Kill selected process (SIGTERM) |
 | `X` | Force kill selected process (SIGKILL) |
-| `K` | Kill ALL Claude processes |
+| `K` | Kill ALL agent processes |
 | `A` | Kill all stopped/zombie processes |
 | `o` | Open project directory in file manager |
 | `e` | Open project directory in editor |
@@ -219,7 +223,7 @@ CLI flags override config file values.
 
 - **macOS, Linux, or Windows** (uses `ps` + `lsof` on macOS, `ps` + `/proc` on Linux, PowerShell on Windows)
 - **Node.js 18+**
-- **Claude Code** installed and running sessions
+- **Claude Code** and/or **Codex CLI** installed and running sessions
 
 ### Windows notes
 
@@ -229,7 +233,12 @@ On Windows, ctop uses PowerShell to detect Claude processes and retrieve process
 
 ## How it works
 
-`ctop` reads process info from `ps` (or PowerShell on Windows), resolves working directories via `lsof` (or `Get-CimInstance` on Windows), and enriches each process with session metadata by parsing Claude Code's local `.jsonl` session files in `~/.claude/projects/`. No network calls. No external dependencies. Everything stays local.
+`ctop` reads process info from `ps` (or PowerShell on Windows), resolves working directories via `lsof` (or `Get-CimInstance` on Windows), and enriches each process with session metadata by parsing local session files:
+
+- **Claude Code**: `.jsonl` session files in `~/.claude/projects/`
+- **Codex CLI**: `.jsonl` rollout files in `~/.codex/sessions/`
+
+No network calls. No external dependencies. Everything stays local.
 
 ---
 
@@ -274,6 +283,10 @@ See `examples/plugins/uptime.js` for a complete example.
 - [x] **Braille context bars** — sub-character precision rendering
 - [x] **Plugin system** — custom columns via `~/.ctop/plugins/`
 - [x] **Modular codebase** — split into `src/` modules
+- [x] **Codex CLI support** — monitor Codex sessions alongside Claude
+- [x] **Compaction detection** — flag context window compaction events
+- [x] **Rate limit monitoring** — Claude and Codex quota usage in status bar
+- [x] **Token activity waveform** — real-time aggregate token pulse in header
 
 ---
 

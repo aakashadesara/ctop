@@ -133,7 +133,7 @@ function loadConfig() {
     } else if (args[i] === '--no-animation') {
       config.bootAnimation = false;
     } else if (args[i] === '--help' || args[i] === '-h') {
-      console.log(`ctop — Claude Code process manager
+      console.log(`ctop — AI Agent process manager (Claude Code + Codex CLI)
 
 Usage: ctop [options]
 
@@ -215,11 +215,19 @@ const MODEL_PRICING = {
   'claude-sonnet-4-6': { input: 3, output: 15, cacheWrite: 3.75, cacheRead: 0.30 },
   'claude-opus-4-6': { input: 15, output: 75, cacheWrite: 18.75, cacheRead: 1.50 },
   'claude-haiku-4-5': { input: 0.80, output: 4, cacheWrite: 1, cacheRead: 0.08 },
-  // Older models
+  // Older Claude models
   'claude-sonnet-4-5-20250514': { input: 3, output: 15, cacheWrite: 3.75, cacheRead: 0.30 },
   'claude-3-5-sonnet-20241022': { input: 3, output: 15, cacheWrite: 3.75, cacheRead: 0.30 },
   'claude-3-5-haiku-20241022': { input: 0.80, output: 4, cacheWrite: 1, cacheRead: 0.08 },
   'claude-3-opus-20240229': { input: 15, output: 75, cacheWrite: 18.75, cacheRead: 1.50 },
+  // OpenAI / Codex models
+  'gpt-4.1': { input: 2, output: 8, cacheWrite: 1, cacheRead: 0.50 },
+  'gpt-4.1-mini': { input: 0.40, output: 1.60, cacheWrite: 0.20, cacheRead: 0.10 },
+  'gpt-4.1-nano': { input: 0.10, output: 0.40, cacheWrite: 0.05, cacheRead: 0.025 },
+  'gpt-5.4': { input: 2, output: 8, cacheWrite: 1, cacheRead: 0.50 },
+  'o3': { input: 2, output: 8, cacheWrite: 1, cacheRead: 0.50 },
+  'o4-mini': { input: 1.10, output: 4.40, cacheWrite: 0.55, cacheRead: 0.275 },
+  'codex-mini-latest': { input: 1.50, output: 6, cacheWrite: 0.75, cacheRead: 0.375 },
 };
 
 function calculateCost(proc) {
@@ -231,6 +239,13 @@ function calculateCost(proc) {
     const modelLower = proc.model.toLowerCase();
     if (modelLower.includes('opus')) pricing = MODEL_PRICING['claude-opus-4-6'];
     else if (modelLower.includes('haiku')) pricing = MODEL_PRICING['claude-haiku-4-5'];
+    else if (modelLower.includes('gpt-4.1-nano')) pricing = MODEL_PRICING['gpt-4.1-nano'];
+    else if (modelLower.includes('gpt-4.1-mini')) pricing = MODEL_PRICING['gpt-4.1-mini'];
+    else if (modelLower.includes('gpt-4.1') || modelLower.includes('gpt-5')) pricing = MODEL_PRICING['gpt-4.1'];
+    else if (modelLower.includes('o3')) pricing = MODEL_PRICING['o3'];
+    else if (modelLower.includes('o4-mini')) pricing = MODEL_PRICING['o4-mini'];
+    else if (modelLower.includes('codex-mini')) pricing = MODEL_PRICING['codex-mini-latest'];
+    else if (proc.agentType === 'codex') pricing = MODEL_PRICING['gpt-4.1']; // default for codex
     else pricing = MODEL_PRICING['claude-sonnet-4-6']; // default to sonnet
   }
   const cost = (
@@ -349,10 +364,9 @@ function buildGroupedFlatList(procs) {
   const items = [];
   for (const group of groups) {
     items.push({ type: 'group', group });
-    if (expandedGroups.has(group.cwd)) {
-      for (const proc of group.procs) {
-        items.push({ type: 'process', proc, group });
-      }
+    // Always show sessions under each group (section-style, not collapsible)
+    for (const proc of group.procs) {
+      items.push({ type: 'process', proc, group });
     }
   }
   return items;
@@ -680,7 +694,7 @@ function updateTokenRates(procs) {
   const currentPids = new Set();
   for (const proc of procs) {
     currentPids.add(proc.pid);
-    const total = (proc.inputTokens || 0) + (proc.outputTokens || 0) + (proc.cacheCreateTokens || 0) + (proc.cacheReadTokens || 0);
+    const total = (proc.inputTokens || 0) + (proc.outputTokens || 0);
 
     if (tokenHistory.has(proc.pid)) {
       const prev = tokenHistory.get(proc.pid);
@@ -731,6 +745,98 @@ function formatTokenRate(rate) {
   return (rate / 1000).toFixed(1) + 'k';
 }
 
+// Compaction detection — track previous context % to detect sudden increases (= context was compacted)
+const compactionState = new Map(); // PID -> { prevContextPct: number, compacted: boolean, compactionCount: number }
+const COMPACTION_THRESHOLD = 20; // contextPct must jump up by at least this much to count as compaction
+
+function detectCompaction(procs) {
+  for (const proc of procs) {
+    if (proc.contextPct == null) continue;
+    if (compactionState.has(proc.pid)) {
+      const state = compactionState.get(proc.pid);
+      // contextPct is "free %" — compaction causes it to jump UP (more free space suddenly)
+      const delta = proc.contextPct - state.prevContextPct;
+      if (delta >= COMPACTION_THRESHOLD && state.prevContextPct < 50) {
+        state.compacted = true;
+        state.compactionCount++;
+      }
+      state.prevContextPct = proc.contextPct;
+    } else {
+      compactionState.set(proc.pid, { prevContextPct: proc.contextPct, compacted: false, compactionCount: 0 });
+    }
+    // Attach to proc for rendering
+    const cs = compactionState.get(proc.pid);
+    proc.compacted = cs.compacted;
+    proc.compactionCount = cs.compactionCount;
+  }
+  // Cleanup stale PIDs
+  const currentPids = new Set(procs.map(p => p.pid));
+  for (const pid of compactionState.keys()) {
+    if (!currentPids.has(pid)) compactionState.delete(pid);
+  }
+}
+
+// Token activity waveform — aggregate token deltas across all sessions over time
+const WAVEFORM_MAX_POINTS = 60;
+const tokenWaveform = []; // rolling array of { input: n, output: n, cache: n, total: n }
+let waveformLastTotals = null; // { input, output, cache }
+
+function updateTokenWaveform(procs) {
+  let totalInput = 0, totalOutput = 0, totalCache = 0;
+  for (const p of procs) {
+    totalInput += (p.inputTokens || 0);
+    totalOutput += (p.outputTokens || 0);
+    totalCache += (p.cacheCreateTokens || 0) + (p.cacheReadTokens || 0);
+  }
+  if (waveformLastTotals) {
+    const di = Math.max(0, totalInput - waveformLastTotals.input);
+    const dout = Math.max(0, totalOutput - waveformLastTotals.output);
+    const dc = Math.max(0, totalCache - waveformLastTotals.cache);
+    tokenWaveform.push({ input: di, output: dout, cache: dc, total: di + dout + dc });
+  } else {
+    tokenWaveform.push({ input: 0, output: 0, cache: 0, total: 0 });
+  }
+  waveformLastTotals = { input: totalInput, output: totalOutput, cache: totalCache };
+  if (tokenWaveform.length > WAVEFORM_MAX_POINTS) tokenWaveform.shift();
+}
+
+function renderWaveformSparkline(width) {
+  // Music-wave style: 8-level vertical bars using Unicode block characters.
+  // New data enters on the right, old data scrolls left — like an audio visualizer.
+  // The tallest bar is always the peak in the visible window.
+  // ▁ is the baseline (always visible), █ is the peak
+  const BARS = ['▁', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+
+  if (tokenWaveform.length < 2) {
+    return `${DIM}${'▁'.repeat(width)}${RESET}`;
+  }
+
+  // Take the last `width` data points (scrolls left as new data arrives)
+  const points = tokenWaveform.slice(-width);
+  const maxVal = Math.max(1, ...points.map(p => p.total));
+
+  let result = '';
+
+  // Left-pad with baseline if we have fewer points than width
+  const padLen = width - points.length;
+  if (padLen > 0) result += `${DIM}${'▁'.repeat(padLen)}${RESET}`;
+
+  for (const p of points) {
+    const normalized = Math.min(1, p.total / maxVal);
+    const level = Math.round(normalized * 8);
+    const ch = BARS[level];
+    // Color intensity ramps with height: dim baseline < green < cyan < bright
+    let color;
+    if (level <= 1) color = DIM;
+    else if (level <= 3) color = GREEN;
+    else if (level <= 5) color = CYAN;
+    else color = WHITE + BOLD;
+    result += `${color}${ch}${RESET}`;
+  }
+
+  return result;
+}
+
 // Notification state
 let notificationsEnabled = CONFIG.notifications.enabled;
 const previousStates = new Map();   // PID -> last known status string
@@ -770,7 +876,7 @@ function formatDuration(ms) {
 
 function formatNotificationMessage(proc) {
   const parts = [];
-  const label = proc.slug || proc.title || 'Claude session';
+  const label = proc.slug || proc.title || (proc.agentType === 'codex' ? 'Codex session' : 'Claude session');
   parts.push(label);
   if (proc._activeDurationMs) {
     parts.push(`Duration: ${formatDuration(proc._activeDurationMs)}`);
@@ -818,10 +924,10 @@ function checkStateTransitions(currentProcs) {
     if (activeDuration < minDuration) continue;
 
     // Build notification
-    const proc = current || { pid, slug: null, title: 'Claude session', model: null };
+    const proc = current || { pid, slug: null, title: 'Agent session', model: null, agentType: 'claude' };
     proc._activeDurationMs = activeDuration;
     const message = formatNotificationMessage(proc);
-    sendNotification('CTOP \u2014 Session Completed', message);
+    sendNotification('ctop \u2014 Session Completed', message);
   }
 
   // Update previousStates for next cycle
@@ -879,6 +985,7 @@ function getClaudeProcessesWindows() {
         startTime,
         command,
         cwd,
+        agentType: 'claude',
         title: 'Claude Code',
         contextPct: null,
         model: null,
@@ -896,6 +1003,9 @@ function getClaudeProcessesWindows() {
         timestamp: null,
         requestId: null,
         lastTurnMs: null,
+        compacted: false,
+        compactionCount: 0,
+        rateLimits: null,
         isActive: true,
         isZombie: false,
         isStopped: false,
@@ -912,6 +1022,111 @@ function getClaudeProcessesWindows() {
   } catch (e) {
     return [];
   }
+}
+
+function getCodexProcesses() {
+  if (IS_WIN) return getCodexProcessesWindows();
+
+  try {
+    const psOutput = execSync(
+      `ps -eo pid,user,pcpu,pmem,stat,lstart,command | grep 'codex' | grep -v 'ctop' | grep -v 'grep' | grep -v 'npm' | grep -v 'node '`,
+      { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }
+    ).trim();
+
+    if (!psOutput) return [];
+
+    const lines = psOutput.split('\n').filter(Boolean);
+    const procs = [];
+
+    for (const line of lines) {
+      const parts = line.trim().split(/\s+/);
+      const pid = parts[0];
+      const cpu = parts[2];
+      const mem = parts[3];
+      const stat = parts[4];
+      const lstartStr = parts.slice(5, 10).join(' ');
+      const command = parts.slice(10).join(' ');
+
+      // Only match the actual codex binary, not child processes or shims.
+      // The native binary path contains 'codex-darwin' or 'codex-linux' or ends with '/codex'
+      // Also accept a bare 'codex' command.
+      const isCodexBinary = command.match(/\/codex\/codex\b/) ||
+                            command.match(/\bcodex-darwin/) ||
+                            command.match(/\bcodex-linux/) ||
+                            command.match(/\bcodex-win/) ||
+                            command.match(/^\S*\/codex\s/) ||
+                            command.match(/^codex\s/);
+      if (!isCodexBinary) continue;
+
+      const startDate = new Date(lstartStr);
+      const startTime = formatStartTime(startDate);
+      const cwd = getProcessCwd(pid);
+      const isActive = !stat.includes('Z') && !stat.includes('T');
+      const isZombie = stat.includes('Z');
+      const isStopped = stat.includes('T');
+
+      procs.push({
+        pid, cpu: parseFloat(cpu) || 0, mem: parseFloat(mem) || 0,
+        stat, startDate, startTime, command, cwd,
+        agentType: 'codex', title: 'Codex CLI',
+        contextPct: null, model: null, stopReason: null, gitBranch: null,
+        slug: null, sessionId: null, version: null, userType: null,
+        inputTokens: null, cacheCreateTokens: null, cacheReadTokens: null,
+        outputTokens: null, serviceTier: null, timestamp: null,
+        requestId: null, lastTurnMs: null, compacted: false, compactionCount: 0,
+        isActive, isZombie, isStopped,
+        status: isZombie ? 'ZOMBIE' : isStopped ? 'STOPPED' : isActive ? 'ACTIVE' : 'SLEEPING'
+      });
+    }
+
+    procs.sort((a, b) => a.startDate - b.startDate);
+    assignCodexSessionsToProcesses(procs);
+    for (const proc of procs) { proc.cost = calculateCost(proc); }
+    return procs;
+  } catch (e) {
+    return [];
+  }
+}
+
+function getCodexProcessesWindows() {
+  try {
+    const psCmd = `powershell -Command "Get-Process | Where-Object {$_.CommandLine -like '*codex*' -and $_.CommandLine -notlike '*ctop*'} | Select-Object Id,CPU,WorkingSet64,StartTime,CommandLine | ConvertTo-Json"`;
+    const output = execSync(psCmd, { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
+    if (!output) return [];
+    let parsed = JSON.parse(output);
+    if (!Array.isArray(parsed)) parsed = [parsed];
+    const procs = [];
+    const totalMem = os.totalmem();
+    for (const p of parsed) {
+      if (!p || !p.Id) continue;
+      const pid = String(p.Id);
+      const cpuVal = p.CPU != null ? parseFloat(p.CPU) : 0;
+      const memBytes = p.WorkingSet64 || 0;
+      const memPct = totalMem > 0 ? (memBytes / totalMem * 100) : 0;
+      let startDate = new Date();
+      if (p.StartTime) {
+        const m = String(p.StartTime).match(/\/Date\((\d+)\)\//);
+        if (m) startDate = new Date(parseInt(m[1], 10));
+        else startDate = new Date(p.StartTime);
+      }
+      procs.push({
+        pid, cpu: cpuVal, mem: parseFloat(memPct.toFixed(1)),
+        stat: 'R', startDate, startTime: formatStartTime(startDate),
+        command: p.CommandLine || '', cwd: getProcessCwd(pid),
+        agentType: 'codex', title: 'Codex CLI',
+        contextPct: null, model: null, stopReason: null, gitBranch: null,
+        slug: null, sessionId: null, version: null, userType: null,
+        inputTokens: null, cacheCreateTokens: null, cacheReadTokens: null,
+        outputTokens: null, serviceTier: null, timestamp: null,
+        requestId: null, lastTurnMs: null, compacted: false, compactionCount: 0,
+        isActive: true, isZombie: false, isStopped: false, status: 'ACTIVE'
+      });
+    }
+    procs.sort((a, b) => a.startDate - b.startDate);
+    assignCodexSessionsToProcesses(procs);
+    for (const proc of procs) { proc.cost = calculateCost(proc); }
+    return procs;
+  } catch (e) { return []; }
 }
 
 function getClaudeProcesses() {
@@ -963,6 +1178,7 @@ function getClaudeProcesses() {
         startTime,
         command,
         cwd,
+        agentType: 'claude',
         title: 'Claude Code',
         contextPct: null,
         model: null,
@@ -980,6 +1196,9 @@ function getClaudeProcesses() {
         timestamp: null,
         requestId: null,
         lastTurnMs: null,
+        compacted: false,
+        compactionCount: 0,
+        rateLimits: null,
         isActive,
         isZombie,
         isStopped,
@@ -1004,6 +1223,13 @@ function getClaudeProcesses() {
   }
 }
 
+// Get all agent processes (Claude + Codex)
+function getAllAgentProcesses() {
+  const claude = getClaudeProcesses();
+  const codex = getCodexProcesses();
+  return [...claude, ...codex].sort((a, b) => a.startDate - b.startDate);
+}
+
 function formatStartTime(date) {
   const now = new Date();
   const diffMs = now - date;
@@ -1025,7 +1251,8 @@ function formatStartTime(date) {
 // --- Export report formatting ---
 
 function formatSessionMarkdown(proc) {
-  return `## Claude Session Report
+  const agentLabel = proc.agentType === 'codex' ? 'Codex' : 'Claude';
+  return `## ${agentLabel} Session Report
 - **Model:** ${proc.model || 'unknown'}
 - **Status:** ${proc.status}
 - **Started:** ${proc.startTime}
@@ -1376,6 +1603,169 @@ function assignSessionsToProcesses(procs) {
   // Set fallback titles for processes that still have default
   for (const proc of procs) {
     if (proc.title === 'Claude Code' && proc.cwd) {
+      const parts = proc.cwd.split(/[\\/]/).filter(Boolean);
+      proc.title = parts.length >= 2
+        ? parts[parts.length - 2] + '/' + parts[parts.length - 1]
+        : parts[parts.length - 1] || proc.cwd;
+    }
+  }
+}
+
+// --- Codex CLI session data ---
+
+function getCodexSessionData(filePath) {
+  const result = {
+    title: null, contextPct: null, model: null, inputTokens: null,
+    cacheReadTokens: null, cacheCreateTokens: null, outputTokens: null, gitBranch: null,
+    sessionId: null, contextWindow: null, version: null, cwd: null,
+  };
+
+  try {
+    const fd = fs.openSync(filePath, 'r');
+    const stat = fs.fstatSync(fd);
+
+    // Read first 32KB for session meta + turn_context + title
+    const headSize = Math.min(32768, stat.size);
+    const headBuf = Buffer.alloc(headSize);
+    fs.readSync(fd, headBuf, 0, headSize, 0);
+    const headLines = headBuf.toString('utf8').split('\n');
+    for (const line of headLines) {
+      if (!line.trim()) continue;
+      try {
+        const data = JSON.parse(line);
+        const payload = data.payload || {};
+        // session_meta event: {"type":"session_meta","payload":{"id":"...","cwd":"...","git":{"branch":"..."},"cli_version":"..."}}
+        if (data.type === 'session_meta') {
+          result.sessionId = payload.id || data.id || null;
+          result.version = payload.cli_version || null;
+          result.cwd = payload.cwd || null;
+          if (payload.git?.branch) result.gitBranch = payload.git.branch;
+          continue;
+        }
+        // turn_context event: {"type":"turn_context","payload":{"model":"gpt-5.4",...}}
+        if (data.type === 'turn_context' && payload.model && !result.model) {
+          result.model = payload.model;
+          continue;
+        }
+        // Meta-style from TUI log (older format)
+        if (data.kind === 'session_start') {
+          result.model = data.model || null;
+          continue;
+        }
+        // First user message as title
+        if (!result.title) {
+          // event_msg with user_message payload
+          if (data.type === 'event_msg' && payload.type === 'user_message') {
+            const text = payload.message || payload.text || '';
+            if (text) result.title = text.substring(0, 80).replace(/\n/g, ' ').trim();
+          }
+          // response_item with role: user
+          else if (data.type === 'response_item' && payload.role === 'user') {
+            const content = payload.content;
+            if (Array.isArray(content)) {
+              // Skip developer/system messages, find actual user input
+              const txt = content.find(c => (c.type === 'input_text' || c.type === 'text') && !c.text?.startsWith('<'));
+              if (txt) result.title = (txt.text || '').substring(0, 80).replace(/\n/g, ' ').trim();
+            }
+          }
+        }
+      } catch {}
+    }
+
+    // Read last 32KB for token counts
+    const tailSize = Math.min(32768, stat.size);
+    const tailBuf = Buffer.alloc(tailSize);
+    fs.readSync(fd, tailBuf, 0, tailSize, stat.size - tailSize);
+    fs.closeSync(fd);
+    const tailLines = tailBuf.toString('utf8').split('\n').reverse();
+
+    for (const line of tailLines) {
+      if (!line.trim()) continue;
+      try {
+        const data = JSON.parse(line);
+        const payload = data.payload || data;
+        if (payload.type === 'token_count' && payload.info) {
+          const cumulative = payload.info.total_token_usage || {};
+          const lastTurn = payload.info.last_token_usage || {};
+          // Token counts shown in the UI are cumulative totals (for cost calculation)
+          result.inputTokens = cumulative.input_tokens || 0;
+          result.cacheReadTokens = cumulative.cached_input_tokens || 0;
+          result.outputTokens = (cumulative.output_tokens || 0) + (cumulative.reasoning_output_tokens || 0);
+          // Context window fill uses the LAST TURN's input tokens — that's
+          // how much context was actually sent to the model on the most recent call.
+          // total_token_usage is cumulative across all turns and not the context fill.
+          const ctxWindow = payload.info.model_context_window || 200000;
+          result.contextWindow = ctxWindow;
+          const currentCtxUsed = lastTurn.input_tokens || cumulative.input_tokens || 0;
+          result.contextPct = Math.max(0, Math.min(100, Math.round((ctxWindow - currentCtxUsed) / ctxWindow * 100)));
+          if (!result.model) result.model = payload.model || null;
+          break;
+        }
+      } catch {}
+    }
+  } catch {}
+
+  return result;
+}
+
+function assignCodexSessionsToProcesses(procs) {
+  const sessionsDir = path.join(os.homedir(), '.codex', 'sessions');
+  try {
+    if (!fs.existsSync(sessionsDir)) return;
+  } catch { return; }
+
+  // Find most recent JSONL session files
+  const sessionFiles = [];
+  try {
+    const years = fs.readdirSync(sessionsDir).filter(f => /^\d{4}$/.test(f)).sort().reverse();
+    outer: for (const year of years) {
+      const months = fs.readdirSync(path.join(sessionsDir, year)).filter(f => /^\d{2}$/.test(f)).sort().reverse();
+      for (const month of months) {
+        const days = fs.readdirSync(path.join(sessionsDir, year, month)).filter(f => /^\d{2}$/.test(f)).sort().reverse();
+        for (const day of days) {
+          const dayDir = path.join(sessionsDir, year, month, day);
+          const files = fs.readdirSync(dayDir).filter(f => f.endsWith('.jsonl'))
+            .map(f => ({ path: path.join(dayDir, f), mtime: fs.statSync(path.join(dayDir, f)).mtime }))
+            .sort((a, b) => b.mtime - a.mtime);
+          sessionFiles.push(...files);
+          if (sessionFiles.length >= procs.length) break outer;
+        }
+      }
+    }
+  } catch {}
+
+  // Parse all session files and match to processes by CWD
+  const parsedSessions = sessionFiles.map(f => ({ ...getCodexSessionData(f.path), _path: f.path }));
+  const matched = new Set();
+
+  // First pass: match by CWD
+  for (const proc of procs) {
+    if (!proc.cwd) continue;
+    const match = parsedSessions.find((s, idx) => !matched.has(idx) && s.cwd === proc.cwd);
+    if (match) {
+      const idx = parsedSessions.indexOf(match);
+      matched.add(idx);
+      if (match.title) proc.title = match.title;
+      for (const key of ['contextPct', 'model', 'gitBranch', 'sessionId', 'version', 'inputTokens', 'cacheCreateTokens', 'cacheReadTokens', 'outputTokens']) {
+        if (match[key] !== null && match[key] !== undefined) proc[key] = match[key];
+      }
+    }
+  }
+
+  // Second pass: unmatched procs get most recent unmatched sessions
+  const unmatched = procs.filter(p => p.model == null);
+  const remainingSessions = parsedSessions.filter((_, i) => !matched.has(i));
+  for (let i = 0; i < unmatched.length && i < remainingSessions.length; i++) {
+    const data = remainingSessions[i];
+    if (data.title) unmatched[i].title = data.title;
+    for (const key of ['contextPct', 'model', 'gitBranch', 'sessionId', 'version', 'inputTokens', 'cacheCreateTokens', 'cacheReadTokens', 'outputTokens', 'rateLimits']) {
+      if (data[key] !== null && data[key] !== undefined) unmatched[i][key] = data[key];
+    }
+  }
+
+  // Fallback titles
+  for (const proc of procs) {
+    if (proc.title === 'Codex CLI' && proc.cwd) {
       const parts = proc.cwd.split(/[\\/]/).filter(Boolean);
       proc.title = parts.length >= 2
         ? parts[parts.length - 2] + '/' + parts[parts.length - 1]
@@ -1967,12 +2357,13 @@ function renderDashboard(columns) {
   else if (stats.totalCost >= 1) costColor = YELLOW;
   out += `${DIM} Avg Ctx ${RESET}${utilColor}${utilStr}${RESET}`;
   out += `${DIM} | Cost: ${RESET}${costColor}${formatCost(stats.totalCost > 0 ? stats.totalCost : null)}${RESET}`;
-  out += `${DIM} | Sessions: ${RESET}${GREEN}${stats.active}${RESET}${DIM} active ${RESET}${RED}${stats.dead}${RESET}${DIM} dead ${RESET}${WHITE}${stats.total}${RESET}${DIM} total${RESET}${CLR_LINE}\n`;
+  out += `${DIM} | Sessions: ${RESET}${GREEN}${stats.active}${RESET}${DIM} active ${RESET}${RED}${stats.dead}${RESET}${DIM} dead ${RESET}${WHITE}${stats.total}${RESET}${DIM} total${RESET}`;
+  out += `${CLR_LINE}\n`;
   return out;
 }
 
 function renderHeader(columns) {
-  const title = ' CTOP — Claude Terminal Operations Panel ';
+  const title = ' CTOP — AI Agent Terminal Operations Panel ';
   let h = '';
 
   // Thin top border
@@ -2034,11 +2425,19 @@ function formatTimeShort(date) {
 function renderStatsBar(columns) {
   const activeCount = allProcesses.filter(p => p.isActive).length;
   const deadCount = allProcesses.filter(p => !p.isActive).length;
+  const claudeActive = allProcesses.filter(p => p.isActive && p.agentType !== 'codex').length;
+  const codexActive = allProcesses.filter(p => p.isActive && p.agentType === 'codex').length;
   const totalCost = allProcesses.reduce((sum, p) => sum + (p.cost || 0), 0);
   const costCap = 50;
 
-  // Status pills
-  let line = ` ${GREEN}\u25CF ${activeCount} active${RESET}  ${DIM}${RED}\u25CB ${deadCount} dead${RESET}`;
+  // Status pills — show per-agent breakdown if both are present
+  let activePill;
+  if (codexActive > 0 && claudeActive > 0) {
+    activePill = `${GREEN}\u25CF ${claudeActive}cl+${codexActive}cx`;
+  } else {
+    activePill = `${GREEN}\u25CF ${activeCount} active`;
+  }
+  let line = ` ${activePill}${RESET}  ${DIM}${RED}\u25CB ${deadCount} dead${RESET}`;
 
   // Cost gauge
   let costColor = GREEN;
@@ -2062,6 +2461,12 @@ function renderStatsBar(columns) {
   if (filterInput) line += `  ${DIM}\u2502${RESET}  ${BG_BLUE}${WHITE} /${filterText}\u2588 ${RESET}`;
   if (searchMode) line += `  ${DIM}\u2502${RESET}  ${BG_BLUE}${WHITE} Search: ${searchQuery}\u2588 ${RESET}`;
   else if (searchQuery) line += `  ${DIM}\u2502${RESET}  ${YELLOW}Search: "${searchQuery}"${RESET}${DIM} (${searchResults.size} matches)${RESET}`;
+
+  // Compaction indicator — show count if any session has been compacted
+  const compactedCount = allProcesses.filter(p => p.compacted).length;
+  if (compactedCount > 0) {
+    line += `  ${DIM}\u2502${RESET}  ${YELLOW}\u21BB ${compactedCount} compacted${RESET}`;
+  }
 
   // Notification indicator
   const notifLabel = notificationsEnabled ? `${GREEN}\u266A on${RESET}` : `${RED}\u266A off${RESET}`;
@@ -2122,7 +2527,7 @@ function renderPaneMode() {
   const endRow = Math.min(totalRows, scrollRow + maxVisibleCardRows);
 
   if (processes.length === 0) {
-    output += `${CLR_LINE}\n${DIM}  No Claude Code processes found.${RESET}${CLR_LINE}\n`;
+    output += `${CLR_LINE}\n${DIM}  No agent processes found. (Monitoring Claude Code + Codex CLI)${RESET}${CLR_LINE}\n`;
   }
 
   for (let r = scrollRow; r < endRow; r++) {
@@ -2702,6 +3107,168 @@ function renderLogPane(startRow, paneWidth, paneHeight, proc) {
   return output;
 }
 
+// Renders a single process row with all columns aligned to the header.
+// Returns the ANSI string for the row (including trailing CLR_LINE + newline).
+function renderProcessRow(proc, isSelected, isPrevSelected, opts) {
+  const { ctxBarMode, isNarrow, showCostCol, costColW, pluginCols,
+          showSparklines, sparkColW, showTokRateCol, tokRateColW,
+          listWidth, fixedColsTotal, showDetailPane } = opts;
+  let row = '';
+
+  // Selection indicator
+  const hasSearchMatch = searchQuery && searchResults.has(proc.pid);
+  if (isSelected) {
+    row += `${THEME.selection}${WHITE}${BOLD}> `;
+  } else if (isPrevSelected) {
+    const fade = selectionAnimFrame === 3 ? `${ESC}[48;5;238m` : selectionAnimFrame === 2 ? `${ESC}[48;5;237m` : `${ESC}[48;5;236m`;
+    row += `${fade}  `;
+  } else if (hasSearchMatch) {
+    row += `${THEME.active}* ${RESET}`;
+  } else {
+    row += '  ';
+  }
+
+  // PID
+  row += `${isSelected ? '' : THEME.accent}${proc.pid.padEnd(8)}`;
+
+  // Status with compaction indicator
+  let stClr = THEME.active;
+  if (proc.isZombie) stClr = THEME.zombie;
+  else if (proc.isStopped) stClr = THEME.stopped;
+  else if (!proc.isActive) stClr = THEME.sleeping;
+  const compactMark = proc.compacted ? '\u21BB' : '';
+  const statusText = `${proc.status}${compactMark}`.padEnd(10);
+  row += `${isSelected ? '' : stClr}${statusText}${isSelected ? '' : RESET}`;
+
+  // CTX LEFT
+  const rawCtxPct = proc.contextPct !== null ? proc.contextPct : 100;
+  const ctxPct = getAnimatedCtxPct(proc.pid, rawCtxPct);
+  if (ctxBarMode) {
+    const barLen = 10;
+    if (CONFIG.contextBarStyle === 'braille') {
+      const filledValue = ctxPct / 100;
+      const freeValue = 1 - filledValue;
+      const cc = isSelected ? '' : ctxColor(ctxPct);
+      const ccEnd = isSelected ? '' : RESET;
+      const brailleBar = renderBrailleBar(
+        [{ value: filledValue, color: cc || '' }, { value: freeValue, color: DIM }],
+        barLen
+      );
+      row += `${brailleBar}${ccEnd} ${cc}${(ctxPct + '%').padStart(4)}${ccEnd} `;
+    } else {
+      const filled = Math.round(ctxPct / 100 * barLen);
+      const empty = barLen - filled;
+      if (isSelected) {
+        row += `${'█'.repeat(filled)}${'░'.repeat(empty)} ${(ctxPct + '%').padStart(4)} `;
+      } else {
+        const cc = ctxColor(ctxPct);
+        row += `${cc}${'█'.repeat(filled)}${RESET}${DIM}${'░'.repeat(empty)}${RESET} ${cc}${(ctxPct + '%').padStart(4)}${RESET} `;
+      }
+    }
+  } else {
+    if (!isSelected) row += ctxColor(ctxPct);
+    row += `${(ctxPct + '%').padEnd(6)}`;
+    if (!isSelected) row += RESET;
+  }
+
+  // Started
+  row += `${proc.startTime.padEnd(12)}`;
+
+  if (!isNarrow) {
+    // Branch
+    const branchStr = proc.gitBranch || '--';
+    row += `${isSelected ? '' : THEME.stopped}${branchStr.substring(0, 31).padEnd(32)}${isSelected ? '' : RESET}`;
+    // Slug
+    const slugStr = proc.slug || '--';
+    row += `${isSelected ? '' : THEME.border}${slugStr.substring(0, 21).padEnd(22)}${isSelected ? '' : RESET}`;
+  }
+
+  // Model
+  const modelStr = proc.model ? proc.model.replace(/^claude-/, '') : '--';
+  row += `${isSelected ? '' : THEME.accent}${modelStr.substring(0, 13).padEnd(14)}${isSelected ? '' : RESET}`;
+
+  // Cost column (wide mode only)
+  if (showCostCol && !isNarrow) {
+    const costStr = formatCost(proc.cost);
+    if (!isSelected) {
+      if (proc.cost !== null && proc.cost > 5) row += THEME.zombie;
+      else if (proc.cost !== null && proc.cost >= 1) row += THEME.stopped;
+      else row += THEME.cost;
+    }
+    row += `${costStr.padEnd(costColW)}`;
+    if (!isSelected) row += RESET;
+  }
+
+  // Plugin columns
+  for (const p of pluginCols) {
+    const w = p.column.width || 10;
+    let val = '--';
+    try { val = String(p.column.getValue(proc) || '--'); } catch (e) {}
+    let color = '';
+    if (p.column.getColor && !isSelected) {
+      try { color = p.column.getColor(proc) || ''; } catch (e) {}
+    }
+    if (color) row += color;
+    row += `${val.substring(0, w - 1).padEnd(w)}`;
+    if (color) row += RESET;
+  }
+
+  if (!isNarrow) {
+    // Directory
+    const dirMaxLen = listWidth - fixedColsTotal;
+    let dir = proc.cwd || '';
+    if (dir.startsWith(os.homedir())) {
+      dir = '~' + dir.substring(os.homedir().length);
+    }
+    if (dir.length > dirMaxLen) {
+      dir = '...' + dir.substring(dir.length - dirMaxLen + 3);
+    }
+    row += `${isSelected ? '' : DIM}${dir.padEnd(Math.max(0, dirMaxLen))}${isSelected ? '' : RESET}`;
+  }
+
+  // CPU%
+  const cpuStr = proc.cpu.toFixed(1);
+  if (!isSelected) {
+    if (proc.cpu > 50) row += RED;
+    else if (proc.cpu > 20) row += YELLOW;
+  }
+  row += `${cpuStr.padEnd(7)}`;
+  if (!isSelected) row += RESET;
+
+  // CPU sparkline
+  if (showSparklines) {
+    const cpuHist = processHistory.has(proc.pid) ? processHistory.get(proc.pid).cpu : [];
+    row += `${isSelected ? '' : YELLOW}${renderSparkline(cpuHist, 8).padEnd(sparkColW)}${isSelected ? '' : RESET}`;
+  }
+
+  // MEM%
+  if (showSparklines) {
+    row += `${proc.mem.toFixed(1).padEnd(7)}`;
+  } else {
+    row += `${proc.mem.toFixed(1)}`;
+  }
+
+  // MEM sparkline
+  if (showSparklines) {
+    const memHist = processHistory.has(proc.pid) ? processHistory.get(proc.pid).mem : [];
+    row += `${isSelected ? '' : CYAN}${renderSparkline(memHist, 8).padEnd(sparkColW)}${isSelected ? '' : RESET}`;
+  }
+
+  // TOK/S column
+  if (showTokRateCol) {
+    const rateVal = proc.tokenRate || 0;
+    const rateStr = formatTokenRate(rateVal);
+    if (!isSelected) {
+      row += rateVal > 0 ? GREEN : DIM;
+    }
+    row += `${rateStr.padEnd(tokRateColW)}`;
+    if (!isSelected) row += RESET;
+  }
+
+  row += `${(isSelected || isPrevSelected) ? RESET : ''}${CLR_LINE}\n`;
+  return row;
+}
+
 function render() {
   if (showTimeline && processes[selectedIndex]) {
     const { columns, rows } = process.stdout;
@@ -2786,81 +3353,49 @@ function render() {
   if (groupByProject) {
     // Rebuild flat list on each render to stay in sync
     groupedFlatList = buildGroupedFlatList(processes);
-    if (selectedIndex >= groupedFlatList.length) {
-      selectedIndex = Math.max(0, groupedFlatList.length - 1);
+    // Clamp selectedIndex to process items only (skip group headers)
+    const processItems = groupedFlatList.filter(item => item.type === 'process');
+    if (selectedIndex >= processItems.length) {
+      selectedIndex = Math.max(0, processItems.length - 1);
     }
 
     const gStartIdx = Math.max(0, selectedIndex - Math.floor(maxVisible / 2));
     const gEndIdx = Math.min(groupedFlatList.length, gStartIdx + maxVisible);
 
     if (groupedFlatList.length === 0) {
-      output += `${CLR_LINE}\n${DIM}  No Claude Code processes found.${RESET}${CLR_LINE}\n`;
+      output += `${CLR_LINE}\n${DIM}  No agent processes found. (Monitoring Claude Code + Codex CLI)${RESET}${CLR_LINE}\n`;
+    }
+
+    let procIndex = 0; // counter for process items only (skipping group headers)
+    // Count process items before gStartIdx
+    for (let j = 0; j < gStartIdx; j++) {
+      if (groupedFlatList[j].type === 'process') procIndex++;
     }
 
     for (let i = gStartIdx; i < gEndIdx; i++) {
       const item = groupedFlatList[i];
-      const isSelected = i === selectedIndex;
 
       if (item.type === 'group') {
         const g = item.group;
-        const arrow = expandedGroups.has(g.cwd) ? '\u25BE' : '\u25B8';
-        const label = shortenCwd(g.cwd);
+        const label = ` ${shortenCwd(g.cwd)} `;
         const sessionWord = g.procs.length === 1 ? 'session' : 'sessions';
-        const tokenStr = formatCompactTokens(g.totalTokens);
         const costStr = formatCost(g.totalCost > 0 ? g.totalCost : null);
-        const summary = `(${g.procs.length} ${sessionWord}, ${costStr}, ${tokenStr} tokens)`;
-
-        if (isSelected) {
-          output += `${THEME.selection}${WHITE}${BOLD}> ${arrow} ${label}  ${summary}${RESET}${CLR_LINE}\n`;
-        } else {
-          output += `  ${BOLD}${THEME.accent}${arrow} ${label}${RESET}  ${DIM}${summary}${RESET}${CLR_LINE}\n`;
-        }
+        const summary = `(${g.procs.length} ${sessionWord}, ${costStr})`;
+        // Section-style header like the agent type sections
+        const sectionLine = `${DIM}──${RESET}${BOLD}${THEME.accent}${label}${RESET}${DIM}${summary}${'─'.repeat(Math.max(0, listWidth - label.length - summary.length - 3))}${RESET}`;
+        output += `${sectionLine}${CLR_LINE}\n`;
+        continue; // group headers are not selectable
       } else {
-        // Indented process row within expanded group
+        // Process row within group — uses same column layout as non-grouped view
         const proc = item.proc;
+        const isSelected = procIndex === selectedIndex;
+        procIndex++;
 
-        if (isSelected) {
-          output += `${THEME.selection}${WHITE}${BOLD}>   `;
-        } else {
-          output += '    ';
-        }
-
-        // PID
-        output += `${isSelected ? '' : THEME.accent}${proc.pid.padEnd(8)}`;
-
-        // Status
-        let stClr = THEME.active;
-        if (proc.isZombie) stClr = THEME.zombie;
-        else if (proc.isStopped) stClr = THEME.stopped;
-        else if (!proc.isActive) stClr = THEME.sleeping;
-        output += `${isSelected ? '' : stClr}${proc.status.padEnd(10)}${isSelected ? '' : RESET}`;
-
-        // CTX
-        const ctxPct = proc.contextPct !== null ? proc.contextPct : 100;
-        if (!isSelected) output += ctxColor(ctxPct);
-        output += `${(ctxPct + '%').padEnd(6)}`;
-        if (!isSelected) output += RESET;
-
-        // Started
-        output += `${proc.startTime.padEnd(12)}`;
-
-        // Branch
-        if (!isNarrow) {
-          const branchStr = proc.gitBranch || '--';
-          output += `${isSelected ? '' : THEME.stopped}${branchStr.substring(0, 15).padEnd(16)}${isSelected ? '' : RESET}`;
-        }
-
-        // Model
-        const modelStr = proc.model ? proc.model.replace(/^claude-/, '') : '--';
-        output += `${isSelected ? '' : THEME.accent}${modelStr.substring(0, 13).padEnd(14)}${isSelected ? '' : RESET}`;
-
-        // Cost
-        const costStr = formatCost(proc.cost);
-        if (!isSelected) output += THEME.cost;
-        output += `${costStr.padEnd(9)}`;
-        if (!isSelected) output += RESET;
-
-        output += `${isSelected ? RESET : ''}${CLR_LINE}\n`;
+        output += renderProcessRow(proc, isSelected, false, {
+          ctxBarMode, isNarrow, showCostCol, costColW, pluginCols,
+          showSparklines, sparkColW, showTokRateCol, tokRateColW,
+          listWidth, fixedColsTotal, showDetailPane,
+        });
       }
     }
 
@@ -2869,173 +3404,52 @@ function render() {
       output += `${CLR_LINE}\n${DIM}  Showing ${gStartIdx + 1}-${gEndIdx} of ${groupedFlatList.length} items${RESET}${CLR_LINE}`;
     }
   } else {
-  // Non-grouped (normal) process list
+  // Non-grouped (normal) process list — with agent type sections
+
+  // Sort by agent type first (claude before codex), preserving existing sort within each type
+  const claudeProcs = processes.filter(p => p.agentType !== 'codex');
+  const codexProcs = processes.filter(p => p.agentType === 'codex');
+  const sectionedProcesses = [...claudeProcs, ...codexProcs];
+  // Remap selectedIndex to the sectioned ordering
+  if (processes.length > 0 && sectionedProcesses.length > 0) {
+    const selectedPid = processes[selectedIndex]?.pid;
+    const newIdx = sectionedProcesses.findIndex(p => p.pid === selectedPid);
+    if (newIdx >= 0) selectedIndex = newIdx;
+  }
+  processes = sectionedProcesses;
 
   const startIdx = Math.max(0, selectedIndex - Math.floor(maxVisible / 2));
   const endIdx = Math.min(processes.length, startIdx + maxVisible);
 
   if (processes.length === 0) {
-    output += `${CLR_LINE}\n${DIM}  No Claude Code processes found.${RESET}${CLR_LINE}\n`;
+    output += `${CLR_LINE}\n${DIM}  No agent processes found. (Monitoring Claude Code + Codex CLI)${RESET}${CLR_LINE}\n`;
   }
+
+  // Track which section we're in to emit headers
+  let currentSection = null;
 
   for (let i = startIdx; i < endIdx; i++) {
     const proc = processes[i];
     const isSelected = i === selectedIndex;
 
-    // Selection indicator and styling
-    const hasSearchMatch = searchQuery && searchResults.has(proc.pid);
+    // Section header when agent type changes
+    const section = proc.agentType === 'codex' ? 'codex' : 'claude';
+    if (section !== currentSection) {
+      currentSection = section;
+      const sectionLabel = section === 'codex' ? ' Codex CLI ' : ' Claude Code ';
+      const sectionCount = section === 'codex' ? codexProcs.length : claudeProcs.length;
+      if (sectionCount > 0) {
+        const sectionLine = `${DIM}──${RESET}${BOLD}${section === 'codex' ? BLUE : ORANGE}${sectionLabel}${RESET}${DIM}(${sectionCount})${'─'.repeat(Math.max(0, listWidth - sectionLabel.length - String(sectionCount).length - 5))}${RESET}`;
+        output += `${sectionLine}${CLR_LINE}\n`;
+      }
+    }
+
     const isPrevSelected = CONFIG.animations && selectionAnimFrame > 0 && i === prevSelectedIndex;
-    if (isSelected) {
-      output += `${THEME.selection}${WHITE}${BOLD}> `;
-    } else if (isPrevSelected) {
-      // Fading highlight on previous selection
-      const fade = selectionAnimFrame === 3 ? `${ESC}[48;5;238m` : selectionAnimFrame === 2 ? `${ESC}[48;5;237m` : `${ESC}[48;5;236m`;
-      output += `${fade}  `;
-    } else if (hasSearchMatch) {
-      output += `${THEME.active}* ${RESET}`;
-    } else {
-      output += '  ';
-    }
-
-    // PID
-    output += `${isSelected ? '' : THEME.accent}${proc.pid.padEnd(8)}`;
-
-    // Status
-    let stClr = THEME.active;
-    if (proc.isZombie) stClr = THEME.zombie;
-    else if (proc.isStopped) stClr = THEME.stopped;
-    else if (!proc.isActive) stClr = THEME.sleeping;
-    output += `${isSelected ? '' : stClr}${proc.status.padEnd(10)}${isSelected ? '' : RESET}`;
-
-    // CTX LEFT
-    const rawCtxPct = proc.contextPct !== null ? proc.contextPct : 100;
-    const ctxPct = getAnimatedCtxPct(proc.pid, rawCtxPct);
-    if (ctxBarMode) {
-      // Loading bar mode: 10-char bar + space + 4-char pct + 1 space = 16
-      const barLen = 10;
-      if (CONFIG.contextBarStyle === 'braille') {
-        // Braille bar: sub-character precision
-        const filledValue = ctxPct / 100;
-        const freeValue = 1 - filledValue;
-        const cc = isSelected ? '' : ctxColor(ctxPct);
-        const ccEnd = isSelected ? '' : RESET;
-        const brailleBar = renderBrailleBar(
-          [{ value: filledValue, color: cc || '' }, { value: freeValue, color: DIM }],
-          barLen
-        );
-        output += `${brailleBar}${ccEnd} ${cc}${(ctxPct + '%').padStart(4)}${ccEnd} `;
-      } else {
-        const filled = Math.round(ctxPct / 100 * barLen);
-        const empty = barLen - filled;
-        if (isSelected) {
-          output += `${'█'.repeat(filled)}${'░'.repeat(empty)} ${(ctxPct + '%').padStart(4)} `;
-        } else {
-          const cc = ctxColor(ctxPct);
-          output += `${cc}${'█'.repeat(filled)}${RESET}${DIM}${'░'.repeat(empty)}${RESET} ${cc}${(ctxPct + '%').padStart(4)}${RESET} `;
-        }
-      }
-    } else {
-      if (!isSelected) output += ctxColor(ctxPct);
-      output += `${(ctxPct + '%').padEnd(6)}`;
-      if (!isSelected) output += RESET;
-    }
-
-    // Started
-    output += `${proc.startTime.padEnd(12)}`;
-
-    if (!isNarrow) {
-      // Branch
-      const branchStr = proc.gitBranch || '--';
-      output += `${isSelected ? '' : THEME.stopped}${branchStr.substring(0, 31).padEnd(32)}${isSelected ? '' : RESET}`;
-
-      // Slug
-      const slugStr = proc.slug || '--';
-      output += `${isSelected ? '' : THEME.border}${slugStr.substring(0, 21).padEnd(22)}${isSelected ? '' : RESET}`;
-    }
-
-    // Model
-    const modelStr = proc.model ? proc.model.replace(/^claude-/, '') : '--';
-    output += `${isSelected ? '' : THEME.accent}${modelStr.substring(0, 13).padEnd(14)}${isSelected ? '' : RESET}`;
-
-    // Cost column (wide mode only)
-    if (showCostCol && !isNarrow) {
-      const costStr = formatCost(proc.cost);
-      if (!isSelected) {
-        if (proc.cost !== null && proc.cost > 5) output += THEME.zombie;
-        else if (proc.cost !== null && proc.cost >= 1) output += THEME.stopped;
-        else output += THEME.cost;
-      }
-      output += `${costStr.padEnd(costColW)}`;
-      if (!isSelected) output += RESET;
-    }
-
-    // Plugin columns
-    for (const p of pluginCols) {
-      const w = p.column.width || 10;
-      let val = '--';
-      try { val = String(p.column.getValue(proc) || '--'); } catch (e) {}
-      let color = '';
-      if (p.column.getColor && !isSelected) {
-        try { color = p.column.getColor(proc) || ''; } catch (e) {}
-      }
-      if (color) output += color;
-      output += `${val.substring(0, w - 1).padEnd(w)}`;
-      if (color) output += RESET;
-    }
-
-    if (!isNarrow) {
-      // Directory
-      const dirMaxLen = listWidth - fixedColsTotal;
-      let dir = proc.cwd || '';
-      if (dir.startsWith(os.homedir())) {
-        dir = '~' + dir.substring(os.homedir().length);
-      }
-      if (dir.length > dirMaxLen) {
-        dir = '...' + dir.substring(dir.length - dirMaxLen + 3);
-      }
-      output += `${isSelected ? '' : DIM}${dir.padEnd(Math.max(0, dirMaxLen))}${isSelected ? '' : RESET}`;
-    }
-
-    // CPU%
-    const cpuStr = proc.cpu.toFixed(1);
-    if (!isSelected) {
-      if (proc.cpu > 50) output += RED;
-      else if (proc.cpu > 20) output += YELLOW;
-    }
-    output += `${cpuStr.padEnd(7)}`;
-    if (!isSelected) output += RESET;
-
-    // CPU sparkline
-    if (showSparklines) {
-      const cpuHist = processHistory.has(proc.pid) ? processHistory.get(proc.pid).cpu : [];
-      output += `${isSelected ? '' : YELLOW}${renderSparkline(cpuHist, 8).padEnd(sparkColW)}${isSelected ? '' : RESET}`;
-    }
-
-    // MEM%
-    if (showSparklines) {
-      output += `${proc.mem.toFixed(1).padEnd(7)}`;
-    } else {
-      output += `${proc.mem.toFixed(1)}`;
-    }
-
-    // MEM sparkline
-    if (showSparklines) {
-      const memHist = processHistory.has(proc.pid) ? processHistory.get(proc.pid).mem : [];
-      output += `${isSelected ? '' : CYAN}${renderSparkline(memHist, 8).padEnd(sparkColW)}${isSelected ? '' : RESET}`;
-    }
-
-    // TOK/S column
-    if (showTokRateCol) {
-      const rateVal = proc.tokenRate || 0;
-      const rateStr = formatTokenRate(rateVal);
-      if (!isSelected) {
-        output += rateVal > 0 ? GREEN : DIM;
-      }
-      output += `${rateStr.padEnd(tokRateColW)}`;
-      if (!isSelected) output += RESET;
-    }
-
-    output += `${(isSelected || isPrevSelected) ? RESET : ''}${CLR_LINE}\n`;
+    output += renderProcessRow(proc, isSelected, isPrevSelected, {
+      ctxBarMode, isNarrow, showCostCol, costColW, pluginCols,
+      showSparklines, sparkColW, showTokRateCol, tokRateColW,
+      listWidth, fixedColsTotal, showDetailPane,
+    });
 
     // Show model + stopReason on detail line for selected item (only when no detail pane)
     if (!showDetailPane && isSelected && (proc.model || proc.stopReason)) {
@@ -3687,7 +4101,7 @@ function executeCommand(action) {
       break;
     case 'kill-all':
       confirmKillAll = true;
-      process.stdout.write(`\n${BG_RED}${WHITE}${BOLD} Kill ALL ${allProcesses.length} Claude processes? (y/N) ${RESET}`);
+      process.stdout.write(`\n${BG_RED}${WHITE}${BOLD} Kill ALL ${allProcesses.length} agent processes? (y/N)${RESET}`);
       break;
     case 'toggle-pane':
       if (viewMode === 'list') {
@@ -3847,7 +4261,7 @@ function showHelp() {
   output += `${BOLD}ACTIONS:${RESET}\n`;
   output += `  ${CYAN}x${RESET}         Kill selected process (SIGTERM - graceful)\n`;
   output += `  ${CYAN}X${RESET}         Force kill selected process (SIGKILL)\n`;
-  output += `  ${CYAN}K${RESET}         Kill ALL Claude processes (with confirmation)\n`;
+  output += `  ${CYAN}K${RESET}         Kill ALL agent processes (with confirmation)\n`;
   output += `  ${CYAN}A${RESET}         Kill ALL stopped/dead processes (with confirmation)\n`;
   output += `  ${CYAN}o${RESET}         Open working directory in file manager\n`;
   output += `  ${CYAN}e${RESET}         Open working directory in editor ($EDITOR or code)\n`;
@@ -4459,7 +4873,7 @@ function handleInput(key) {
 
     case 'K':
       confirmKillAll = true;
-      process.stdout.write(`\n${BG_RED}${WHITE}${BOLD} Kill ALL ${allProcesses.length} Claude processes? (y/N) ${RESET}`);
+      process.stdout.write(`\n${BG_RED}${WHITE}${BOLD} Kill ALL ${allProcesses.length} agent processes? (y/N)${RESET}`);
       break;
 
     case 'A': {
@@ -4609,7 +5023,7 @@ async function playBootAnimation(columns, rows) {
   await sleep(500);
 
   // Phase 3: Subtitle types out
-  const sub = 'Claude Terminal Operations Panel';
+  const sub = 'AI Agent Terminal Operations Panel';
   const subCol = Math.floor((columns - sub.length) / 2);
   write(`${ESC}[${centerRow + 1};${subCol}H`);
   for (const ch of sub) {
@@ -4681,9 +5095,11 @@ async function main() {
   }
 
   // Initial load
-  allProcesses = getClaudeProcesses(); applySortAndFilter();
+  allProcesses = getAllAgentProcesses(); applySortAndFilter();
   updateProcessHistory(allProcesses);
   updateTokenRates(allProcesses);
+  detectCompaction(allProcesses);
+  updateTokenWaveform(allProcesses);
   render();
 
   // Prune old history on startup
@@ -4699,9 +5115,11 @@ async function main() {
   // Auto-refresh every 5 seconds
   setInterval(() => {
     if (!showingHelp && !showHistory && !showTimeline && !showHeatmap && !confirmKillAll && !confirmKillStopped && !filterInput && !searchMode && !showPalette) {
-      allProcesses = getClaudeProcesses(); applySortAndFilter();
+      allProcesses = getAllAgentProcesses(); applySortAndFilter();
       updateProcessHistory(allProcesses);
       updateTokenRates(allProcesses);
+      detectCompaction(allProcesses);
+      updateTokenWaveform(allProcesses);
       checkStateTransitions(allProcesses);
       saveHistorySnapshot(allProcesses);
       lastRefresh = new Date();
@@ -4779,6 +5197,20 @@ module.exports = {
   formatDuration,
   formatNotificationMessage,
   checkStateTransitions,
+  // Codex support
+  getCodexProcesses,
+  getAllAgentProcesses,
+  getCodexSessionData,
+  assignCodexSessionsToProcesses,
+  // Compaction detection
+  detectCompaction,
+  compactionState,
+  COMPACTION_THRESHOLD,
+  // Token waveform
+  updateTokenWaveform,
+  renderWaveformSparkline,
+  tokenWaveform,
+  WAVEFORM_MAX_POINTS,
   // Windows / cross-platform exports
   buildKillCommand,
   cwdToProjectDirName,

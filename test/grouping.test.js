@@ -150,40 +150,35 @@ describe('shortenCwd', () => {
 });
 
 describe('buildGroupedFlatList', () => {
-  it('builds collapsed list with only group headers', () => {
+  it('always includes processes under each group header', () => {
     const procs = [
       makeProc({ cwd: '/a', cost: 1.00 }),
       makeProc({ cwd: '/b', cost: 0.50 }),
     ];
     const items = buildGroupedFlatList(procs);
-    assert.strictEqual(items.length, 2);
+    // Group /a header + 1 process + Group /b header + 1 process = 4
+    assert.strictEqual(items.length, 4);
     assert.strictEqual(items[0].type, 'group');
-    assert.strictEqual(items[1].type, 'group');
+    assert.strictEqual(items[1].type, 'process');
+    assert.strictEqual(items[2].type, 'group');
+    assert.strictEqual(items[3].type, 'process');
   });
 
-  it('includes child processes when group is expanded', () => {
-    // Access the expandedGroups set through the module state
-    const core = require('../claude-manager');
-    const { expandedGroups } = core._state;
-    expandedGroups.clear();
-    expandedGroups.add('/a');
-
+  it('includes all child processes under their group', () => {
     const procs = [
       makeProc({ cwd: '/a', cost: 1.00, pid: '111' }),
       makeProc({ cwd: '/a', cost: 0.50, pid: '222' }),
       makeProc({ cwd: '/b', cost: 0.25, pid: '333' }),
     ];
     const items = buildGroupedFlatList(procs);
-    // Group /a header + 2 child processes + Group /b header = 4
-    assert.strictEqual(items.length, 4);
+    // Group /a header + 2 processes + Group /b header + 1 process = 5
+    assert.strictEqual(items.length, 5);
     assert.strictEqual(items[0].type, 'group');
     assert.strictEqual(items[0].group.cwd, '/a');
     assert.strictEqual(items[1].type, 'process');
     assert.strictEqual(items[2].type, 'process');
     assert.strictEqual(items[3].type, 'group');
     assert.strictEqual(items[3].group.cwd, '/b');
-
-    // Cleanup
-    expandedGroups.clear();
+    assert.strictEqual(items[4].type, 'process');
   });
 });
