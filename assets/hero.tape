@@ -6,7 +6,7 @@
 
 Output assets/hero.gif
 Set Theme "Catppuccin Mocha"
-Set FontFamily "JetBrains Mono"
+Set FontFamily "Menlo"
 Set FontSize 13
 Set Width 1400
 Set Height 700
