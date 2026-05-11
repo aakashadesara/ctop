@@ -1947,10 +1947,14 @@ function readSessionLog(proc, maxLines) {
     const fd = fs.openSync(filePath, 'r');
     const readSize = Math.min(LOG_TAIL_BYTES, st.size);
     const offset = st.size - readSize;
-    const buf = Buffer.alloc(readSize);
-    fs.readSync(fd, buf, 0, readSize, offset);
-    fs.closeSync(fd);
-    const lines = buf.toString('utf8').split('\n');
+    let lines;
+    try {
+      const buf = Buffer.alloc(readSize);
+      fs.readSync(fd, buf, 0, readSize, offset);
+      lines = buf.toString('utf8').split('\n');
+    } finally {
+      fs.closeSync(fd);
+    }
     // If we did not read from the start of the file, the first split
     // fragment may be a partial JSON line — drop it.
     const start = offset > 0 ? 1 : 0;
