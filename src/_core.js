@@ -1164,6 +1164,11 @@ function getCodexProcesses() {
     const lines = psOutput.split('\n').filter(Boolean);
     const procs = [];
 
+    // Batch-resolve all cwds in one lsof call before the per-PID loop.
+    // Resolves a couple of extra non-codex PIDs harmlessly — cheaper than
+    // re-running the binary regex twice.
+    resolveCwds(lines.map(l => l.trim().split(/\s+/)[0]));
+
     for (const line of lines) {
       const parts = line.trim().split(/\s+/);
       const pid = parts[0];
@@ -1271,6 +1276,9 @@ function getClaudeProcesses() {
     const lines = psOutput.split('\n').filter(Boolean);
     const procs = [];
 
+    // Batch-resolve all cwds in one lsof call before the per-PID loop.
+    resolveCwds(lines.map(l => l.trim().split(/\s+/)[0]));
+
     for (const line of lines) {
       // Parse the line - lstart takes 5 fields (e.g., "Sun Feb 23 15:44:00 2025")
       const parts = line.trim().split(/\s+/);
@@ -1287,7 +1295,7 @@ function getClaudeProcesses() {
       const startDate = new Date(lstartStr);
       const startTime = formatStartTime(startDate);
 
-      // Get working directory
+      // Get working directory (cache populated by resolveCwds above)
       const cwd = getProcessCwd(pid);
 
       // Determine process state
@@ -1353,6 +1361,7 @@ function getClaudeProcesses() {
 function getAllAgentProcesses() {
   const claude = getClaudeProcesses();
   const codex = getCodexProcesses();
+  pruneCwdCache([...claude, ...codex].map(p => p.pid));
   return [...claude, ...codex].sort((a, b) => a.startDate - b.startDate);
 }
 
@@ -1456,7 +1465,79 @@ function copyToClipboard(text) {
   }
 }
 
+// Per-PID cwd cache. A process's cwd is fixed for its lifetime, so we
+// only need to resolve newly-seen PIDs. Pruned at the union level by
+// pruneCwdCache() called from getAllAgentProcesses.
+const pidCwdCache = new Map();
+
+function resolveCwds(pids) {
+  const missing = pids.filter(pid => !pidCwdCache.has(pid));
+  if (missing.length === 0) return;
+
+  if (IS_LINUX) {
+    for (const pid of missing) {
+      try { pidCwdCache.set(pid, fs.readlinkSync(`/proc/${pid}/cwd`)); }
+      catch { pidCwdCache.set(pid, ''); }
+    }
+    return;
+  }
+
+  if (IS_WIN) {
+    for (const pid of missing) pidCwdCache.set(pid, getProcessCwdUncached(pid));
+    return;
+  }
+
+  // macOS: one batched lsof using machine format -F pn.
+  // -a AND-combines filters; -d cwd restricts to cwd FDs.
+  // 2>/dev/null || true ensures we still read stdout if any PIDs are gone.
+  let out = '';
+  try {
+    const list = missing.join(',');
+    out = execSync(
+      `lsof -a -d cwd -F pn -p ${list} 2>/dev/null || true`,
+      { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], maxBuffer: 4 * 1024 * 1024 }
+    );
+  } catch {}
+
+  // -F pn emits 'p<pid>' followed by 'n<path>'. Reset curPid after
+  // consuming an n line so a PID with no n record cannot steal the
+  // next PID's path.
+  let curPid = null;
+  for (const line of out.split('\n')) {
+    if (line.length === 0) continue;
+    const tag = line[0];
+    if (tag === 'p') curPid = line.slice(1);
+    else if (tag === 'n' && curPid) {
+      pidCwdCache.set(curPid, line.slice(1));
+      curPid = null;
+    }
+  }
+
+  // Only fill empty placeholders if lsof actually produced output.
+  // Empty stdout means lsof failed entirely (missing binary, sandbox);
+  // do not poison the cache — let the next refresh retry.
+  if (out !== '') {
+    for (const pid of missing) {
+      if (!pidCwdCache.has(pid)) pidCwdCache.set(pid, '');
+    }
+  }
+}
+
+function pruneCwdCache(activePids) {
+  const active = new Set(activePids);
+  for (const pid of pidCwdCache.keys()) {
+    if (!active.has(pid)) pidCwdCache.delete(pid);
+  }
+}
+
 function getProcessCwd(pid) {
+  if (pidCwdCache.has(pid)) return pidCwdCache.get(pid);
+  const cwd = getProcessCwdUncached(pid);
+  pidCwdCache.set(pid, cwd);
+  return cwd;
+}
+
+function getProcessCwdUncached(pid) {
   try {
     if (IS_WIN) {
       // Windows: use PowerShell to get the working directory via CIM
@@ -1486,7 +1567,18 @@ function getProcessCwd(pid) {
   }
 }
 
+const sessionDataCache = new Map(); // filePath -> { mtimeMs, size, data }
+
 function getSessionData(filePath) {
+  let cacheStat;
+  try { cacheStat = fs.statSync(filePath); } catch {}
+  if (cacheStat) {
+    const hit = sessionDataCache.get(filePath);
+    if (hit && hit.mtimeMs === cacheStat.mtimeMs && hit.size === cacheStat.size) {
+      return hit.data;
+    }
+  }
+
   const result = {
     title: null, contextPct: null, model: null, stopReason: null,
     gitBranch: null, slug: null, sessionId: null, version: null,
@@ -1572,6 +1664,9 @@ function getSessionData(filePath) {
     }
   } catch (e) {}
 
+  if (cacheStat) {
+    sessionDataCache.set(filePath, { mtimeMs: cacheStat.mtimeMs, size: cacheStat.size, data: result });
+  }
   return result;
 }
 
@@ -1661,32 +1756,34 @@ function executeSearch(query) {
 }
 
 // Cache of sorted session files per project path
-let sessionFileCache = new Map();
-let sessionFileCacheTime = 0;
+// Cache file *names* keyed by directory mtime. Re-stat each file on
+// every call to keep the mtime sort fresh — file content changes do
+// not bump dir mtime, but the sort matters for assignSessionsToProcesses.
+let sessionFileCache = new Map(); // projectPath -> { dirMtime, names }
 
 function getSessionFilesForProject(projectPath) {
-  // Cache session file listings for 3 seconds to avoid repeated readdirs
-  const now = Date.now();
-  if (now - sessionFileCacheTime > 3000) {
-    sessionFileCache.clear();
-    sessionFileCacheTime = now;
+  let dirMtime;
+  try { dirMtime = fs.statSync(projectPath).mtimeMs; } catch { return []; }
+
+  let names;
+  const cached = sessionFileCache.get(projectPath);
+  if (cached && cached.dirMtime === dirMtime) {
+    names = cached.names;
+  } else {
+    try {
+      names = fs.readdirSync(projectPath).filter(f => f.endsWith('.jsonl'));
+    } catch { return []; }
+    sessionFileCache.set(projectPath, { dirMtime, names });
   }
 
-  if (sessionFileCache.has(projectPath)) return sessionFileCache.get(projectPath);
-
-  try {
-    const files = fs.readdirSync(projectPath)
-      .filter(f => f.endsWith('.jsonl'))
-      .map(f => {
-        const fp = path.join(projectPath, f);
-        return { name: f, path: fp, mtime: fs.statSync(fp).mtime };
-      })
-      .sort((a, b) => b.mtime - a.mtime);
-    sessionFileCache.set(projectPath, files);
-    return files;
-  } catch (e) {
-    return [];
+  const files = [];
+  for (const name of names) {
+    const fp = path.join(projectPath, name);
+    try { files.push({ name, path: fp, mtime: fs.statSync(fp).mtime }); }
+    catch {}
   }
+  files.sort((a, b) => b.mtime - a.mtime);
+  return files;
 }
 
 function assignSessionsToProcesses(procs) {
@@ -1739,7 +1836,18 @@ function assignSessionsToProcesses(procs) {
 
 // --- Codex CLI session data ---
 
+const codexSessionDataCache = new Map(); // filePath -> { mtimeMs, size, data }
+
 function getCodexSessionData(filePath) {
+  let cacheStat;
+  try { cacheStat = fs.statSync(filePath); } catch {}
+  if (cacheStat) {
+    const hit = codexSessionDataCache.get(filePath);
+    if (hit && hit.mtimeMs === cacheStat.mtimeMs && hit.size === cacheStat.size) {
+      return hit.data;
+    }
+  }
+
   const result = {
     title: null, contextPct: null, model: null, inputTokens: null,
     cacheReadTokens: null, cacheCreateTokens: null, outputTokens: null, gitBranch: null,
@@ -1831,6 +1939,9 @@ function getCodexSessionData(filePath) {
     }
   } catch {}
 
+  if (cacheStat) {
+    codexSessionDataCache.set(filePath, { mtimeMs: cacheStat.mtimeMs, size: cacheStat.size, data: result });
+  }
   return result;
 }
 
@@ -1926,6 +2037,9 @@ function parseLogEntry(data) {
   return { role, text: text.replace(/\n/g, ' ').trim(), timestamp: data.timestamp || null };
 }
 
+const sessionLogCache = new Map(); // filePath -> { mtimeMs, size, entries }
+const LOG_TAIL_BYTES = 64 * 1024;
+
 function readSessionLog(proc, maxLines) {
   if (maxLines === undefined) maxLines = 50;
   // Find the session JSONL file for this process (same logic as assignSessionsToProcesses)
@@ -1946,12 +2060,33 @@ function readSessionLog(proc, maxLines) {
   // Use the most recent session file (matching what assignSessionsToProcesses does)
   const filePath = files[0].path;
 
-  try {
-    const content = fs.readFileSync(filePath, 'utf8');
-    const lines = content.split('\n').filter(l => l.trim());
-    const entries = [];
+  let st;
+  try { st = fs.statSync(filePath); } catch { return []; }
 
-    for (const line of lines) {
+  const hit = sessionLogCache.get(filePath);
+  if (hit && hit.mtimeMs === st.mtimeMs && hit.size === st.size) {
+    return hit.entries.slice(-maxLines);
+  }
+
+  const entries = [];
+  try {
+    const fd = fs.openSync(filePath, 'r');
+    const readSize = Math.min(LOG_TAIL_BYTES, st.size);
+    const offset = st.size - readSize;
+    let lines;
+    try {
+      const buf = Buffer.alloc(readSize);
+      fs.readSync(fd, buf, 0, readSize, offset);
+      lines = buf.toString('utf8').split('\n');
+    } finally {
+      fs.closeSync(fd);
+    }
+    // If we did not read from the start of the file, the first split
+    // fragment may be a partial JSON line — drop it.
+    const start = offset > 0 ? 1 : 0;
+    for (let i = start; i < lines.length; i++) {
+      const line = lines[i];
+      if (!line.trim()) continue;
       try {
         const data = JSON.parse(line);
         const entry = parseLogEntry(data);
@@ -1967,12 +2102,12 @@ function readSessionLog(proc, maxLines) {
         }
       } catch (e) {}
     }
-
-    // Return last N entries
-    return entries.slice(-maxLines);
   } catch (e) {
     return [];
   }
+
+  sessionLogCache.set(filePath, { mtimeMs: st.mtimeMs, size: st.size, entries });
+  return entries.slice(-maxLines);
 }
 
 function parseSessionTimeline(filePath) {
@@ -3410,7 +3545,20 @@ function renderProcessRow(proc, isSelected, isPrevSelected, opts) {
   return row;
 }
 
+// render() coalesces redraws via setImmediate so a burst of keystrokes
+// produces at most one screen write. Stdin events queued before the
+// next tick get processed first, which is what keeps j/k responsive.
+let renderPending = false;
 function render() {
+  if (renderPending) return;
+  renderPending = true;
+  setImmediate(() => {
+    renderPending = false;
+    renderNow();
+  });
+}
+
+function renderNow() {
   if (showTimeline && processes[selectedIndex]) {
     const { columns, rows } = process.stdout;
     return renderTimeline(processes[selectedIndex], columns, rows);
@@ -4222,7 +4370,7 @@ function executeCommand(action) {
       if (processes[selectedIndex]) {
         killProcess(processes[selectedIndex].pid, false);
         setTimeout(() => {
-          allProcesses = getClaudeProcesses(); applySortAndFilter();
+          allProcesses = getAllAgentProcesses(); applySortAndFilter();
           lastRefresh = new Date();
           if (selectedIndex >= processes.length) selectedIndex = Math.max(0, processes.length - 1);
           render();
@@ -4233,7 +4381,7 @@ function executeCommand(action) {
       if (processes[selectedIndex]) {
         killProcess(processes[selectedIndex].pid, true);
         setTimeout(() => {
-          allProcesses = getClaudeProcesses(); applySortAndFilter();
+          allProcesses = getAllAgentProcesses(); applySortAndFilter();
           lastRefresh = new Date();
           if (selectedIndex >= processes.length) selectedIndex = Math.max(0, processes.length - 1);
           render();
@@ -4342,7 +4490,7 @@ function executeCommand(action) {
       render();
       break;
     case 'refresh':
-      allProcesses = getClaudeProcesses(); applySortAndFilter();
+      allProcesses = getAllAgentProcesses(); applySortAndFilter();
       updateProcessHistory(allProcesses);
       checkStateTransitions(allProcesses);
       lastRefresh = new Date();
@@ -4740,7 +4888,7 @@ function handleInput(key) {
       statusMessage = `Killed ${killed} processes`;
       confirmKillAll = false;
       setTimeout(() => {
-        allProcesses = getClaudeProcesses(); applySortAndFilter();
+        allProcesses = getAllAgentProcesses(); applySortAndFilter();
         lastRefresh = new Date();
         render();
       }, 500);
@@ -4761,7 +4909,7 @@ function handleInput(key) {
       statusMessage = `Killed ${killed} stopped processes`;
       confirmKillStopped = false;
       setTimeout(() => {
-        allProcesses = getClaudeProcesses(); applySortAndFilter();
+        allProcesses = getAllAgentProcesses(); applySortAndFilter();
         lastRefresh = new Date();
         if (selectedIndex >= processes.length) {
           selectedIndex = Math.max(0, processes.length - 1);
@@ -4987,7 +5135,7 @@ function handleInput(key) {
         const pid = processes[selectedIndex].pid;
         killProcess(pid, false);
         setTimeout(() => {
-          allProcesses = getClaudeProcesses(); applySortAndFilter();
+          allProcesses = getAllAgentProcesses(); applySortAndFilter();
           lastRefresh = new Date();
           if (selectedIndex >= processes.length) {
             selectedIndex = Math.max(0, processes.length - 1);
@@ -5002,7 +5150,7 @@ function handleInput(key) {
         const pid = processes[selectedIndex].pid;
         killProcess(pid, true);
         setTimeout(() => {
-          allProcesses = getClaudeProcesses(); applySortAndFilter();
+          allProcesses = getAllAgentProcesses(); applySortAndFilter();
           lastRefresh = new Date();
           if (selectedIndex >= processes.length) {
             selectedIndex = Math.max(0, processes.length - 1);
@@ -5100,7 +5248,7 @@ function handleInput(key) {
       break;
 
     case 'r':
-      allProcesses = getClaudeProcesses(); applySortAndFilter();
+      allProcesses = getAllAgentProcesses(); applySortAndFilter();
       updateProcessHistory(allProcesses);
       updateTokenRates(allProcesses);
       checkStateTransitions(allProcesses);
@@ -5254,20 +5402,27 @@ async function main() {
   } catch {}
 
   // Auto-refresh every 5 seconds
+  let refreshing = false;
   setInterval(() => {
+    if (refreshing) return;
     if (!showingHelp && !showHistory && !showTimeline && !showHeatmap && !confirmKillAll && !confirmKillStopped && !filterInput && !searchMode && !showPalette) {
-      allProcesses = getAllAgentProcesses(); applySortAndFilter();
-      updateProcessHistory(allProcesses);
-      updateTokenRates(allProcesses);
-      detectCompaction(allProcesses);
-      updateTokenWaveform(allProcesses);
-      checkStateTransitions(allProcesses);
-      saveHistorySnapshot(allProcesses);
-      lastRefresh = new Date();
-      if (selectedIndex >= processes.length) {
-        selectedIndex = Math.max(0, processes.length - 1);
+      refreshing = true;
+      try {
+        allProcesses = getAllAgentProcesses(); applySortAndFilter();
+        updateProcessHistory(allProcesses);
+        updateTokenRates(allProcesses);
+        detectCompaction(allProcesses);
+        updateTokenWaveform(allProcesses);
+        checkStateTransitions(allProcesses);
+        saveHistorySnapshot(allProcesses);
+        lastRefresh = new Date();
+        if (selectedIndex >= processes.length) {
+          selectedIndex = Math.max(0, processes.length - 1);
+        }
+        render();
+      } finally {
+        refreshing = false;
       }
-      render();
     }
   }, CONFIG.refreshInterval);
 
