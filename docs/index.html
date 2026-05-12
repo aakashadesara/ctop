@@ -82,6 +82,24 @@ main{min-height:100vh;display:flex;flex-direction:column;align-items:center;just
 .tl.killing{background:rgba(232,146,74,.2) !important;transition:background .15s}
 .boot-cursor{color:var(--accent);animation:blink 1s step-end infinite}
 
+/* Grid/card view */
+.grid-wrap{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:10px;padding:4px 0}
+.grid-card{border:1px solid var(--border);border-radius:6px;padding:10px 12px;font-size:11px;line-height:1.4;cursor:pointer;transition:border-color .2s,background .2s}
+.grid-card:hover{border-color:var(--border-hi);background:rgba(255,255,255,.02)}
+.grid-card.gc-sel{border-color:var(--accent);background:rgba(232,146,74,.06)}
+.gc-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px}
+.gc-pid{color:var(--text-bright);font-weight:600}
+.gc-dot{width:7px;height:7px;border-radius:50%;display:inline-block}
+.gc-dot.active{background:#4c4}.gc-dot.idle{background:#cc4}.gc-dot.stopped{background:#555}
+.gc-row{display:flex;justify-content:space-between;color:#555;margin-bottom:2px}
+.gc-row .gc-val{color:var(--text)}
+.gc-row .gc-hi{color:var(--accent)}
+.gc-ctx{height:4px;border-radius:2px;background:var(--border);margin:6px 0;overflow:hidden}
+.gc-ctx-fill{height:100%;border-radius:2px;transition:width .4s}
+.gc-branch{color:var(--accent);font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:4px}
+.gc-wave{color:#555;font-size:10px;letter-spacing:1px;line-height:1;margin-top:4px}
+.gc-wave .wv-hi{color:var(--accent)}
+
 .install-bar{display:inline-flex;align-items:center;gap:20px;opacity:0;flex-wrap:wrap;justify-content:center}
 .install-bar.show{animation:fadeIn .6s ease forwards}
 .install-cmd{font-family:var(--mono);font-size:15px;color:var(--text-bright);background:rgba(232,146,74,.06);border:1px solid rgba(232,146,74,.25);border-radius:10px;padding:14px 32px;cursor:pointer;transition:border-color .3s,color .3s,background .3s;backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px)}
@@ -178,7 +196,7 @@ main{min-height:100vh;display:flex;flex-direction:column;align-items:center;just
       <div class="term-pane" id="termPane"></div>
     </div>
   </div>
-  <div class="hint-badge" id="hintBadge"><span>try it — press j k s / P G ?</span></div>
+  <div class="hint-badge" id="hintBadge"><span>try it — press j k s / V P G ?</span></div>
   <div class="install-bar" id="installBar">
     <button class="install-cmd" id="installCmd">
       <span class="install-text"><span class="prompt">$ </span>npm i -g ctop-claude</span>
@@ -255,18 +273,19 @@ function hideHints(){
 }
 
 function rHist(base,n,spread){var a=[];for(var i=0;i<n;i++){var jag=(i%2===0?1:-1)*(Math.random()*spread*.6);a.push(Math.max(0,Math.min(100,base+jag+(Math.random()-.5)*spread)))}return a}
+function rWave(n){var a=[];for(var i=0;i<n;i++)a.push(Math.random()*100);return a}
 
 var state={
   phase:'boot',
   processes:[
-    {pid:48291,status:'running',ctx:73,branch:'main',model:'opus-4-6',cpu:34.2,mem:2.1,cost:0.82,age:120,input:32841,output:8420,cache:12190,tokRate:420,cwd:'~/projects/api-server',cpuH:rHist(34,12,15),memH:rHist(2.1,12,1)},
-    {pid:51034,status:'running',ctx:41,branch:'feat/auth',model:'sonnet-4-6',cpu:12.8,mem:1.4,cost:0.31,age:1080,input:18200,output:4100,cache:8940,tokRate:185,cwd:'~/projects/webapp',cpuH:rHist(13,12,8),memH:rHist(1.4,12,.6)},
-    {pid:52190,status:'running',ctx:22,branch:'fix/parser',model:'sonnet-4-6',cpu:5.1,mem:0.9,cost:0.11,age:3600,input:9100,output:2300,cache:3400,tokRate:62,cwd:'~/projects/parser',cpuH:rHist(5,12,4),memH:rHist(.9,12,.4)},
-    {pid:53401,status:'idle',ctx:88,branch:'docs/readme',model:'haiku-4-5',cpu:0.3,mem:0.5,cost:0.04,age:7200,input:4200,output:1100,cache:2800,tokRate:0,cwd:'~/projects/docs',cpuH:rHist(.3,12,.3),memH:rHist(.5,12,.2)},
-    {pid:54012,status:'running',ctx:55,branch:'test/e2e',model:'sonnet-4-6',cpu:8.7,mem:1.1,cost:0.22,age:600,input:22400,output:5600,cache:10200,tokRate:310,cwd:'~/projects/api-server',cpuH:rHist(9,12,6),memH:rHist(1.1,12,.5)},
-    {pid:55678,status:'running',ctx:35,branch:'feat/payments',model:'opus-4-6',cpu:28.4,mem:1.8,cost:0.67,age:420,input:28100,output:7200,cache:15300,tokRate:550,cwd:'~/projects/webapp',cpuH:rHist(28,12,12),memH:rHist(1.8,12,.8)},
-    {pid:56123,status:'stopped',ctx:91,branch:'refactor/api',model:'sonnet-4-6',cpu:0.0,mem:0.4,cost:0.15,age:10800,input:6800,output:1900,cache:4100,tokRate:0,cwd:'~/projects/api-server',cpuH:rHist(0,12,.2),memH:rHist(.4,12,.1)},
-    {pid:57890,status:'running',ctx:60,branch:'feat/dashboard',model:'sonnet-4-6',cpu:15.3,mem:1.3,cost:0.45,age:300,input:24400,output:5800,cache:11200,tokRate:245,cwd:'~/projects/webapp',cpuH:rHist(15,12,8),memH:rHist(1.3,12,.5)}
+    {pid:48291,status:'running',ctx:73,branch:'main',model:'opus-4-6',cpu:34.2,mem:2.1,cost:0.82,age:120,input:32841,output:8420,cache:12190,tokRate:420,cwd:'~/projects/api-server',cpuH:rHist(34,12,15),memH:rHist(2.1,12,1),wave:rWave(16)},
+    {pid:51034,status:'running',ctx:41,branch:'feat/auth',model:'sonnet-4-6',cpu:12.8,mem:1.4,cost:0.31,age:1080,input:18200,output:4100,cache:8940,tokRate:185,cwd:'~/projects/webapp',cpuH:rHist(13,12,8),memH:rHist(1.4,12,.6),wave:rWave(16)},
+    {pid:52190,status:'running',ctx:22,branch:'fix/parser',model:'sonnet-4-6',cpu:5.1,mem:0.9,cost:0.11,age:3600,input:9100,output:2300,cache:3400,tokRate:62,cwd:'~/projects/parser',cpuH:rHist(5,12,4),memH:rHist(.9,12,.4),wave:rWave(16)},
+    {pid:53401,status:'idle',ctx:88,branch:'docs/readme',model:'haiku-4-5',cpu:0.3,mem:0.5,cost:0.04,age:7200,input:4200,output:1100,cache:2800,tokRate:0,cwd:'~/projects/docs',cpuH:rHist(.3,12,.3),memH:rHist(.5,12,.2),wave:rWave(16)},
+    {pid:54012,status:'running',ctx:55,branch:'test/e2e',model:'sonnet-4-6',cpu:8.7,mem:1.1,cost:0.22,age:600,input:22400,output:5600,cache:10200,tokRate:310,cwd:'~/projects/api-server',cpuH:rHist(9,12,6),memH:rHist(1.1,12,.5),wave:rWave(16)},
+    {pid:55678,status:'running',ctx:35,branch:'feat/payments',model:'opus-4-6',cpu:28.4,mem:1.8,cost:0.67,age:420,input:28100,output:7200,cache:15300,tokRate:550,cwd:'~/projects/webapp',cpuH:rHist(28,12,12),memH:rHist(1.8,12,.8),wave:rWave(16)},
+    {pid:56123,status:'stopped',ctx:91,branch:'refactor/api',model:'sonnet-4-6',cpu:0.0,mem:0.4,cost:0.15,age:10800,input:6800,output:1900,cache:4100,tokRate:0,cwd:'~/projects/api-server',cpuH:rHist(0,12,.2),memH:rHist(.4,12,.1),wave:rWave(16)},
+    {pid:57890,status:'running',ctx:60,branch:'feat/dashboard',model:'sonnet-4-6',cpu:15.3,mem:1.3,cost:0.45,age:300,input:24400,output:5800,cache:11200,tokRate:245,cwd:'~/projects/webapp',cpuH:rHist(15,12,8),memH:rHist(1.3,12,.5),wave:rWave(16)}
   ],
   selected:0,sortMode:'cpu',sortReverse:false,filterText:'',filterMode:false,helpMode:false,paneMode:false,dashMode:false,gridMode:false,groupMode:false,killing:null,message:null,msgTimer:null
 };
@@ -384,7 +403,7 @@ function buildMain(){
   }else if(state.message){
     L.push({html:' '+o(state.message)});
   }else{
-    L.push({html:dm(' KEYS: ')+o('j/k')+' Nav  '+o('x')+' Kill  '+o('s')+' Sort  '+o('/')+' Filter  '+o('P')+' Pane  '+o('G')+' Group  '+o('d')+' Dash  '+o('?')+' Help  '+o('q')+' Quit'});
+    L.push({html:dm(' KEYS: ')+o('j/k')+' Nav  '+o('x')+' Kill  '+o('s')+' Sort  '+o('/')+' Filter  '+o('V')+' Grid  '+o('P')+' Pane  '+o('G')+' Group  '+o('d')+' Dash  '+o('?')+' Help'});
   }
   return L;
 }
@@ -407,6 +426,38 @@ function buildPane(sp){
   return L;
 }
 
+/* ── build grid (card view) ───────────────────── */
+function renderWave(vals){
+  var WC='\u2581\u2582\u2583\u2584\u2585\u2586\u2587\u2588';
+  var mx=0;vals.forEach(function(v){if(v>mx)mx=v});if(mx===0)mx=1;
+  var s='';vals.forEach(function(v){
+    var n=Math.min(7,Math.floor(v/mx*7.99));
+    var hi=n>=5;
+    s+=(hi?'<span class="wv-hi">':'')+WC[n]+(hi?'</span>':'');
+  });return s;
+}
+function buildGridHTML(vis){
+  var html='<div class="grid-wrap">';
+  vis.forEach(function(p,i){
+    var sel=i===state.selected?' gc-sel':'';
+    var dotCls=p.status==='running'?'active':p.status==='idle'?'idle':'stopped';
+    var ctxPct=Math.min(100,Math.max(0,p.ctx));
+    var ctxColor=ctxPct<30?'#c44':ctxPct<70?'#cc4':'#4c4';
+    html+='<div class="grid-card'+sel+'" data-gi="'+i+'">';
+    html+='<div class="gc-head"><span class="gc-pid">'+p.pid+'</span><span class="gc-dot '+dotCls+'"></span></div>';
+    html+='<div class="gc-row"><span>CPU</span><span class="gc-val">'+p.cpu.toFixed(1)+'%</span></div>';
+    html+='<div class="gc-row"><span>MEM</span><span class="gc-val">'+p.mem.toFixed(1)+'%</span></div>';
+    html+='<div class="gc-row"><span>CTX</span><span class="gc-hi">'+ctxPct+'% free</span></div>';
+    html+='<div class="gc-ctx"><div class="gc-ctx-fill" style="width:'+ctxPct+'%;background:'+ctxColor+'"></div></div>';
+    html+='<div class="gc-branch">'+esc(p.model)+' \u00B7 '+esc(p.branch)+'</div>';
+    html+='<div class="gc-row"><span>'+esc(fmtCost(p.cost))+'</span><span class="gc-hi">'+fmtTokRate(p.tokRate)+' tok/s</span></div>';
+    html+='<div class="gc-wave">'+renderWave(p.wave)+'</div>';
+    html+='</div>';
+  });
+  html+='</div>';
+  return html;
+}
+
 /* ── build help ───────────────────────────────── */
 function buildHelp(){
   var L=[];
@@ -421,6 +472,7 @@ function buildHelp(){
   L.push({html:'   '+o('S')+'           Reverse sort order'});
   L.push({html:'   '+o('/')+'           Filter by branch, model, PID'});
   L.push({html:'   '+o('P')+'           Toggle detail pane'});
+  L.push({html:'   '+o('V')+'           Toggle grid/card view'});
   L.push({html:'   '+o('G')+'           Toggle project grouping'});
   L.push({html:'   '+o('d')+'           Toggle dashboard stats'});
   L.push({html:' '});L.push({html:w(' OTHER')});
@@ -432,25 +484,38 @@ function buildHelp(){
 
 /* ── render ───────────────────────────────────── */
 function render(){
-  var lines=state.helpMode?buildHelp():buildMain();
-  var isCascade=state.phase==='cascade',isLive=state.phase==='interactive';
-
-  var html=lines.map(function(line,idx){
-    var cls='tl';
-    if(isLive)cls+=' live';
-    if(line.sel){cls+=' sel';if(isLive)cls+=' pulse';}
-    if(line.rh)cls+=' rh';
-    if(line.killing)cls+=' killing';
-    if(line.hbar)cls+=' hbar';
-    var style=isCascade?' style="--d:'+(idx*0.06).toFixed(2)+'s"':'';
-    return'<div class="'+cls+'"'+style+'>'+line.html+'</div>';
-  }).join('\n');
-
-  termMain.innerHTML=html;
-
-  // Right pane
   var vis=getVisible();
-  if(state.paneMode&&!state.helpMode&&vis[state.selected]){
+
+  if(state.gridMode&&!state.helpMode&&state.phase==='interactive'){
+    termMain.innerHTML=buildGridHTML(vis);
+    termMain.style.whiteSpace='normal';
+    // Click handler for grid cards
+    termMain.querySelectorAll('.grid-card').forEach(function(card){
+      card.addEventListener('click',function(){
+        state.selected=parseInt(card.getAttribute('data-gi'),10);render();
+      });
+    });
+  }else{
+    termMain.style.whiteSpace='';
+    var lines=state.helpMode?buildHelp():buildMain();
+    var isCascade=state.phase==='cascade',isLive=state.phase==='interactive';
+
+    var html=lines.map(function(line,idx){
+      var cls='tl';
+      if(isLive)cls+=' live';
+      if(line.sel){cls+=' sel';if(isLive)cls+=' pulse';}
+      if(line.rh)cls+=' rh';
+      if(line.killing)cls+=' killing';
+      if(line.hbar)cls+=' hbar';
+      var style=isCascade?' style="--d:'+(idx*0.06).toFixed(2)+'s"':'';
+      return'<div class="'+cls+'"'+style+'>'+line.html+'</div>';
+    }).join('\n');
+
+    termMain.innerHTML=html;
+  }
+
+  // Right pane (only in list mode)
+  if(state.paneMode&&!state.helpMode&&!state.gridMode&&vis[state.selected]){
     var paneLines=buildPane(vis[state.selected]);
     termPane.innerHTML=paneLines.map(function(l){return'<div class="tl live">'+l+'</div>'}).join('\n');
     termPane.classList.add('show');
@@ -459,8 +524,9 @@ function render(){
   }
 
   var count=state.processes.length;
-  termTitle.textContent='ctop \u2014 '+count+' session'+(count!==1?'s':'');
-  termTitle.style.color=isLive?'#444':'';
+  var modeLabel=state.gridMode?' grid':''
+  termTitle.textContent='ctop'+modeLabel+' \u2014 '+count+' session'+(count!==1?'s':'');
+  termTitle.style.color=state.phase==='interactive'?'#444':'';
 }
 
 /* ── boot ─────────────────────────────────────── */
@@ -506,6 +572,7 @@ function startLive(){
       }
       p.cpuH.push(p.cpu);if(p.cpuH.length>20)p.cpuH.shift();
       p.memH.push(p.mem);if(p.memH.length>20)p.memH.shift();
+      p.wave.push(p.status==='running'?Math.random()*100:Math.random()*10);if(p.wave.length>16)p.wave.shift();
       p.age+=2;
     });
     applySort();render();
@@ -536,6 +603,7 @@ document.addEventListener('keydown',function(e){
     case'/':state.filterMode=true;state.filterText='';break;
     case'x':if(vis[state.selected])killProc(vis[state.selected]);break;
     case'P':state.paneMode=!state.paneMode;showMsg(state.paneMode?'Detail pane ON':'Detail pane OFF');break;
+    case'V':state.gridMode=!state.gridMode;showMsg(state.gridMode?'Grid view':'List view');break;
     case'd':state.dashMode=!state.dashMode;showMsg(state.dashMode?'Dashboard ON':'Dashboard OFF');break;
     case'?':state.helpMode=true;break;
     case'q':showMsg('nice try \u2014 this is a demo ;)');break;
@@ -587,6 +655,8 @@ var demoSeqs=[
   [{k:'d',l:'dashboard',t:2500},{k:'d',l:'close',t:800}],
   // Reverse sort
   [{k:'S',l:'reverse sort',t:1500},{k:'S',l:'restore',t:800}],
+  // Grid view
+  [{k:'V',l:'grid view',t:3000},{k:'j',l:'navigate',t:700},{k:'j',l:'',t:700},{k:'k',l:'',t:700},{k:'V',l:'list view',t:800}],
   // Project grouping
   [{k:'G',l:'group by project',t:2500},{k:'j',l:'navigate',t:600},{k:'j',l:'',t:600},{k:'j',l:'',t:600},{k:'k',l:'',t:600},{k:'G',l:'ungroup',t:800}],
   // Help
@@ -610,6 +680,7 @@ var demo={
     if(state.helpMode){state.helpMode=false}
     if(state.paneMode){state.paneMode=false}
     if(state.groupMode){state.groupMode=false}
+    if(state.gridMode){state.gridMode=false}
     render();
   },
 
