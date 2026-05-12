@@ -178,7 +178,7 @@ main{min-height:100vh;display:flex;flex-direction:column;align-items:center;just
       <div class="term-pane" id="termPane"></div>
     </div>
   </div>
-  <div class="hint-badge" id="hintBadge"><span>try it — press j k s / P ?</span></div>
+  <div class="hint-badge" id="hintBadge"><span>try it — press j k s / P G ?</span></div>
   <div class="install-bar" id="installBar">
     <button class="install-cmd" id="installCmd">
       <span class="install-text"><span class="prompt">$ </span>npm i -g ctop-claude</span>
@@ -259,17 +259,26 @@ function rHist(base,n,spread){var a=[];for(var i=0;i<n;i++){var jag=(i%2===0?1:-
 var state={
   phase:'boot',
   processes:[
-    {pid:48291,status:'running',ctx:73,branch:'main',model:'opus-4-6',cpu:34.2,mem:2.1,cost:0.82,age:120,input:32841,output:8420,cache:12190,tokRate:420,cpuH:rHist(34,12,15),memH:rHist(2.1,12,1)},
-    {pid:51034,status:'running',ctx:41,branch:'feat/auth',model:'sonnet-4-6',cpu:12.8,mem:1.4,cost:0.31,age:1080,input:18200,output:4100,cache:8940,tokRate:185,cpuH:rHist(13,12,8),memH:rHist(1.4,12,.6)},
-    {pid:52190,status:'running',ctx:22,branch:'fix/parser',model:'sonnet-4-6',cpu:5.1,mem:0.9,cost:0.11,age:3600,input:9100,output:2300,cache:3400,tokRate:62,cpuH:rHist(5,12,4),memH:rHist(.9,12,.4)},
-    {pid:53401,status:'idle',ctx:88,branch:'docs/readme',model:'haiku-4-5',cpu:0.3,mem:0.5,cost:0.04,age:7200,input:4200,output:1100,cache:2800,tokRate:0,cpuH:rHist(.3,12,.3),memH:rHist(.5,12,.2)},
-    {pid:54012,status:'running',ctx:55,branch:'test/e2e',model:'sonnet-4-6',cpu:8.7,mem:1.1,cost:0.22,age:600,input:22400,output:5600,cache:10200,tokRate:310,cpuH:rHist(9,12,6),memH:rHist(1.1,12,.5)},
-    {pid:55678,status:'running',ctx:35,branch:'feat/payments',model:'opus-4-6',cpu:28.4,mem:1.8,cost:0.67,age:420,input:28100,output:7200,cache:15300,tokRate:550,cpuH:rHist(28,12,12),memH:rHist(1.8,12,.8)},
-    {pid:56123,status:'stopped',ctx:91,branch:'refactor/api',model:'sonnet-4-6',cpu:0.0,mem:0.4,cost:0.15,age:10800,input:6800,output:1900,cache:4100,tokRate:0,cpuH:rHist(0,12,.2),memH:rHist(.4,12,.1)},
-    {pid:57890,status:'running',ctx:60,branch:'feat/dashboard',model:'sonnet-4-6',cpu:15.3,mem:1.3,cost:0.45,age:300,input:24400,output:5800,cache:11200,tokRate:245,cpuH:rHist(15,12,8),memH:rHist(1.3,12,.5)}
+    {pid:48291,status:'running',ctx:73,branch:'main',model:'opus-4-6',cpu:34.2,mem:2.1,cost:0.82,age:120,input:32841,output:8420,cache:12190,tokRate:420,cwd:'~/projects/api-server',cpuH:rHist(34,12,15),memH:rHist(2.1,12,1)},
+    {pid:51034,status:'running',ctx:41,branch:'feat/auth',model:'sonnet-4-6',cpu:12.8,mem:1.4,cost:0.31,age:1080,input:18200,output:4100,cache:8940,tokRate:185,cwd:'~/projects/webapp',cpuH:rHist(13,12,8),memH:rHist(1.4,12,.6)},
+    {pid:52190,status:'running',ctx:22,branch:'fix/parser',model:'sonnet-4-6',cpu:5.1,mem:0.9,cost:0.11,age:3600,input:9100,output:2300,cache:3400,tokRate:62,cwd:'~/projects/parser',cpuH:rHist(5,12,4),memH:rHist(.9,12,.4)},
+    {pid:53401,status:'idle',ctx:88,branch:'docs/readme',model:'haiku-4-5',cpu:0.3,mem:0.5,cost:0.04,age:7200,input:4200,output:1100,cache:2800,tokRate:0,cwd:'~/projects/docs',cpuH:rHist(.3,12,.3),memH:rHist(.5,12,.2)},
+    {pid:54012,status:'running',ctx:55,branch:'test/e2e',model:'sonnet-4-6',cpu:8.7,mem:1.1,cost:0.22,age:600,input:22400,output:5600,cache:10200,tokRate:310,cwd:'~/projects/api-server',cpuH:rHist(9,12,6),memH:rHist(1.1,12,.5)},
+    {pid:55678,status:'running',ctx:35,branch:'feat/payments',model:'opus-4-6',cpu:28.4,mem:1.8,cost:0.67,age:420,input:28100,output:7200,cache:15300,tokRate:550,cwd:'~/projects/webapp',cpuH:rHist(28,12,12),memH:rHist(1.8,12,.8)},
+    {pid:56123,status:'stopped',ctx:91,branch:'refactor/api',model:'sonnet-4-6',cpu:0.0,mem:0.4,cost:0.15,age:10800,input:6800,output:1900,cache:4100,tokRate:0,cwd:'~/projects/api-server',cpuH:rHist(0,12,.2),memH:rHist(.4,12,.1)},
+    {pid:57890,status:'running',ctx:60,branch:'feat/dashboard',model:'sonnet-4-6',cpu:15.3,mem:1.3,cost:0.45,age:300,input:24400,output:5800,cache:11200,tokRate:245,cwd:'~/projects/webapp',cpuH:rHist(15,12,8),memH:rHist(1.3,12,.5)}
   ],
   selected:0,sortMode:'cpu',sortReverse:false,filterText:'',filterMode:false,helpMode:false,paneMode:false,dashMode:false,gridMode:false,groupMode:false,killing:null,message:null,msgTimer:null
 };
+
+/* ── grouping ─────────────────────────────────── */
+function groupProcesses(procs){
+  var map={};procs.forEach(function(p){
+    var k=p.cwd||'unknown';if(!map[k])map[k]={cwd:k,procs:[],totalCost:0};
+    map[k].procs.push(p);map[k].totalCost+=p.cost;
+  });
+  return Object.keys(map).map(function(k){return map[k]}).sort(function(a,b){return b.totalCost-a.totalCost});
+}
 
 /* ── sort / filter ────────────────────────────── */
 function applySort(){
@@ -356,7 +365,16 @@ function buildMain(){
   L.push({html:w('  '+pad('PID',7)+pad('STATUS',10)+pad('CTX',6)+pad('STARTED',9)+pad('BRANCH',17)+pad('MODEL',13)+pad('COST',8)+pad('TOK/S',7)+pad('CPU%',6)+pad('CPU-HIST',10)+pad('MEM%',6)+'MEM-HIST')});
   L.push({html:d(DIV)});
 
-  vis.forEach(function(p,i){L.push({html:fmtRow(p,i===state.selected),sel:i===state.selected,rh:true,killing:state.killing===p.pid})});
+  if(state.groupMode){
+    var groups=groupProcesses(vis);var gi=0;
+    groups.forEach(function(g){
+      var gCost=g.procs.reduce(function(s,p){return s+p.cost},0);
+      L.push({html:dm('\u2500\u2500 ')+o(g.cwd)+dm(' ('+g.procs.length+' session'+(g.procs.length!==1?'s':'')+', '+fmtCost(gCost)+') ')+d(rep('\u2500',40))});
+      g.procs.forEach(function(p){L.push({html:fmtRow(p,gi===state.selected),sel:gi===state.selected,rh:true,killing:state.killing===p.pid});gi++});
+    });
+  }else{
+    vis.forEach(function(p,i){L.push({html:fmtRow(p,i===state.selected),sel:i===state.selected,rh:true,killing:state.killing===p.pid})});
+  }
   if(vis.length===0)L.push({html:dm('  No matching processes found.')});
 
   L.push({html:' '});L.push({html:d(DIV)});
@@ -366,7 +384,7 @@ function buildMain(){
   }else if(state.message){
     L.push({html:' '+o(state.message)});
   }else{
-    L.push({html:dm(' KEYS: ')+o('j/k')+' Nav  '+o('x')+' Kill  '+o('s')+' Sort  '+o('/')+' Filter  '+o('P')+' Pane  '+o('d')+' Dash  '+o('S')+' Reverse  '+o('?')+' Help  '+o('q')+' Quit'});
+    L.push({html:dm(' KEYS: ')+o('j/k')+' Nav  '+o('x')+' Kill  '+o('s')+' Sort  '+o('/')+' Filter  '+o('P')+' Pane  '+o('G')+' Group  '+o('d')+' Dash  '+o('?')+' Help  '+o('q')+' Quit'});
   }
   return L;
 }
@@ -397,13 +415,13 @@ function buildHelp(){
   L.push({html:'   '+o('j / \u2193')+'       Move selection down'});
   L.push({html:'   '+o('k / \u2191')+'       Move selection up'});
   L.push({html:'   '+o('g')+'           Jump to first process'});
-  L.push({html:'   '+o('G')+'           Jump to last process'});
   L.push({html:' '});L.push({html:w(' ACTIONS')});
   L.push({html:'   '+o('x')+'           Kill selected process (SIGTERM)'});
   L.push({html:'   '+o('s')+'           Cycle sort: age \u2192 cpu \u2192 mem \u2192 context'});
   L.push({html:'   '+o('S')+'           Reverse sort order'});
   L.push({html:'   '+o('/')+'           Filter by branch, model, PID'});
   L.push({html:'   '+o('P')+'           Toggle detail pane'});
+  L.push({html:'   '+o('G')+'           Toggle project grouping'});
   L.push({html:'   '+o('d')+'           Toggle dashboard stats'});
   L.push({html:' '});L.push({html:w(' OTHER')});
   L.push({html:'   '+o('?')+'           Toggle this help'});
@@ -512,7 +530,7 @@ document.addEventListener('keydown',function(e){
     case'j':case'ArrowDown':state.selected=Math.min(state.selected+1,vis.length-1);break;
     case'k':case'ArrowUp':state.selected=Math.max(state.selected-1,0);break;
     case'g':state.selected=0;break;
-    case'G':state.selected=Math.max(0,vis.length-1);break;
+    case'G':state.groupMode=!state.groupMode;showMsg(state.groupMode?'Grouping ON':'Grouping OFF');break;
     case's':var si=SORT_MODES.indexOf(state.sortMode);state.sortMode=SORT_MODES[(si+1)%SORT_MODES.length];showMsg('Sort: '+state.sortMode);applySort();break;
     case'S':state.sortReverse=!state.sortReverse;showMsg('Sort: '+state.sortMode+(state.sortReverse?' (reversed)':''));applySort();break;
     case'/':state.filterMode=true;state.filterText='';break;
@@ -569,6 +587,8 @@ var demoSeqs=[
   [{k:'d',l:'dashboard',t:2500},{k:'d',l:'close',t:800}],
   // Reverse sort
   [{k:'S',l:'reverse sort',t:1500},{k:'S',l:'restore',t:800}],
+  // Project grouping
+  [{k:'G',l:'group by project',t:2500},{k:'j',l:'navigate',t:600},{k:'j',l:'',t:600},{k:'j',l:'',t:600},{k:'k',l:'',t:600},{k:'G',l:'ungroup',t:800}],
   // Help
   [{k:'?',l:'help',t:3000},{k:'Escape',l:'close',t:800}],
 ];
@@ -589,6 +609,7 @@ var demo={
     if(state.filterMode){state.filterMode=false;state.filterText=''}
     if(state.helpMode){state.helpMode=false}
     if(state.paneMode){state.paneMode=false}
+    if(state.groupMode){state.groupMode=false}
     render();
   },
 
