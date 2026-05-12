@@ -268,7 +268,7 @@ var state={
     {pid:56123,status:'stopped',ctx:91,branch:'refactor/api',model:'sonnet-4-6',cpu:0.0,mem:0.4,cost:0.15,age:10800,input:6800,output:1900,cache:4100,tokRate:0,cpuH:rHist(0,12,.2),memH:rHist(.4,12,.1)},
     {pid:57890,status:'running',ctx:60,branch:'feat/dashboard',model:'sonnet-4-6',cpu:15.3,mem:1.3,cost:0.45,age:300,input:24400,output:5800,cache:11200,tokRate:245,cpuH:rHist(15,12,8),memH:rHist(1.3,12,.5)}
   ],
-  selected:0,sortMode:'cpu',sortReverse:false,filterText:'',filterMode:false,helpMode:false,paneMode:false,dashMode:false,killing:null,message:null,msgTimer:null
+  selected:0,sortMode:'cpu',sortReverse:false,filterText:'',filterMode:false,helpMode:false,paneMode:false,dashMode:false,gridMode:false,groupMode:false,killing:null,message:null,msgTimer:null
 };
 
 /* ── sort / filter ────────────────────────────── */
@@ -324,14 +324,24 @@ function buildMain(){
   var dead=state.processes.length-active;
 
   L.push({html:d(DIV)});
-  L.push({html:'CTOP \u2014 Claude Code Operations Panel',hbar:true});
+  L.push({html:'CTOP \u2014 AI Coding Agent Monitor',hbar:true});
   L.push({html:d(DIV)});
-  var stats=' Active: '+o(String(active));
-  stats+=dm(' | ')+'Dead/Stopped: '+(dead>0?w(String(dead)):String(dead));
-  stats+=dm(' | ')+'Total Cost: '+o(fmtCost(totalCost));
-  stats+=dm(' | ')+'Sort: '+o(state.sortMode)+(state.sortReverse?' \u2191':'');
-  if(state.filterText)stats+=dm(' | ')+'Filter: '+o('"'+state.filterText+'"')+dm(' ('+vis.length+'/'+state.processes.length+')');
-  stats+=dm(' | ')+ts;
+  /* ── pill-style status bar ── */
+  var worstCtx=100;state.processes.forEach(function(p){if(p.status==='running'&&p.ctx<worstCtx)worstCtx=p.ctx});
+  var ctxDot=worstCtx>=40?'<span style="color:#4c4">●</span> ctx ok':worstCtx>=10?'<span style="color:#cc4">●</span> ctx warn':'<span style="color:#c44">●</span> ctx crit';
+  var costGaugeN=8,costFill=Math.min(costGaugeN,Math.round(totalCost/0.5));
+  var costColor=totalCost<1?'#4c4':totalCost<5?'#cc4':'#c44';
+  var costGauge='<span style="color:'+costColor+'">'+rep('\u2593',costFill)+'</span>'+d(rep('\u2591',costGaugeN-costFill));
+  var hr=now.getHours()%12||12,ampm=now.getHours()<12?'AM':'PM';
+  var timeStr=hr+':'+p2(now.getMinutes())+' '+ampm;
+  var stats=' <span style="color:#4c4">\u25CF</span> '+o(String(active))+' active';
+  if(dead>0)stats+=dm(' \u2502 ')+'<span style="color:#c44">\u25CB</span> '+w(String(dead))+' dead';
+  stats+=dm(' \u2502 ')+o(fmtCost(totalCost))+' '+costGauge;
+  stats+=dm(' \u2502 ')+ctxDot;
+  stats+=dm(' \u2502 ')+'\u2195 '+o(state.sortMode)+(state.sortReverse?' \u2191':'');
+  if(state.groupMode)stats+=dm(' \u2502 ')+'<span style="color:#4cc">\u25C6</span> Grouped';
+  if(state.filterText)stats+=dm(' \u2502 ')+'/ '+o('"'+esc(state.filterText)+'"')+dm(' ('+vis.length+'/'+state.processes.length+')');
+  stats+=dm(' \u2502 ')+timeStr;
   L.push({html:stats});
 
   if(state.dashMode){
