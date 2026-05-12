@@ -215,6 +215,7 @@ function p2(n){return n<10?'0'+n:''+n}
 function fmtAge(sec){if(sec<60)return sec+'s ago';if(sec<3600)return Math.floor(sec/60)+'m ago';if(sec<86400)return Math.floor(sec/3600)+'h ago';return Math.floor(sec/86400)+'d ago'}
 function fmtCost(v){return'$'+v.toFixed(2)}
 function rep(ch,n){var s='';for(var i=0;i<n;i++)s+=ch;return s}
+function fmtTokRate(r){if(!r||r<=0)return'0';if(r<1)return'<1';if(r>=1000)return(r/1000).toFixed(1)+'k';return String(Math.round(r))}
 function ctxBar(pf){var t=20,free=Math.round(t*pf/100),used=t-free;return o(rep('\u2588',used))+d(rep('\u2591',free))}
 var SPARK='\u2581\u2582\u2583\u2584\u2585\u2586\u2587\u2588';
 function spark(vals,w){if(!vals||!vals.length)return rep(' ',w);var r=vals.slice(-w),s='';for(var i=0;i<r.length;i++){var v=Math.max(0,Math.min(100,r[i]));s+=SPARK[Math.min(7,Math.floor(v/100*7.99))];}while(s.length<w)s=' '+s;return s}
@@ -258,14 +259,14 @@ function rHist(base,n,spread){var a=[];for(var i=0;i<n;i++){var jag=(i%2===0?1:-
 var state={
   phase:'boot',
   processes:[
-    {pid:48291,status:'running',ctx:73,branch:'main',model:'opus-4-6',cpu:34.2,mem:2.1,cost:0.82,age:120,input:32841,output:8420,cache:12190,cpuH:rHist(34,12,15),memH:rHist(2.1,12,1)},
-    {pid:51034,status:'running',ctx:41,branch:'feat/auth',model:'sonnet-4-6',cpu:12.8,mem:1.4,cost:0.31,age:1080,input:18200,output:4100,cache:8940,cpuH:rHist(13,12,8),memH:rHist(1.4,12,.6)},
-    {pid:52190,status:'running',ctx:22,branch:'fix/parser',model:'sonnet-4-6',cpu:5.1,mem:0.9,cost:0.11,age:3600,input:9100,output:2300,cache:3400,cpuH:rHist(5,12,4),memH:rHist(.9,12,.4)},
-    {pid:53401,status:'idle',ctx:88,branch:'docs/readme',model:'haiku-4-5',cpu:0.3,mem:0.5,cost:0.04,age:7200,input:4200,output:1100,cache:2800,cpuH:rHist(.3,12,.3),memH:rHist(.5,12,.2)},
-    {pid:54012,status:'running',ctx:55,branch:'test/e2e',model:'sonnet-4-6',cpu:8.7,mem:1.1,cost:0.22,age:600,input:22400,output:5600,cache:10200,cpuH:rHist(9,12,6),memH:rHist(1.1,12,.5)},
-    {pid:55678,status:'running',ctx:35,branch:'feat/payments',model:'opus-4-6',cpu:28.4,mem:1.8,cost:0.67,age:420,input:28100,output:7200,cache:15300,cpuH:rHist(28,12,12),memH:rHist(1.8,12,.8)},
-    {pid:56123,status:'stopped',ctx:91,branch:'refactor/api',model:'sonnet-4-6',cpu:0.0,mem:0.4,cost:0.15,age:10800,input:6800,output:1900,cache:4100,cpuH:rHist(0,12,.2),memH:rHist(.4,12,.1)},
-    {pid:57890,status:'running',ctx:60,branch:'feat/dashboard',model:'sonnet-4-6',cpu:15.3,mem:1.3,cost:0.45,age:300,input:24400,output:5800,cache:11200,cpuH:rHist(15,12,8),memH:rHist(1.3,12,.5)}
+    {pid:48291,status:'running',ctx:73,branch:'main',model:'opus-4-6',cpu:34.2,mem:2.1,cost:0.82,age:120,input:32841,output:8420,cache:12190,tokRate:420,cpuH:rHist(34,12,15),memH:rHist(2.1,12,1)},
+    {pid:51034,status:'running',ctx:41,branch:'feat/auth',model:'sonnet-4-6',cpu:12.8,mem:1.4,cost:0.31,age:1080,input:18200,output:4100,cache:8940,tokRate:185,cpuH:rHist(13,12,8),memH:rHist(1.4,12,.6)},
+    {pid:52190,status:'running',ctx:22,branch:'fix/parser',model:'sonnet-4-6',cpu:5.1,mem:0.9,cost:0.11,age:3600,input:9100,output:2300,cache:3400,tokRate:62,cpuH:rHist(5,12,4),memH:rHist(.9,12,.4)},
+    {pid:53401,status:'idle',ctx:88,branch:'docs/readme',model:'haiku-4-5',cpu:0.3,mem:0.5,cost:0.04,age:7200,input:4200,output:1100,cache:2800,tokRate:0,cpuH:rHist(.3,12,.3),memH:rHist(.5,12,.2)},
+    {pid:54012,status:'running',ctx:55,branch:'test/e2e',model:'sonnet-4-6',cpu:8.7,mem:1.1,cost:0.22,age:600,input:22400,output:5600,cache:10200,tokRate:310,cpuH:rHist(9,12,6),memH:rHist(1.1,12,.5)},
+    {pid:55678,status:'running',ctx:35,branch:'feat/payments',model:'opus-4-6',cpu:28.4,mem:1.8,cost:0.67,age:420,input:28100,output:7200,cache:15300,tokRate:550,cpuH:rHist(28,12,12),memH:rHist(1.8,12,.8)},
+    {pid:56123,status:'stopped',ctx:91,branch:'refactor/api',model:'sonnet-4-6',cpu:0.0,mem:0.4,cost:0.15,age:10800,input:6800,output:1900,cache:4100,tokRate:0,cpuH:rHist(0,12,.2),memH:rHist(.4,12,.1)},
+    {pid:57890,status:'running',ctx:60,branch:'feat/dashboard',model:'sonnet-4-6',cpu:15.3,mem:1.3,cost:0.45,age:300,input:24400,output:5800,cache:11200,tokRate:245,cpuH:rHist(15,12,8),memH:rHist(1.3,12,.5)}
   ],
   selected:0,sortMode:'cpu',sortReverse:false,filterText:'',filterMode:false,helpMode:false,paneMode:false,dashMode:false,killing:null,message:null,msgTimer:null
 };
@@ -301,16 +302,17 @@ function fmtRow(p,sel){
   var pid=w(pad(String(p.pid),7));
   var st=p.status==='running'?o(pad(p.status,10)):dm(pad(p.status,10));
   var ctx=o(pad(Math.min(p.ctx,99)+'%',6));
-  var started=pad(fmtAge(p.age),12);
-  var branch=o(pad(p.branch,20));
+  var started=pad(fmtAge(p.age),9);
+  var branch=o(pad(p.branch,17));
   var model=dm(pad(p.model,13));
   var cost=o(pad(fmtCost(p.cost),8));
+  var tr=fmtTokRate(p.tokRate),tok=p.tokRate>0?o(pad(tr,7)):dm(pad(tr,7));
   var cpuV=p.cpu.toFixed(1);
   var cpu=p.cpu>20?o(pad(cpuV,6)):pad(cpuV,6);
   var cpuSp=o(spark(p.cpuH,8));
   var mem=pad(p.mem.toFixed(1),6);
   var memSp=dm(spark(p.memH,8));
-  return ind+' '+pid+st+ctx+started+branch+model+cost+cpu+cpuSp+'  '+mem+memSp;
+  return ind+' '+pid+st+ctx+started+branch+model+cost+tok+cpu+cpuSp+'  '+mem+memSp;
 }
 
 /* ── build main lines ─────────────────────────── */
@@ -341,7 +343,7 @@ function buildMain(){
     L.push({html:' Tokens  In: '+o(tIn.toLocaleString())+dm(' | ')+'Out: '+w(tOut.toLocaleString())+dm(' | ')+'Cache: '+w(tCache.toLocaleString())+dm(' | ')+'Avg CTX: '+o(avgCtx+'% free')});
   }
   L.push({html:d(DIV)});
-  L.push({html:w('  '+pad('PID',7)+pad('STATUS',10)+pad('CTX',6)+pad('STARTED',12)+pad('BRANCH',20)+pad('MODEL',13)+pad('COST',8)+pad('CPU%',6)+pad('CPU-HIST',10)+pad('MEM%',6)+'MEM-HIST')});
+  L.push({html:w('  '+pad('PID',7)+pad('STATUS',10)+pad('CTX',6)+pad('STARTED',9)+pad('BRANCH',17)+pad('MODEL',13)+pad('COST',8)+pad('TOK/S',7)+pad('CPU%',6)+pad('CPU-HIST',10)+pad('MEM%',6)+'MEM-HIST')});
   L.push({html:d(DIV)});
 
   vis.forEach(function(p,i){L.push({html:fmtRow(p,i===state.selected),sel:i===state.selected,rh:true,killing:state.killing===p.pid})});
@@ -369,6 +371,7 @@ function buildPane(sp){
   L.push(dm('Branch ')+o(sp.branch));
   L.push(dm('Cost   ')+o(fmtCost(sp.cost))+'  Age: '+fmtAge(sp.age));
   L.push(dm('CPU    ')+w(sp.cpu.toFixed(1)+'%')+'   MEM: '+w(sp.mem.toFixed(1)+'%'));
+  L.push(dm('Rate   ')+(sp.tokRate>0?o(fmtTokRate(sp.tokRate)+' tok/s'):dm('0 tok/s')));
   L.push(d(rep('\u2500',30)));
   L.push(ctxBar(sp.ctx)+' '+o(sp.ctx+'% free'));
   L.push(dm('In ')+w(sp.input.toLocaleString())+dm('  Out ')+w(sp.output.toLocaleString()));
@@ -469,6 +472,9 @@ function startLive(){
         p.input+=Math.floor(Math.random()*200);
         p.output+=Math.floor(Math.random()*80);
         p.cache+=Math.floor(Math.random()*100);
+        p.tokRate=Math.max(0,Math.round(p.tokRate+(Math.random()-.5)*120));
+      }else{
+        p.tokRate=Math.max(0,Math.round(p.tokRate*.5));
       }
       p.cpuH.push(p.cpu);if(p.cpuH.length>20)p.cpuH.shift();
       p.memH.push(p.mem);if(p.memH.length>20)p.memH.shift();
