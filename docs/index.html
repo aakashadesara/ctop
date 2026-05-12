@@ -3,8 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>CTOP — Claude Code Operations Panel</title>
-<meta name="description" content="Monitor your Claude Code sessions in real-time. Like htop, but for Claude Code.">
+<title>CTOP — Monitor AI Coding Agents</title>
+<meta name="description" content="Monitor your AI coding agent sessions in real-time. Like htop, but for AI coding agents.">
 <meta name="theme-color" content="#050508">
 <meta name="color-scheme" content="dark">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -38,9 +38,15 @@ main{min-height:100vh;display:flex;flex-direction:column;align-items:center;just
 @keyframes fadeSlide{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}
 @keyframes fadeIn{to{opacity:1}}
 
-.tagline{font-size:clamp(13px,1.4vw,16px);font-weight:400;color:var(--text);margin-bottom:48px;opacity:0}
+.tagline{font-size:clamp(13px,1.4vw,16px);font-weight:400;color:var(--text);margin-bottom:12px;opacity:0}
 .tagline.show{animation:fadeIn .6s ease forwards}
 .tagline .hl{color:var(--accent)}
+
+.agent-row{display:flex;align-items:center;justify-content:center;gap:20px;margin-bottom:48px;opacity:0;flex-wrap:wrap}
+.agent-row.show{animation:fadeIn .6s ease forwards}
+.agent-badge{display:flex;align-items:center;gap:6px;font-size:12px;color:#555;letter-spacing:.02em}
+.agent-badge svg{width:16px;height:16px;fill:#555;flex-shrink:0}
+.agent-badge.others{font-style:italic;color:#3a3a48}
 
 .terminal{background:var(--surface);border:1px solid #252535;border-radius:12px;overflow:hidden;text-align:left;margin-bottom:48px;opacity:0;transform:translateY(14px) scale(.98);width:100%;box-shadow:0 0 0 1px rgba(255,255,255,.03),0 0 120px rgba(232,146,74,.03),0 24px 80px rgba(0,0,0,.5);transition:border-color .4s,box-shadow .4s,opacity .6s,transform .6s}
 .terminal.show{opacity:1;transform:translateY(0) scale(1)}
@@ -154,7 +160,12 @@ main{min-height:100vh;display:flex;flex-direction:column;align-items:center;just
 
 <main>
   <h1 class="title" id="title">CTOP<span class="cursor"></span></h1>
-  <p class="tagline" id="tagline">Like <span class="hl">htop</span>, but for Claude Code.</p>
+  <p class="tagline" id="tagline">Like <span class="hl">htop</span>, but for AI coding agents.</p>
+  <div class="agent-row" id="agentRow">
+    <span class="agent-badge"><svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 15h-2v-6h2v6zm4 0h-2v-6h2v6zm-2-8c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2z"/></svg>Claude Code</span>
+    <span class="agent-badge"><svg viewBox="0 0 24 24"><path d="M9.4 16.6L4.8 12l4.6-4.6L8 6l-6 6 6 6 1.4-1.4zm5.2 0l4.6-4.6-4.6-4.6L16 6l6 6-6 6-1.4-1.4z"/></svg>Codex</span>
+    <span class="agent-badge others">&amp; others</span>
+  </div>
   <div class="terminal" id="terminal">
     <div class="term-bar">
       <div class="dot"></div><div class="dot"></div><div class="dot live"></div>
@@ -180,7 +191,7 @@ main{min-height:100vh;display:flex;flex-direction:column;align-items:center;just
 </main>
 
 <section class="features">
-  <p class="feat-label">Command central for Claude Code</p>
+  <p class="feat-label">Command central for AI coding agents</p>
   <h2 class="feat-heading">See everything. Waste nothing.</h2>
   <div class="feat-grid">
     <div class="feat-item"><h3>Free up wasted RAM</h3><p>Ghost sessions and orphaned processes pile up silently. Find and kill them in one keystroke. Reclaim memory you didn't know you were losing.</p></div>
@@ -214,6 +225,7 @@ var termPane=document.getElementById('termPane');
 var termTitle=document.getElementById('termTitle');
 var titleEl=document.getElementById('title');
 var taglineEl=document.getElementById('tagline');
+var agentRowEl=document.getElementById('agentRow');
 var terminalEl=document.getElementById('terminal');
 var installBar=document.getElementById('installBar');
 var scrollHint=document.getElementById('scrollHint');
@@ -431,6 +443,7 @@ function startBoot(){
       termMain.innerHTML='<div class="tl live"><span class="dm">$ ctop</span></div><div class="tl live"><span class="dm">scanning sessions...</span></div>';
       titleEl.classList.add('show');
       setTimeout(function(){taglineEl.classList.add('show')},200);
+      setTimeout(function(){agentRowEl.classList.add('show')},400);
       setTimeout(function(){
         state.phase='cascade';applySort();render();
         setTimeout(function(){
