@@ -612,9 +612,14 @@ document.addEventListener('keydown',function(e){
   }
   if(state.helpMode){e.preventDefault();state.helpMode=false;render();return}
   var vis=getVisible(),handled=true;
+  // In grid mode, compute cards per row for 2D navigation
+  var cpr=1;
+  if(state.gridMode){var gw=termMain.querySelector('.grid-wrap');if(gw&&gw.children.length>1){var r0=gw.children[0].getBoundingClientRect().top;for(cpr=1;cpr<gw.children.length;cpr++){if(gw.children[cpr].getBoundingClientRect().top!==r0)break}}}
   switch(e.key){
-    case'j':case'ArrowDown':state.selected=Math.min(state.selected+1,vis.length-1);break;
-    case'k':case'ArrowUp':state.selected=Math.max(state.selected-1,0);break;
+    case'j':case'ArrowDown':state.selected=Math.min(state.selected+(state.gridMode?cpr:1),vis.length-1);break;
+    case'k':case'ArrowUp':state.selected=Math.max(state.selected-(state.gridMode?cpr:1),0);break;
+    case'h':case'ArrowLeft':if(state.gridMode){state.selected=Math.max(state.selected-1,0)}else{handled=false}break;
+    case'l':case'ArrowRight':if(state.gridMode){state.selected=Math.min(state.selected+1,vis.length-1)}else{handled=false}break;
     case'g':state.selected=0;break;
     case'G':state.groupMode=!state.groupMode;showMsg(state.groupMode?'Grouping ON':'Grouping OFF');break;
     case's':var si=SORT_MODES.indexOf(state.sortMode);state.sortMode=SORT_MODES[(si+1)%SORT_MODES.length];showMsg('Sort: '+state.sortMode);applySort();break;
