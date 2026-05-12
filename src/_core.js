@@ -84,6 +84,63 @@ function resolveTheme(value) {
 let THEME = { ...THEMES.default };
 let currentThemeName = 'default';
 
+// --- Visual width utilities (zero-dep, uses built-in Intl.Segmenter) ---
+const ANSI_RE = /\x1b\[[0-9;]*[a-zA-Z]/g;
+const _segmenter = new Intl.Segmenter();
+
+function stripAnsi(str) {
+  return str.replace(ANSI_RE, '');
+}
+
+function isWide(cp) {
+  return (cp >= 0x1100 && cp <= 0x115F) ||
+    (cp >= 0x2E80 && cp <= 0x303E) ||
+    (cp >= 0x3040 && cp <= 0x33BF) ||
+    (cp >= 0x3400 && cp <= 0x4DBF) ||
+    (cp >= 0x4E00 && cp <= 0x9FFF) ||
+    (cp >= 0xA960 && cp <= 0xA97F) ||
+    (cp >= 0xAC00 && cp <= 0xD7FF) ||
+    (cp >= 0xF900 && cp <= 0xFAFF) ||
+    (cp >= 0xFE10 && cp <= 0xFE6F) ||
+    (cp >= 0xFF01 && cp <= 0xFF60) ||
+    (cp >= 0xFFE0 && cp <= 0xFFE6) ||
+    (cp >= 0x20000 && cp <= 0x3FFFD);
+}
+
+const EMOJI_PRESENTATION_RE = /\p{Emoji_Presentation}/u;
+
+function segmentWidth(seg) {
+  const cp = seg.codePointAt(0);
+  if (cp < 0x20 || (cp >= 0x7F && cp <= 0x9F)) return 0;
+  if (cp === 0x200B || cp === 0xFEFF) return 0;
+  if (isWide(cp)) return 2;
+  if (EMOJI_PRESENTATION_RE.test(seg)) return 2;
+  return 1;
+}
+
+function visualWidth(str) {
+  let w = 0;
+  for (const { segment } of _segmenter.segment(stripAnsi(str)))
+    w += segmentWidth(segment);
+  return w;
+}
+
+function visualTruncate(str, maxWidth) {
+  const clean = stripAnsi(str).replace(/[\x00-\x1f\x7f]/g, ' ');
+  let w = 0, result = '';
+  for (const { segment } of _segmenter.segment(clean)) {
+    const cw = segmentWidth(segment);
+    if (w + cw > maxWidth) break;
+    w += cw; result += segment;
+  }
+  return result;
+}
+
+function visualPadEnd(str, width) {
+  const vw = visualWidth(str);
+  return str + ' '.repeat(Math.max(0, width - vw));
+}
+
 // Config: loaded from ~/.ctoprc (JSON) or CLI flags
 const DEFAULT_CONFIG = {
   refreshInterval: 5000,
@@ -354,9 +411,9 @@ function groupProcesses(procs) {
 
 function shortenCwd(cwd) {
   if (!cwd) return 'unknown';
-  const home = os.homedir();
-  if (cwd.startsWith(home)) return '~' + cwd.substring(home.length);
-  return cwd;
+  const parts = cwd.split('/').filter(Boolean);
+  if (parts.length >= 2) return parts.slice(-2).join('/');
+  return parts.join('/') || cwd;
 }
 
 function buildGroupedFlatList(procs) {
@@ -1601,14 +1658,14 @@ function getSessionData(filePath) {
       try {
         const data = JSON.parse(line);
         if (data.summary) {
-          result.title = data.summary.substring(0, 50);
+          result.title = stripAnsi(data.summary).substring(0, 50).replace(/[\x00-\x1f\x7f]/g, ' ').trim();
           break;
         } else if (data.type === 'user' && data.message && data.message.role === 'user' && data.message.content) {
           const msg = typeof data.message.content === 'string'
             ? data.message.content
             : (data.message.content.find(c => c.type === 'text') || {}).text || '';
           if (!msg || msg.startsWith('<') || msg.trim() === '') continue;
-          result.title = msg.substring(0, 80).replace(/\n/g, ' ').trim();
+          result.title = stripAnsi(msg).substring(0, 80).replace(/[\x00-\x1f\x7f]/g, ' ').trim();
           break;
         }
       } catch (e) {}
@@ -1891,7 +1948,7 @@ function getCodexSessionData(filePath) {
           // event_msg with user_message payload
           if (data.type === 'event_msg' && payload.type === 'user_message') {
             const text = payload.message || payload.text || '';
-            if (text) result.title = text.substring(0, 80).replace(/\n/g, ' ').trim();
+            if (text) result.title = stripAnsi(text).substring(0, 80).replace(/[\x00-\x1f\x7f]/g, ' ').trim();
           }
           // response_item with role: user
           else if (data.type === 'response_item' && payload.role === 'user') {
@@ -1899,7 +1956,7 @@ function getCodexSessionData(filePath) {
             if (Array.isArray(content)) {
               // Skip developer/system messages, find actual user input
               const txt = content.find(c => (c.type === 'input_text' || c.type === 'text') && !c.text?.startsWith('<'));
-              if (txt) result.title = (txt.text || '').substring(0, 80).replace(/\n/g, ' ').trim();
+              if (txt) result.title = stripAnsi(txt.text || '').substring(0, 80).replace(/[\x00-\x1f\x7f]/g, ' ').trim();
             }
           }
         }
@@ -2867,15 +2924,15 @@ function renderPaneMode() {
           } else if (line === 5) {
             // Slug
             let slugStr = proc.slug || '--';
-            if (slugStr.length > inner) slugStr = slugStr.substring(0, inner - 1) + '…';
-            content = `${selStart}│ ${isSelected ? '' : DIM}${slugStr.padEnd(inner)}${isSelected ? '' : RESET}${selStart} │${selEnd}`;
+            if (visualWidth(slugStr) > inner) slugStr = visualTruncate(slugStr, inner - 1) + '…';
+            content = `${selStart}│ ${isSelected ? '' : DIM}${visualPadEnd(slugStr, inner)}${isSelected ? '' : RESET}${selStart} │${selEnd}`;
           } else if (line === 6) {
             // Title (truncated)
             let title = proc.title;
-            if (title.length > inner) {
-              title = title.substring(0, inner - 1) + '…';
+            if (visualWidth(title) > inner) {
+              title = visualTruncate(title, inner - 1) + '…';
             }
-            content = `${selStart}│ ${title.padEnd(inner)} │${selEnd}`;
+            content = `${selStart}│ ${visualPadEnd(title, inner)} │${selEnd}`;
           } else if (line === 7) {
             // Message activity waveform
             const activity = readSessionMessageActivity(proc);
@@ -3204,7 +3261,7 @@ function renderDetailPane(proc, startRow, paneCol, paneWidth, availRows) {
 
     // Legend rows
     const pct = (v) => (v / CTX_LIMIT * 100).toFixed(0) + '%';
-    const lPad = (s, w) => s.length >= w ? s.substring(0, w) : s + ' '.repeat(w - s.length);
+    const lPad = (s, w) => visualWidth(s) >= w ? visualTruncate(s, w) : visualPadEnd(s, w);
     const legendW = Math.floor((inner - 2) / 2);
     // Row 1: input + cache write
     const l1a = `${GREEN}${legendChar}${RESET} ${DIM}Input${RESET} ${pct(inp)}`;
@@ -3371,8 +3428,8 @@ function renderLogPane(startRow, paneWidth, paneHeight, proc) {
       // Truncate line to terminal width accounting for timestamp
       let displayText = entry.text;
       const maxTextLen = paneWidth - 2 - tsPrefixLen;
-      if (displayText.length > maxTextLen) {
-        displayText = displayText.substring(0, maxTextLen - 3) + '...';
+      if (visualWidth(displayText) > maxTextLen) {
+        displayText = visualTruncate(displayText, maxTextLen - 1) + '…';
       }
       output += ` ${tsPrefix}${color}${displayText}${RESET}${CLR_LINE}`;
     } else {
@@ -3453,10 +3510,10 @@ function renderProcessRow(proc, isSelected, isPrevSelected, opts) {
   if (!isNarrow) {
     // Branch
     const branchStr = proc.gitBranch || '--';
-    row += `${isSelected ? '' : THEME.stopped}${branchStr.substring(0, 31).padEnd(32)}${isSelected ? '' : RESET}`;
+    row += `${isSelected ? '' : THEME.stopped}${visualPadEnd(visualTruncate(branchStr, 31), 32)}${isSelected ? '' : RESET}`;
     // Slug
     const slugStr = proc.slug || '--';
-    row += `${isSelected ? '' : THEME.border}${slugStr.substring(0, 21).padEnd(22)}${isSelected ? '' : RESET}`;
+    row += `${isSelected ? '' : THEME.border}${visualPadEnd(visualTruncate(slugStr, 21), 22)}${isSelected ? '' : RESET}`;
   }
 
   // Model
