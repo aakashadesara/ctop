@@ -1059,7 +1059,7 @@ function formatDuration(ms) {
 
 function formatNotificationMessage(proc) {
   const parts = [];
-  const label = proc.slug || proc.title || (proc.agentType === 'codex' ? 'Codex session' : 'Claude session');
+  const label = proc.sessionTitle || proc.slug || proc.title || (proc.agentType === 'codex' ? 'Codex session' : 'Claude session');
   parts.push(label);
   if (proc._activeDurationMs) {
     parts.push(`Duration: ${formatDuration(proc._activeDurationMs)}`);
@@ -1175,6 +1175,7 @@ function getClaudeProcessesWindows() {
         stopReason: null,
         gitBranch: null,
         slug: null,
+        sessionTitle: null,
         sessionId: null,
         version: null,
         userType: null,
@@ -1258,7 +1259,7 @@ function getCodexProcesses() {
         stat, startDate, startTime, command, cwd,
         agentType: 'codex', title: 'Codex CLI',
         contextPct: null, model: null, stopReason: null, gitBranch: null,
-        slug: null, sessionId: null, version: null, userType: null,
+        slug: null, sessionTitle: null, sessionId: null, version: null, userType: null,
         inputTokens: null, cacheCreateTokens: null, cacheReadTokens: null,
         outputTokens: null, serviceTier: null, timestamp: null,
         requestId: null, lastTurnMs: null, compacted: false, compactionCount: 0,
@@ -1303,7 +1304,7 @@ function getCodexProcessesWindows() {
         command: p.CommandLine || '', cwd: getProcessCwd(pid),
         agentType: 'codex', title: 'Codex CLI',
         contextPct: null, model: null, stopReason: null, gitBranch: null,
-        slug: null, sessionId: null, version: null, userType: null,
+        slug: null, sessionTitle: null, sessionId: null, version: null, userType: null,
         inputTokens: null, cacheCreateTokens: null, cacheReadTokens: null,
         outputTokens: null, serviceTier: null, timestamp: null,
         requestId: null, lastTurnMs: null, compacted: false, compactionCount: 0,
@@ -1376,6 +1377,7 @@ function getClaudeProcesses() {
         stopReason: null,
         gitBranch: null,
         slug: null,
+        sessionTitle: null,
         sessionId: null,
         version: null,
         userType: null,
@@ -1471,6 +1473,7 @@ function formatSessionJSON(proc) {
       cacheRead: proc.cacheReadTokens,
     },
     branch: proc.gitBranch,
+    title: proc.sessionTitle || proc.slug || null,
     slug: proc.slug,
     cwd: proc.cwd,
     cpu: proc.cpu,
@@ -1637,7 +1640,7 @@ function getSessionData(filePath) {
   }
 
   const result = {
-    title: null, contextPct: null, model: null, stopReason: null,
+    title: null, sessionTitle: null, contextPct: null, model: null, stopReason: null,
     gitBranch: null, slug: null, sessionId: null, version: null,
     userType: null, inputTokens: null, cacheCreateTokens: null,
     cacheReadTokens: null, outputTokens: null, serviceTier: null,
@@ -1648,25 +1651,33 @@ function getSessionData(filePath) {
     const fd = fs.openSync(filePath, 'r');
     const stat = fs.fstatSync(fd);
 
-    // Read first 64KB for title
+    // Read first 64KB for title + session title (customTitle/aiTitle)
     const headSize = Math.min(65536, stat.size);
     const headBuf = Buffer.alloc(headSize);
     fs.readSync(fd, headBuf, 0, headSize, 0);
     const headLines = headBuf.toString('utf8').split('\n');
+    let headCustomTitle = null;
+    let headAiTitle = null;
     for (const line of headLines) {
       if (!line.trim()) continue;
       try {
         const data = JSON.parse(line);
-        if (data.summary) {
-          result.title = stripAnsi(data.summary).substring(0, 50).replace(/[\x00-\x1f\x7f]/g, ' ').trim();
-          break;
-        } else if (data.type === 'user' && data.message && data.message.role === 'user' && data.message.content) {
-          const msg = typeof data.message.content === 'string'
-            ? data.message.content
-            : (data.message.content.find(c => c.type === 'text') || {}).text || '';
-          if (!msg || msg.startsWith('<') || msg.trim() === '') continue;
-          result.title = stripAnsi(msg).substring(0, 80).replace(/[\x00-\x1f\x7f]/g, ' ').trim();
-          break;
+        // Extract Claude Code session titles (custom-title from /rename, ai-title auto-generated)
+        if (data.type === 'custom-title' && data.customTitle) {
+          headCustomTitle = data.customTitle;
+        } else if (data.type === 'ai-title' && data.aiTitle) {
+          headAiTitle = data.aiTitle;
+        }
+        if (!result.title) {
+          if (data.summary) {
+            result.title = stripAnsi(data.summary).substring(0, 50).replace(/[\x00-\x1f\x7f]/g, ' ').trim();
+          } else if (data.type === 'user' && data.message && data.message.role === 'user' && data.message.content) {
+            const msg = typeof data.message.content === 'string'
+              ? data.message.content
+              : (data.message.content.find(c => c.type === 'text') || {}).text || '';
+            if (!msg || msg.startsWith('<') || msg.trim() === '') continue;
+            result.title = stripAnsi(msg).substring(0, 80).replace(/[\x00-\x1f\x7f]/g, ' ').trim();
+          }
         }
       } catch (e) {}
     }
@@ -1678,24 +1689,28 @@ function getSessionData(filePath) {
     fs.closeSync(fd);
     const tailLines = tailBuf.toString('utf8').split('\n').reverse();
 
-    // Find turn_duration
+    // Scan tail for session titles (customTitle/aiTitle) + turn_duration + usage
+    let tailCustomTitle = null;
+    let tailAiTitle = null;
+    let foundTurnDuration = false;
+    let foundUsage = false;
     for (const line of tailLines) {
       if (!line.trim()) continue;
       try {
         const data = JSON.parse(line);
-        if (data.subtype === 'turn_duration') {
-          result.lastTurnMs = data.durationMs || null;
-          break;
+        // Extract session titles from tail
+        if (!tailCustomTitle && data.type === 'custom-title' && data.customTitle) {
+          tailCustomTitle = data.customTitle;
+        } else if (!tailAiTitle && data.type === 'ai-title' && data.aiTitle) {
+          tailAiTitle = data.aiTitle;
         }
-      } catch (e) {}
-    }
-
-    // Find last assistant message with usage
-    for (const line of tailLines) {
-      if (!line.trim()) continue;
-      try {
-        const data = JSON.parse(line);
-        if (data.message && data.message.usage) {
+        // Find turn_duration
+        if (!foundTurnDuration && data.subtype === 'turn_duration') {
+          result.lastTurnMs = data.durationMs || null;
+          foundTurnDuration = true;
+        }
+        // Find last assistant message with usage
+        if (!foundUsage && data.message && data.message.usage) {
           const u = data.message.usage;
           const used = (u.input_tokens || 0) + (u.cache_creation_input_tokens || 0) + (u.cache_read_input_tokens || 0);
           result.contextPct = Math.round((CONFIG.contextLimit - used) / CONFIG.contextLimit * 100);
@@ -1715,10 +1730,15 @@ function getSessionData(filePath) {
           result.cacheReadTokens = u.cache_read_input_tokens || 0;
           result.outputTokens = u.output_tokens || 0;
           result.serviceTier = u.service_tier || null;
-          break;
+          foundUsage = true;
         }
+        if (foundTurnDuration && foundUsage && tailCustomTitle) break;
       } catch (e) {}
     }
+
+    // Resolve session title: customTitle > aiTitle > null (falls back to title/first prompt)
+    // Check tail first (more recent), then head — matching Claude Code's own priority
+    result.sessionTitle = tailCustomTitle || headCustomTitle || tailAiTitle || headAiTitle || null;
   } catch (e) {}
 
   if (cacheStat) {
@@ -1871,7 +1891,7 @@ function assignSessionsToProcesses(procs) {
       if (i < topFiles.length) {
         const data = getSessionData(topFiles[i].path);
         if (data.title) sorted[i].title = data.title;
-        for (const key of ['contextPct', 'model', 'stopReason', 'gitBranch', 'slug',
+        for (const key of ['contextPct', 'model', 'stopReason', 'gitBranch', 'slug', 'sessionTitle',
           'sessionId', 'version', 'userType', 'inputTokens', 'cacheCreateTokens',
           'cacheReadTokens', 'outputTokens', 'serviceTier', 'timestamp', 'requestId', 'lastTurnMs']) {
           if (data[key] !== null && data[key] !== undefined) sorted[i][key] = data[key];
@@ -2095,15 +2115,15 @@ function parseLogEntry(data) {
 }
 
 const sessionLogCache = new Map(); // filePath -> { mtimeMs, size, entries }
-const LOG_TAIL_BYTES = 64 * 1024;
+const LOG_TAIL_BYTES = 4 * 1024 * 1024; // 4MB — read enough to capture full session log
 
 function readSessionLog(proc, maxLines) {
-  if (maxLines === undefined) maxLines = 50;
+  if (maxLines === undefined) maxLines = 0; // 0 = no limit
   // Find the session JSONL file for this process (same logic as assignSessionsToProcesses)
   if (!proc || !proc.cwd) return [];
 
-  const projectDirName = proc.cwd.replace(/\//g, '-');
-  const projectPath = path.join(process.env.HOME || '', '.claude', 'projects', projectDirName);
+  const projectDirName = cwdToProjectDirName(proc.cwd);
+  const projectPath = path.join(os.homedir(), '.claude', 'projects', projectDirName);
 
   try {
     if (!fs.existsSync(projectPath)) return [];
@@ -2111,18 +2131,24 @@ function readSessionLog(proc, maxLines) {
     return [];
   }
 
-  const files = getSessionFilesForProject(projectPath);
-  if (files.length === 0) return [];
-
-  // Use the most recent session file (matching what assignSessionsToProcesses does)
-  const filePath = files[0].path;
+  // Use exact session file if sessionId is known, otherwise fall back to most recent
+  let filePath;
+  if (proc.sessionId) {
+    const exact = path.join(projectPath, `${proc.sessionId}.jsonl`);
+    try { if (fs.existsSync(exact)) filePath = exact; } catch {}
+  }
+  if (!filePath) {
+    const files = getSessionFilesForProject(projectPath);
+    if (files.length === 0) return [];
+    filePath = files[0].path;
+  }
 
   let st;
   try { st = fs.statSync(filePath); } catch { return []; }
 
   const hit = sessionLogCache.get(filePath);
   if (hit && hit.mtimeMs === st.mtimeMs && hit.size === st.size) {
-    return hit.entries.slice(-maxLines);
+    return maxLines > 0 ? hit.entries.slice(-maxLines) : hit.entries;
   }
 
   const entries = [];
@@ -2164,7 +2190,7 @@ function readSessionLog(proc, maxLines) {
   }
 
   sessionLogCache.set(filePath, { mtimeMs: st.mtimeMs, size: st.size, entries });
-  return entries.slice(-maxLines);
+  return maxLines > 0 ? entries.slice(-maxLines) : entries;
 }
 
 function parseSessionTimeline(filePath) {
@@ -2625,7 +2651,8 @@ function applySortAndFilter() {
       const dir = (p.cwd || '').toLowerCase();
       const slug = (p.slug || '').toLowerCase();
       const title = (p.title || '').toLowerCase();
-      return branch.includes(ft) || model.includes(ft) || dir.includes(ft) || slug.includes(ft) || title.includes(ft);
+      const resolved = (p.sessionTitle || '').toLowerCase();
+      return branch.includes(ft) || model.includes(ft) || dir.includes(ft) || slug.includes(ft) || title.includes(ft) || resolved.includes(ft);
     });
   }
 
@@ -2922,12 +2949,12 @@ function renderPaneMode() {
             const bc = isSelected ? '' : THEME.stopped;
             content = `${selStart}│ ${mc}${mStr}${isSelected ? '' : RESET}${selStart}${' '.repeat(Math.max(1, mbGap))}${bc}${bStr}${isSelected ? '' : RESET}${selStart} │${selEnd}`;
           } else if (line === 5) {
-            // Slug
-            let slugStr = proc.slug || '--';
-            if (visualWidth(slugStr) > inner) slugStr = visualTruncate(slugStr, inner - 1) + '…';
-            content = `${selStart}│ ${isSelected ? '' : DIM}${visualPadEnd(slugStr, inner)}${isSelected ? '' : RESET}${selStart} │${selEnd}`;
+            // Session title (from /rename or AI-generated, falling back to slug)
+            let titleStr = proc.sessionTitle || proc.slug || '--';
+            if (visualWidth(titleStr) > inner) titleStr = visualTruncate(titleStr, inner - 1) + '…';
+            content = `${selStart}│ ${isSelected ? '' : DIM}${visualPadEnd(titleStr, inner)}${isSelected ? '' : RESET}${selStart} │${selEnd}`;
           } else if (line === 6) {
-            // Title (truncated)
+            // First prompt / title (truncated)
             let title = proc.title;
             if (visualWidth(title) > inner) {
               title = visualTruncate(title, inner - 1) + '…';
@@ -3287,7 +3314,7 @@ function renderDetailPane(proc, startRow, paneCol, paneWidth, availRows) {
 
   // Full-width rows for longer values
   if (r < startRow + availRows - 1)
-    output += fullRow(r++, 'Slug:', proc.slug || '--', DIM);
+    output += fullRow(r++, 'Title:', proc.sessionTitle || proc.slug || '--', DIM);
   if (r < startRow + availRows - 1)
     output += fullRow(r++, 'Session:', proc.sessionId ? proc.sessionId.substring(0, inner - 12) : '--', DIM);
   if (r < startRow + availRows - 1) {
@@ -3444,7 +3471,7 @@ function renderLogPane(startRow, paneWidth, paneHeight, proc) {
 // Returns the ANSI string for the row (including trailing CLR_LINE + newline).
 function renderProcessRow(proc, isSelected, isPrevSelected, opts) {
   const { ctxBarMode, isNarrow, showCostCol, costColW, pluginCols,
-          showSparklines, sparkColW, showTokRateCol, tokRateColW,
+          showSparklines, sparkColW, gitColW, showTokRateCol, tokRateColW,
           listWidth, fixedColsTotal, showDetailPane } = opts;
   let row = '';
 
@@ -3511,9 +3538,9 @@ function renderProcessRow(proc, isSelected, isPrevSelected, opts) {
     // Branch
     const branchStr = proc.gitBranch || '--';
     row += `${isSelected ? '' : THEME.stopped}${visualPadEnd(visualTruncate(branchStr, 31), 32)}${isSelected ? '' : RESET}`;
-    // Slug
-    const slugStr = proc.slug || '--';
-    row += `${isSelected ? '' : THEME.border}${visualPadEnd(visualTruncate(slugStr, 21), 22)}${isSelected ? '' : RESET}`;
+    // Title (sessionTitle from /rename or AI-generated, falling back to slug)
+    const titleColStr = proc.sessionTitle || proc.slug || '--';
+    row += `${isSelected ? '' : THEME.border}${visualPadEnd(visualTruncate(titleColStr, 21), 22)}${isSelected ? '' : RESET}`;
   }
 
   // Model
@@ -3556,7 +3583,7 @@ function renderProcessRow(proc, isSelected, isPrevSelected, opts) {
     if (dir.length > dirMaxLen) {
       dir = '...' + dir.substring(dir.length - dirMaxLen + 3);
     }
-    row += `${isSelected ? '' : DIM}${dir.padEnd(Math.max(0, dirMaxLen))}${isSelected ? '' : RESET}`;
+    row += `${isSelected ? '' : DIM}${dir.padEnd(Math.max(0, dirMaxLen))}${isSelected ? '' : RESET} `;
   }
 
   // CPU%
@@ -3581,10 +3608,24 @@ function renderProcessRow(proc, isSelected, isPrevSelected, opts) {
     row += `${proc.mem.toFixed(1)}`;
   }
 
-  // MEM sparkline
+  // Git status column (replaces MEM-HIST)
   if (showSparklines) {
-    const memHist = processHistory.has(proc.pid) ? processHistory.get(proc.pid).mem : [];
-    row += `${isSelected ? '' : CYAN}${renderSparkline(memHist, 8).padEnd(sparkColW)}${isSelected ? '' : RESET}`;
+    const gitDiff = getGitDiffSummary(proc.cwd);
+    if (!gitDiff) {
+      row += `${isSelected ? '' : DIM}${'--'.padEnd(gitColW)}${isSelected ? '' : RESET}`;
+    } else {
+      const ins = gitDiff.unstaged.insertions + gitDiff.staged.insertions;
+      const del = gitDiff.unstaged.deletions + gitDiff.staged.deletions;
+      if (ins === 0 && del === 0 && (gitDiff.untracked || 0) === 0) {
+        row += `${isSelected ? '' : GREEN}${'clean'.padEnd(gitColW)}${isSelected ? '' : RESET}`;
+      } else {
+        const insStr = `+${ins}`;
+        const delStr = `-${del}`;
+        const visLen = insStr.length + 1 + delStr.length;
+        const pad = Math.max(0, gitColW - visLen);
+        row += `${isSelected ? '' : GREEN}${insStr}${isSelected ? '' : RESET} ${isSelected ? '' : RED}${delStr}${isSelected ? '' : RESET}${' '.repeat(pad)}`;
+      }
+    }
   }
 
   // TOK/S column
@@ -3660,6 +3701,7 @@ function renderNow() {
   const showCostCol = listWidth >= 140;
   const costColW = 9;
   const sparkColW = 10; // 8 chars sparkline + 2 padding
+  const gitColW = 10; // GIT column width (replaces MEM-HIST)
   const showSparklines = columns >= 180;
   const tokRateColW = 7; // TOK/S column width
   const showTokRateCol = columns >= 200;
@@ -3667,23 +3709,23 @@ function renderNow() {
   const pluginCols = plugins.filter(p => p.column);
   const pluginColsWidth = pluginCols.reduce((sum, p) => sum + (p.column.width || 10), 0);
   // In narrow mode: PID(8) + STATUS(10) + CTX(6) + STARTED(12) + MODEL(14) + CPU%(7) + MEM%(5) + pad(2) = 64
-  // In wide mode: full columns with BRANCH, SLUG, DIRECTORY, and optionally COST + sparklines + TOK/S
+  // In wide mode: full columns with BRANCH, TITLE, DIRECTORY, and optionally COST + sparklines + TOK/S
   const fixedColsTotal = isNarrow
     ? 8 + 10 + ctxColW + 12 + 14 + 7 + 7 + 2 + pluginColsWidth
-    : 8 + 10 + ctxColW + 12 + 32 + 22 + 14 + (showCostCol ? costColW : 0) + pluginColsWidth + 7 + (showSparklines ? sparkColW : 0) + 7 + (showSparklines ? sparkColW : 0) + (showTokRateCol ? tokRateColW : 0) + 2;
+    : 8 + 10 + ctxColW + 12 + 32 + 22 + 14 + (showCostCol ? costColW : 0) + pluginColsWidth + 1 + 7 + (showSparklines ? sparkColW : 0) + 7 + (showSparklines ? gitColW : 0) + (showTokRateCol ? tokRateColW : 0) + 2;
   output += `${BOLD}${CYAN}`;
   if (isNarrow) {
     output += `  ${'PID'.padEnd(8)}${'STATUS'.padEnd(10)}${'CTX'.padEnd(ctxColW)}${'STARTED'.padEnd(12)}${'MODEL'.padEnd(14)}`;
     for (const p of pluginCols) output += `${(p.column.header || '').padEnd(p.column.width || 10)}`;
     output += `${'CPU%'.padEnd(7)}MEM%`;
   } else {
-    output += `  ${'PID'.padEnd(8)}${'STATUS'.padEnd(10)}${'CTX'.padEnd(ctxColW)}${'STARTED'.padEnd(12)}${'BRANCH'.padEnd(32)}${'SLUG'.padEnd(22)}${'MODEL'.padEnd(14)}`;
+    output += `  ${'PID'.padEnd(8)}${'STATUS'.padEnd(10)}${'CTX'.padEnd(ctxColW)}${'STARTED'.padEnd(12)}${'BRANCH'.padEnd(32)}${'TITLE'.padEnd(22)}${'MODEL'.padEnd(14)}`;
     if (showCostCol) output += `${'COST'.padEnd(costColW)}`;
     for (const p of pluginCols) output += `${(p.column.header || '').padEnd(p.column.width || 10)}`;
     output += `${'DIRECTORY'.padEnd(Math.max(0, listWidth - fixedColsTotal))}${'CPU%'.padEnd(7)}`;
     if (showSparklines) output += `${'CPU-HIST'.padEnd(sparkColW)}`;
     output += `${'MEM%'.padEnd(7)}`;
-    if (showSparklines) output += `${'MEM-HIST'.padEnd(sparkColW)}`;
+    if (showSparklines) output += `${'GIT'.padEnd(gitColW)}`;
     if (showTokRateCol) output += `${'TOK/S'.padEnd(tokRateColW)}`;
   }
   output += `${RESET}${CLR_LINE}\n`;
@@ -3723,6 +3765,10 @@ function renderNow() {
 
       if (item.type === 'group') {
         const g = item.group;
+        // Add vertical space before each group (except the first visible one)
+        if (i > gStartIdx) {
+          output += `${CLR_LINE}\n`;
+        }
         const label = ` ${shortenCwd(g.cwd)} `;
         const sessionWord = g.procs.length === 1 ? 'session' : 'sessions';
         const costStr = formatCost(g.totalCost > 0 ? g.totalCost : null);
@@ -3739,7 +3785,7 @@ function renderNow() {
 
         output += renderProcessRow(proc, isSelected, false, {
           ctxBarMode, isNarrow, showCostCol, costColW, pluginCols,
-          showSparklines, sparkColW, showTokRateCol, tokRateColW,
+          showSparklines, sparkColW, gitColW, showTokRateCol, tokRateColW,
           listWidth, fixedColsTotal, showDetailPane,
         });
       }
@@ -3793,7 +3839,7 @@ function renderNow() {
     const isPrevSelected = CONFIG.animations && selectionAnimFrame > 0 && i === prevSelectedIndex;
     output += renderProcessRow(proc, isSelected, isPrevSelected, {
       ctxBarMode, isNarrow, showCostCol, costColW, pluginCols,
-      showSparklines, sparkColW, showTokRateCol, tokRateColW,
+      showSparklines, sparkColW, gitColW, showTokRateCol, tokRateColW,
       listWidth, fixedColsTotal, showDetailPane,
     });
 
@@ -4639,7 +4685,7 @@ function showHelp() {
   output += `${BOLD}SORT & FILTER:${RESET}\n`;
   output += `  ${CYAN}s${RESET}         Cycle sort: age → cpu → mem → context\n`;
   output += `  ${CYAN}S${RESET}         Reverse sort order\n`;
-  output += `  ${CYAN}/${RESET}         Start typing to filter (branch, model, dir, slug)\n`;
+  output += `  ${CYAN}/${RESET}         Start typing to filter (branch, model, dir, title)\n`;
   output += `  ${CYAN}F${RESET}         Full-text search session content\n`;
   output += `  ${CYAN}ESC${RESET}       Clear active filter or search\n\n`;
 
@@ -5465,6 +5511,8 @@ async function main() {
     if (!showingHelp && !showHistory && !showTimeline && !showHeatmap && !confirmKillAll && !confirmKillStopped && !filterInput && !searchMode && !showPalette) {
       refreshing = true;
       try {
+        // Remember selected PID so cursor follows the same process across refreshes
+        const selectedPid = processes[selectedIndex]?.pid;
         allProcesses = getAllAgentProcesses(); applySortAndFilter();
         updateProcessHistory(allProcesses);
         updateTokenRates(allProcesses);
@@ -5473,7 +5521,12 @@ async function main() {
         checkStateTransitions(allProcesses);
         saveHistorySnapshot(allProcesses);
         lastRefresh = new Date();
-        if (selectedIndex >= processes.length) {
+        // Restore cursor to the same PID
+        if (selectedPid != null) {
+          const newIdx = processes.findIndex(p => p.pid === selectedPid);
+          if (newIdx >= 0) selectedIndex = newIdx;
+          else if (selectedIndex >= processes.length) selectedIndex = Math.max(0, processes.length - 1);
+        } else if (selectedIndex >= processes.length) {
           selectedIndex = Math.max(0, processes.length - 1);
         }
         render();
