@@ -195,8 +195,11 @@ describe('MODEL_PRICING', () => {
       assert.ok(typeof pricing.output === 'number', `${model} missing output price`);
       assert.ok(typeof pricing.cacheWrite === 'number', `${model} missing cacheWrite price`);
       assert.ok(typeof pricing.cacheRead === 'number', `${model} missing cacheRead price`);
-      assert.ok(pricing.output > pricing.input, `${model}: output should cost more than input`);
-      assert.ok(pricing.cacheWrite > pricing.cacheRead, `${model}: cache write should cost more than cache read`);
+      // Free/local models (e.g., ollama) have all-zero pricing
+      if (pricing.input > 0) {
+        assert.ok(pricing.output > pricing.input, `${model}: output should cost more than input`);
+        assert.ok(pricing.cacheWrite > pricing.cacheRead, `${model}: cache write should cost more than cache read`);
+      }
     }
   });
 });
