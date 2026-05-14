@@ -47,7 +47,7 @@ chmod +x ctop/claude-manager
 ln -s "$(pwd)/ctop/claude-manager" /usr/local/bin/ctop
 ```
 
-Then run `ctop`. If no agents are running, you'll see an empty state — start a Claude Code or Codex session and it'll appear on the next refresh.
+Then run `ctop`. If no agents are running, you'll see an empty state — start a Claude Code, Codex, or OpenCode session and it'll appear on the next refresh.
 
 ---
 
