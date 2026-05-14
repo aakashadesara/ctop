@@ -1372,6 +1372,7 @@ function getOpenCodeProcesses() {
         inputTokens: null, cacheCreateTokens: null, cacheReadTokens: null,
         outputTokens: null, serviceTier: null, timestamp: null,
         requestId: null, lastTurnMs: null, compacted: false, compactionCount: 0,
+        rateLimits: null,
         isActive, isZombie, isStopped,
         status: isZombie ? 'ZOMBIE' : isStopped ? 'STOPPED' : isActive ? 'ACTIVE' : 'SLEEPING'
       });
@@ -2238,11 +2239,11 @@ function assignOpenCodeSessionsToProcesses(procs) {
   // Match sessions to processes by CWD
   for (const proc of procs) {
     if (!proc.cwd) continue;
-    const match = sessions.find((s, idx) => !matched.has(idx) && s.directory === proc.cwd);
-    if (match) {
-      const idx = sessions.indexOf(match);
-      matched.add(idx);
-      applyOpenCodeSession(proc, match);
+    let foundIdx = -1;
+    sessions.find((s, idx) => { if (!matched.has(idx) && s.directory === proc.cwd) { foundIdx = idx; return true; } });
+    if (foundIdx >= 0) {
+      matched.add(foundIdx);
+      applyOpenCodeSession(proc, sessions[foundIdx]);
     }
   }
 
@@ -2278,8 +2279,9 @@ function applyOpenCodeSession(proc, session) {
     } catch { modelName = session.model; }
   }
 
-  if (session.title && session.title !== 'New session') proc.sessionTitle = session.title;
-  if (session.title) proc.title = session.title;
+  const hasTitle = session.title && !session.title.startsWith('New session');
+  if (hasTitle) proc.sessionTitle = session.title;
+  if (hasTitle) proc.title = session.title;
   if (modelName) proc.model = modelName;
   if (session.slug) proc.slug = session.slug;
   if (session.id) proc.sessionId = session.id;
@@ -2301,8 +2303,20 @@ function applyOpenCodeSession(proc, session) {
 
 // --- OpenCode log view ---
 
+const openCodeLogCache = new Map(); // sessionId -> { dbMtime, entries }
+
 function readOpenCodeSessionLog(proc, maxLines) {
   if (!proc || !proc.sessionId) return [];
+
+  // Check cache by DB mtime
+  let dbMtime = 0;
+  try { dbMtime = fs.statSync(OPENCODE_DB).mtimeMs; } catch { return []; }
+  try { const wm = fs.statSync(OPENCODE_DB + '-wal').mtimeMs; if (wm > dbMtime) dbMtime = wm; } catch {}
+
+  const cached = openCodeLogCache.get(proc.sessionId);
+  if (cached && cached.dbMtime === dbMtime) {
+    return maxLines > 0 ? cached.entries.slice(-maxLines) : cached.entries;
+  }
 
   const rows = queryOpenCodeDb(`
     SELECT p.data as part_data, p.time_created, m.data as msg_data
@@ -2330,6 +2344,8 @@ function readOpenCodeSessionLog(proc, maxLines) {
       entries.push({ role, text: `${prefix}: ${text}`, timestamp: timeStr });
     } catch {}
   }
+
+  openCodeLogCache.set(proc.sessionId, { dbMtime, entries });
   return maxLines > 0 ? entries.slice(-maxLines) : entries;
 }
 
