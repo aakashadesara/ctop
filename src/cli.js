@@ -59,19 +59,131 @@ function parseArgs(args) {
   return { positional, flags };
 }
 
-// Entry point — dispatched from claude-manager when argv[2] is a known subcommand.
+// Lazy require helpers — keep cli.js itself cheap to load.
+function loadCore() {
+  return require('./_core');
+}
+function loadFmt() {
+  return require('./cli-format');
+}
+
+function findProc(procs, pid) {
+  const n = String(pid);
+  return procs.find(p => String(p.pid) === n) || null;
+}
+
+// --- Subcommand handlers ---
+
+function cmdLs(args) {
+  if (args.flags.help || args.flags.h) {
+    process.stdout.write(`Usage: ctop ls [--agent claude|codex|opencode] [--cwd PATH] [--status active|sleeping|all] [--json]
+
+List running agent sessions.
+
+  --agent X   Filter by agent backend
+  --cwd P     Filter by working directory (prefix match)
+  --status S  Filter by status. Default: all
+  --json      Machine-parseable JSON output
+`);
+    return 0;
+  }
+  const core = loadCore();
+  const fmt = loadFmt();
+  let procs = core.getAllAgentProcesses();
+  if (args.flags.agent) {
+    procs = procs.filter(p => p.agentType === args.flags.agent);
+  }
+  if (args.flags.cwd) {
+    procs = procs.filter(p => p.cwd && p.cwd.startsWith(args.flags.cwd));
+  }
+  if (args.flags.status && args.flags.status !== 'all') {
+    const want = String(args.flags.status).toUpperCase();
+    procs = procs.filter(p => p.status === want);
+  }
+  const summaries = procs.map(fmt.summarize);
+  if (args.flags.json) {
+    process.stdout.write(fmt.toJson(summaries));
+  } else {
+    process.stdout.write(fmt.formatLsHuman(summaries));
+  }
+  return 0;
+}
+
+function cmdGet(args) {
+  if (args.flags.help || args.flags.h) {
+    process.stdout.write(`Usage: ctop get <pid> [--json]
+
+Show full detail for one session.
+`);
+    return 0;
+  }
+  const pid = args.positional[0];
+  if (!pid) {
+    process.stderr.write('ctop get: missing required <pid> argument\n');
+    return 1;
+  }
+  const core = loadCore();
+  const fmt = loadFmt();
+  const procs = core.getAllAgentProcesses();
+  const proc = findProc(procs, pid);
+  if (!proc) {
+    if (args.flags.json) {
+      process.stdout.write(fmt.toJson(null));
+      return 1;
+    }
+    process.stderr.write(`ctop get: pid ${pid} is not a known agent session\n`);
+    return 1;
+  }
+  const detail = fmt.detail(proc);
+  if (args.flags.json) {
+    process.stdout.write(fmt.toJson(detail));
+  } else {
+    process.stdout.write(fmt.formatGetHuman(detail));
+  }
+  return 0;
+}
+
+function cmdStats(args) {
+  if (args.flags.help || args.flags.h) {
+    process.stdout.write(`Usage: ctop stats [--json]
+
+Aggregate stats across all running sessions.
+`);
+    return 0;
+  }
+  const core = loadCore();
+  const fmt = loadFmt();
+  const procs = core.getAllAgentProcesses();
+  const stats = core.calculateAggregateStats(procs);
+  if (args.flags.json) {
+    process.stdout.write(fmt.toJson(stats));
+  } else {
+    process.stdout.write(fmt.formatStatsHuman(stats));
+  }
+  return 0;
+}
+
+// --- Router ---
+
 function run(subcommand, rawArgs) {
   const args = parseArgs(rawArgs);
-
-  if (args.flags.help || args.flags.h) {
-    // Per-subcommand help text comes in subsequent commits as each is wired.
-    process.stdout.write(`Usage: ctop ${subcommand} [args]\n\nThis subcommand is not yet implemented.\n`);
-    process.exit(0);
+  let code = 1;
+  try {
+    switch (subcommand) {
+      case 'ls':    code = cmdLs(args); break;
+      case 'get':   code = cmdGet(args); break;
+      case 'stats': code = cmdStats(args); break;
+      default:
+        process.stderr.write(`ctop: subcommand "${subcommand}" not yet implemented\n`);
+        code = 1;
+    }
+  } catch (err) {
+    process.stderr.write(`ctop ${subcommand}: ${err.message}\n`);
+    code = 2;
   }
-
-  // Stub — real handlers are wired in subsequent commits.
-  process.stderr.write(`ctop: subcommand "${subcommand}" not yet implemented\n`);
-  process.exit(1);
+  // Use exitCode instead of exit() — process.exit forcibly terminates and
+  // can truncate stdout writes that are still draining to a pipe.
+  process.exitCode = code;
 }
 
 module.exports = {
@@ -80,4 +192,6 @@ module.exports = {
   parseArgs,
   printRootHelp,
   run,
+  // Exposed for unit testing without spawning child processes.
+  _handlers: { cmdLs, cmdGet, cmdStats },
 };
