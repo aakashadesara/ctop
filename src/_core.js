@@ -5948,6 +5948,7 @@ module.exports = {
   // Log tailing
   parseLogEntry,
   readSessionLog,
+  getSessionFilesForProject,
   // Timeline
   parseSessionTimeline,
   getSessionFileForProc,

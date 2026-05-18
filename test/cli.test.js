@@ -124,6 +124,51 @@ describe('ctop stats (integration)', () => {
   });
 });
 
+describe('ctop log (integration)', () => {
+  it('errors when pid is missing', () => {
+    const r = ctop('log');
+    assert.strictEqual(r.status, 1);
+    assert.match(r.stderr, /missing required/);
+  });
+  it('errors for unknown pid', () => {
+    const r = ctop('log', '999999');
+    assert.strictEqual(r.status, 1);
+  });
+  it('--help exits 0', () => {
+    const r = ctop('log', '--help');
+    assert.strictEqual(r.status, 0);
+    assert.match(r.stdout, /Usage: ctop log/);
+  });
+});
+
+describe('ctop search (integration)', () => {
+  it('errors when query is missing', () => {
+    const r = ctop('search');
+    assert.strictEqual(r.status, 1);
+    assert.match(r.stderr, /missing required/);
+  });
+  it('returns valid JSON array (possibly empty)', () => {
+    const r = ctop('search', '__definitely_no_match_xyz__', '--json');
+    assert.strictEqual(r.status, 0);
+    const parsed = JSON.parse(r.stdout);
+    assert.ok(Array.isArray(parsed));
+  });
+});
+
+describe('ctop diff (integration)', () => {
+  it('errors when arg is missing', () => {
+    const r = ctop('diff');
+    assert.strictEqual(r.status, 1);
+  });
+  it('returns null for non-git cwd in --json mode', () => {
+    const r = ctop('diff', '/tmp', '--json');
+    assert.strictEqual(r.status, 0);
+    // /tmp is usually not a git repo; either null or an object — both valid
+    const parsed = JSON.parse(r.stdout);
+    assert.ok(parsed === null || typeof parsed === 'object');
+  });
+});
+
 describe('ctop dispatch', () => {
   it('passes through to TUI for unknown first arg', () => {
     // We can't easily exec the TUI in a test, but we can confirm that

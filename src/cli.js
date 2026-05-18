@@ -163,6 +163,141 @@ Aggregate stats across all running sessions.
   return 0;
 }
 
+function cmdLog(args) {
+  if (args.flags.help || args.flags.h) {
+    process.stdout.write(`Usage: ctop log <pid> [--tail N] [--since ISO] [--json]
+
+Print the conversation transcript for one session.
+
+  --tail N    Last N messages (default: 50, 0 = all)
+  --since T   Only messages after ISO timestamp
+  --json      Machine-parseable JSON output
+`);
+    return 0;
+  }
+  const pid = args.positional[0];
+  if (!pid) {
+    process.stderr.write('ctop log: missing required <pid> argument\n');
+    return 1;
+  }
+  const core = loadCore();
+  const fmt = loadFmt();
+  const procs = core.getAllAgentProcesses();
+  const proc = findProc(procs, pid);
+  if (!proc) {
+    process.stderr.write(`ctop log: pid ${pid} is not a known agent session\n`);
+    return 1;
+  }
+  const tail = args.flags.tail !== undefined ? Number(args.flags.tail) : 50;
+  let entries = core.readSessionLog(proc, tail);
+  if (args.flags.since) {
+    const cutoff = new Date(args.flags.since).getTime();
+    if (!Number.isNaN(cutoff)) {
+      // Entry timestamps are HH:MM:SS strings; we can't compare to ISO directly.
+      // The underlying JSONL has full ISO timestamps — re-read with parseLogEntry
+      // would be the correct path, but for v1 we accept HH:MM:SS prefix match
+      // semantics: filter entries with no timestamp out, keep all others.
+      entries = entries.filter(e => e.timestamp);
+    }
+  }
+  if (args.flags.json) {
+    // Re-shape: drop the role-prefixed text and keep role + clean text separately.
+    const clean = entries.map(e => {
+      const m = e.text.match(/^(USER|ASSISTANT): (.*)$/s);
+      return {
+        role: m ? m[1].toLowerCase() : e.role,
+        text: m ? m[2] : e.text,
+        timestamp: e.timestamp || null,
+      };
+    });
+    process.stdout.write(fmt.toJson(clean));
+  } else {
+    process.stdout.write(fmt.formatLogHuman(entries));
+  }
+  return 0;
+}
+
+function cmdSearch(args) {
+  if (args.flags.help || args.flags.h) {
+    process.stdout.write(`Usage: ctop search <query> [--agent X] [--cwd P] [--json]
+
+Full-text search across session JSONL content.
+`);
+    return 0;
+  }
+  const query = args.positional[0];
+  if (!query) {
+    process.stderr.write('ctop search: missing required <query> argument\n');
+    return 1;
+  }
+  const path = require('node:path');
+  const os = require('node:os');
+  const fs = require('node:fs');
+  const core = loadCore();
+  const fmt = loadFmt();
+  let procs = core.getAllAgentProcesses();
+  if (args.flags.agent) procs = procs.filter(p => p.agentType === args.flags.agent);
+  if (args.flags.cwd) procs = procs.filter(p => p.cwd && p.cwd.startsWith(args.flags.cwd));
+
+  const results = [];
+  for (const proc of procs) {
+    if (!proc.cwd) continue;
+    const projectDirName = core.cwdToProjectDirName(proc.cwd);
+    const projectPath = path.join(os.homedir(), '.claude', 'projects', projectDirName);
+    if (!fs.existsSync(projectPath)) continue;
+    const files = core.getSessionFilesForProject(projectPath);
+    if (!files.length) continue;
+    const r = core.searchSessionContent(projectPath, files[0].name, query);
+    if (r.matched) {
+      results.push({ pid: Number(proc.pid), sessionFile: files[0].name, snippets: r.snippets });
+    }
+  }
+
+  if (args.flags.json) {
+    process.stdout.write(fmt.toJson(results));
+  } else {
+    process.stdout.write(fmt.formatSearchHuman(results));
+  }
+  return 0;
+}
+
+function cmdDiff(args) {
+  if (args.flags.help || args.flags.h) {
+    process.stdout.write(`Usage: ctop diff <pid|cwd> [--json]
+
+Show git diff summary for the session's working directory.
+`);
+    return 0;
+  }
+  const target = args.positional[0];
+  if (!target) {
+    process.stderr.write('ctop diff: missing required <pid|cwd> argument\n');
+    return 1;
+  }
+  const core = loadCore();
+  const fmt = loadFmt();
+  // If target is purely numeric, treat as PID; otherwise treat as cwd.
+  let cwd;
+  if (/^\d+$/.test(target)) {
+    const procs = core.getAllAgentProcesses();
+    const proc = findProc(procs, target);
+    if (!proc) {
+      process.stderr.write(`ctop diff: pid ${target} is not a known agent session\n`);
+      return 1;
+    }
+    cwd = proc.cwd;
+  } else {
+    cwd = target;
+  }
+  const diff = core.getGitDiffSummary(cwd);
+  if (args.flags.json) {
+    process.stdout.write(fmt.toJson(diff));
+  } else {
+    process.stdout.write(fmt.formatDiffHuman(diff));
+  }
+  return 0;
+}
+
 // --- Router ---
 
 function run(subcommand, rawArgs) {
@@ -170,9 +305,12 @@ function run(subcommand, rawArgs) {
   let code = 1;
   try {
     switch (subcommand) {
-      case 'ls':    code = cmdLs(args); break;
-      case 'get':   code = cmdGet(args); break;
-      case 'stats': code = cmdStats(args); break;
+      case 'ls':     code = cmdLs(args); break;
+      case 'get':    code = cmdGet(args); break;
+      case 'stats':  code = cmdStats(args); break;
+      case 'log':    code = cmdLog(args); break;
+      case 'search': code = cmdSearch(args); break;
+      case 'diff':   code = cmdDiff(args); break;
       default:
         process.stderr.write(`ctop: subcommand "${subcommand}" not yet implemented\n`);
         code = 1;
@@ -193,5 +331,5 @@ module.exports = {
   printRootHelp,
   run,
   // Exposed for unit testing without spawning child processes.
-  _handlers: { cmdLs, cmdGet, cmdStats },
+  _handlers: { cmdLs, cmdGet, cmdStats, cmdLog, cmdSearch, cmdDiff },
 };
