@@ -79,6 +79,26 @@ Mouse: click to select, scroll to navigate.
 
 ---
 
+## Agent skill
+
+A self-contained [`ctop` skill](skills/ctop/SKILL.md) ships in this repo. Drop it into Claude Code so any agent learns when and how to call `ctop`:
+
+```bash
+# Per-project
+mkdir -p .claude/skills && cp -r skills/ctop .claude/skills/
+
+# Or user-wide
+mkdir -p ~/.claude/skills && cp -r skills/ctop ~/.claude/skills/
+```
+
+Once installed, ask any Claude Code session things like _"what other agents am I running"_, _"how much have my sessions cost"_, _"is my context about to compact"_ — the agent will reach for `ctop` automatically.
+
+Skill files:
+
+- [`SKILL.md`](skills/ctop/SKILL.md) — trigger sheet + common patterns
+- [`reference.md`](skills/ctop/reference.md) — full per-command spec
+- [`examples.md`](skills/ctop/examples.md) — copy-pasteable recipes
+
 ## CLI mode (for agents and scripts)
 
 `ctop` with no args starts the interactive TUI. `ctop <subcommand>` runs a one-shot query and exits, so AI agents can introspect their own sessions and sister sessions from another terminal.

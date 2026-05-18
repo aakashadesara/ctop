@@ -46,6 +46,7 @@
   "files": [
     "claude-manager",
     "src/",
+    "skills/",
     "README.md",
     "LICENSE"
   ]
