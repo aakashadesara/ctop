@@ -5,13 +5,13 @@
 [![Node.js](https://img.shields.io/badge/Node.js-18%2B-green.svg)](#requirements)
 [![Zero Dependencies](https://img.shields.io/badge/Dependencies-Zero-brightgreen.svg)](#)
 
-**`htop` for your AI coding agents.** Monitor Claude Code, Codex CLI, and OpenCode sessions — CPU, memory, tokens, context window, costs, branches — from a single terminal pane.
+**`htop` for your AI coding agents.** Monitor Claude Code, Codex CLI, OpenCode, and Devin sessions — CPU, memory, tokens, context window, costs, branches — from a single terminal pane.
 
 ![CTOP Demo](assets/hero.gif)
 
 ## Features
 
-- **Multi-agent monitoring** — Claude Code + Codex CLI + OpenCode, real-time CPU/memory/status
+- **Multi-agent monitoring** — Claude Code + Codex CLI + OpenCode + Devin, real-time CPU/memory/status
 - **Context window tracking** — visual bar with input, cache, output, and free segments
 - **Cost estimation** — per-session and aggregate API cost (Claude + OpenAI pricing)
 - **Token waveform** — real-time sparkline showing token activity pulse
@@ -47,7 +47,7 @@ chmod +x ctop/claude-manager
 ln -s "$(pwd)/ctop/claude-manager" /usr/local/bin/ctop
 ```
 
-Then run `ctop`. If no agents are running, you'll see an empty state — start a Claude Code, Codex, or OpenCode session and it'll appear on the next refresh.
+Then run `ctop`. If no agents are running, you'll see an empty state — start a Claude Code, Codex, OpenCode, or Devin session and it'll appear on the next refresh.
 
 ---
 
@@ -107,7 +107,7 @@ CLI flags override config file values.
 
 ## How it works
 
-Reads process info from `ps` (PowerShell on Windows), resolves working directories via `lsof`, and enriches each process with session metadata from local JSONL files (`~/.claude/projects/` for Claude, `~/.codex/sessions/` for Codex) and SQLite databases (`~/.opencode/` for OpenCode). No network calls, no external dependencies.
+Reads process info from `ps` (PowerShell on Windows), resolves working directories via `lsof`, and enriches each process with session metadata from local JSONL files (`~/.claude/projects/` for Claude, `~/.codex/sessions/` for Codex) and SQLite databases (`~/.local/share/opencode/` for OpenCode, `~/.local/share/devin/cli/` for Devin). No network calls, no external dependencies.
 
 ## Plugins
 
@@ -132,7 +132,8 @@ See `examples/plugins/` for more.
 
 - **Node.js 18+**
 - **macOS, Linux, or Windows** — Windows uses PowerShell for process detection; CWD resolution is more limited than macOS/Linux.
-- **Claude Code**, **Codex CLI**, and/or **OpenCode** running sessions
+- **Claude Code**, **Codex CLI**, **OpenCode**, and/or **Devin (terminal)** running sessions
+- **`sqlite3`** on PATH for OpenCode and Devin session reads (built-in on macOS; available via `apt`/`brew` on Linux)
 
 ## Contributing
 
