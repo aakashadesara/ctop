@@ -34,6 +34,7 @@ const BG_RED = `${ESC}[41m`;
 const ORANGE = `${ESC}[38;5;208m`;
 const BG_ORANGE = `${ESC}[48;5;130m`;
 const OPENCODE_GREEN = `${ESC}[38;5;114m`;
+const DEVIN_VIOLET = `${ESC}[38;5;141m`;
 
 // Built-in color themes
 const THEMES = {
@@ -191,7 +192,7 @@ function loadConfig() {
     } else if (args[i] === '--no-animation') {
       config.bootAnimation = false;
     } else if (args[i] === '--help' || args[i] === '-h') {
-      console.log(`ctop — AI Agent process manager (Claude Code + Codex CLI + OpenCode)
+      console.log(`ctop — AI Agent process manager (Claude Code + Codex CLI + OpenCode + Devin)
 
 Usage: ctop [options]
 
@@ -288,6 +289,9 @@ const MODEL_PRICING = {
   'codex-mini-latest': { input: 1.50, output: 6, cacheWrite: 0.75, cacheRead: 0.375 },
   // Ollama / local models (free)
   'ollama': { input: 0, output: 0, cacheWrite: 0, cacheRead: 0 },
+  // Cognition Devin models (estimated — terminal sessions bill via ACUs; treat as ballpark)
+  'swe-1-6': { input: 3, output: 15, cacheWrite: 3.75, cacheRead: 0.30 },
+  'swe-1-6-fast': { input: 0.80, output: 4, cacheWrite: 1, cacheRead: 0.08 },
 };
 
 function calculateCost(proc) {
@@ -306,8 +310,11 @@ function calculateCost(proc) {
     else if (modelLower.includes('o4-mini')) pricing = MODEL_PRICING['o4-mini'];
     else if (modelLower.includes('codex-mini')) pricing = MODEL_PRICING['codex-mini-latest'];
     else if (modelLower.includes('ollama') || modelLower.includes('qwen') || modelLower.includes('llama')) pricing = MODEL_PRICING['ollama'];
+    else if (modelLower.includes('swe-1') && modelLower.includes('fast')) pricing = MODEL_PRICING['swe-1-6-fast'];
+    else if (modelLower.includes('swe-1') || modelLower.startsWith('swe-')) pricing = MODEL_PRICING['swe-1-6'];
     else if (proc.agentType === 'codex') pricing = MODEL_PRICING['gpt-4.1']; // default for codex
     else if (proc.agentType === 'opencode') pricing = MODEL_PRICING['claude-sonnet-4-6']; // default for opencode
+    else if (proc.agentType === 'devin') pricing = MODEL_PRICING['swe-1-6']; // default for devin
     else pricing = MODEL_PRICING['claude-sonnet-4-6']; // default to sonnet
   }
   const cost = (
@@ -1064,7 +1071,7 @@ function formatDuration(ms) {
 
 function formatNotificationMessage(proc) {
   const parts = [];
-  const label = proc.sessionTitle || proc.slug || proc.title || ({ codex: 'Codex session', opencode: 'OpenCode session' }[proc.agentType] || 'Claude session');
+  const label = proc.sessionTitle || proc.slug || proc.title || ({ codex: 'Codex session', opencode: 'OpenCode session', devin: 'Devin session' }[proc.agentType] || 'Claude session');
   parts.push(label);
   if (proc._activeDurationMs) {
     parts.push(`Duration: ${formatDuration(proc._activeDurationMs)}`);
@@ -1387,6 +1394,73 @@ function getOpenCodeProcesses() {
   }
 }
 
+// --- Devin process detection ---
+
+function getDevinProcesses() {
+  if (IS_WIN) return []; // Devin terminal not yet supported on Windows in ctop
+
+  try {
+    const psOutput = execSync(
+      `ps -eo pid,user,pcpu,pmem,stat,lstart,command | grep 'devin' | grep -v 'ctop' | grep -v 'claude-manager' | grep -v 'grep' | grep -v 'npm' | grep -v 'node '`,
+      { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }
+    ).trim();
+
+    if (!psOutput) return [];
+
+    const lines = psOutput.split('\n').filter(Boolean);
+    const procs = [];
+
+    resolveCwds(lines.map(l => l.trim().split(/\s+/)[0]));
+
+    for (const line of lines) {
+      const parts = line.trim().split(/\s+/);
+      const pid = parts[0];
+      const cpu = parts[2];
+      const mem = parts[3];
+      const stat = parts[4];
+      const lstartStr = parts.slice(5, 10).join(' ');
+      const command = parts.slice(10).join(' ');
+
+      // Match the devin binary — installed at ~/.local/bin/devin or run from versioned share dir
+      const isDevinBinary = command.match(/\.local\/share\/devin\/cli\/.*\/bin\/devin\b/) ||
+                            command.match(/\.local\/bin\/devin\b/) ||
+                            command.match(/\/devin\s/) ||
+                            command.match(/\/devin$/) ||
+                            command.match(/^devin\s/) ||
+                            command.match(/^devin$/);
+      if (!isDevinBinary) continue;
+
+      const startDate = new Date(lstartStr);
+      const startTime = formatStartTime(startDate);
+      const cwd = getProcessCwd(pid);
+      const isActive = !stat.includes('Z') && !stat.includes('T');
+      const isZombie = stat.includes('Z');
+      const isStopped = stat.includes('T');
+
+      procs.push({
+        pid, cpu: parseFloat(cpu) || 0, mem: parseFloat(mem) || 0,
+        stat, startDate, startTime, command, cwd,
+        agentType: 'devin', title: 'Devin',
+        contextPct: null, model: null, stopReason: null, gitBranch: null,
+        slug: null, sessionTitle: null, sessionId: null, version: null, userType: null,
+        inputTokens: null, cacheCreateTokens: null, cacheReadTokens: null,
+        outputTokens: null, serviceTier: null, timestamp: null,
+        requestId: null, lastTurnMs: null, compacted: false, compactionCount: 0,
+        rateLimits: null,
+        isActive, isZombie, isStopped,
+        status: isZombie ? 'ZOMBIE' : isStopped ? 'STOPPED' : isActive ? 'ACTIVE' : 'SLEEPING'
+      });
+    }
+
+    procs.sort((a, b) => a.startDate - b.startDate);
+    assignDevinSessionsToProcesses(procs);
+    for (const proc of procs) { proc.cost = calculateCost(proc); }
+    return procs;
+  } catch (e) {
+    return [];
+  }
+}
+
 function getClaudeProcesses() {
   if (IS_WIN) return getClaudeProcessesWindows();
 
@@ -1485,12 +1559,13 @@ function getClaudeProcesses() {
   }
 }
 
-// Get all agent processes (Claude + Codex + OpenCode)
+// Get all agent processes (Claude + Codex + OpenCode + Devin)
 function getAllAgentProcesses() {
   const claude = getClaudeProcesses();
   const codex = getCodexProcesses();
   const opencode = getOpenCodeProcesses();
-  const all = [...claude, ...codex, ...opencode];
+  const devin = getDevinProcesses();
+  const all = [...claude, ...codex, ...opencode, ...devin];
   pruneCwdCache(all.map(p => p.pid));
   return all.sort((a, b) => a.startDate - b.startDate);
 }
@@ -1516,7 +1591,7 @@ function formatStartTime(date) {
 // --- Export report formatting ---
 
 function formatSessionMarkdown(proc) {
-  const agentLabel = { codex: 'Codex', opencode: 'OpenCode' }[proc.agentType] || 'Claude';
+  const agentLabel = { codex: 'Codex', opencode: 'OpenCode', devin: 'Devin' }[proc.agentType] || 'Claude';
   return `## ${agentLabel} Session Report
 - **Model:** ${proc.model || 'unknown'}
 - **Status:** ${proc.status}
@@ -2349,6 +2424,192 @@ function readOpenCodeSessionLog(proc, maxLines) {
   return maxLines > 0 ? entries.slice(-maxLines) : entries;
 }
 
+// --- Devin session data (SQLite) ---
+
+const DEVIN_DB = path.join(os.homedir(), '.local', 'share', 'devin', 'cli', 'sessions.db');
+const devinSessionCache = { mtimeMs: 0, data: null };
+
+function queryDevinDb(sql) {
+  if (!hasSqlite3()) return null;
+  try {
+    if (!fs.existsSync(DEVIN_DB)) return null;
+  } catch { return null; }
+  try {
+    const result = execSync(
+      `sqlite3 -json -readonly "${DEVIN_DB}"`,
+      { encoding: 'utf8', input: sql + '\n', stdio: ['pipe', 'pipe', 'pipe'], timeout: 5000 }
+    ).trim();
+    if (!result) return [];
+    return JSON.parse(result);
+  } catch { return null; }
+}
+
+function assignDevinSessionsToProcesses(procs) {
+  if (procs.length === 0) return;
+  if (!hasSqlite3()) return;
+  try { if (!fs.existsSync(DEVIN_DB)) return; } catch { return; }
+
+  let dbMtime = 0;
+  try { dbMtime = fs.statSync(DEVIN_DB).mtimeMs; } catch { return; }
+  try {
+    const walMtime = fs.statSync(DEVIN_DB + '-wal').mtimeMs;
+    if (walMtime > dbMtime) dbMtime = walMtime;
+  } catch {}
+
+  let sessions;
+  if (devinSessionCache.mtimeMs === dbMtime && devinSessionCache.data) {
+    sessions = devinSessionCache.data;
+  } else {
+    // Aggregate per-session token totals from message_nodes.chat_message JSON.
+    // Devin's message forest duplicates the same message across forked chains (same message_id,
+    // different node_id). Dedupe by message_id in a CTE before summing, otherwise totals
+    // double-count after any fork/branch.
+    sessions = queryDevinDb(`
+      WITH assistant_msgs AS (
+        SELECT
+          session_id,
+          json_extract(chat_message, '$.message_id') as msg_id,
+          CAST(json_extract(chat_message, '$.metadata.metrics.input_tokens') AS INTEGER) as in_t,
+          CAST(json_extract(chat_message, '$.metadata.metrics.output_tokens') AS INTEGER) as out_t,
+          CAST(json_extract(chat_message, '$.metadata.metrics.cache_read_tokens') AS INTEGER) as cr_t,
+          CAST(json_extract(chat_message, '$.metadata.metrics.cache_creation_tokens') AS INTEGER) as cw_t,
+          json_extract(chat_message, '$.metadata.generation_model') as gen_model,
+          json_extract(chat_message, '$.metadata.created_at') as gen_ts
+        FROM message_nodes
+        WHERE json_extract(chat_message, '$.role') = 'assistant'
+        GROUP BY session_id, msg_id
+      )
+      SELECT
+        s.id, s.working_directory, s.model, s.agent_mode, s.title,
+        s.created_at, s.last_activity_at, s.backend_type,
+        (SELECT SUM(in_t) FROM assistant_msgs a WHERE a.session_id = s.id) as total_input,
+        (SELECT SUM(out_t) FROM assistant_msgs a WHERE a.session_id = s.id) as total_output,
+        (SELECT SUM(cr_t) FROM assistant_msgs a WHERE a.session_id = s.id) as total_cache_read,
+        (SELECT SUM(cw_t) FROM assistant_msgs a WHERE a.session_id = s.id) as total_cache_write,
+        (SELECT in_t FROM assistant_msgs a WHERE a.session_id = s.id
+         ORDER BY a.gen_ts DESC LIMIT 1) as last_turn_input,
+        (SELECT gen_model FROM assistant_msgs a WHERE a.session_id = s.id
+         ORDER BY a.gen_ts DESC LIMIT 1) as last_model
+      FROM sessions s
+      WHERE s.hidden = 0
+      ORDER BY s.last_activity_at DESC
+    `);
+    if (!sessions) return;
+    devinSessionCache.mtimeMs = dbMtime;
+    devinSessionCache.data = sessions;
+  }
+
+  const matched = new Set();
+
+  // Match sessions to processes by CWD
+  for (const proc of procs) {
+    if (!proc.cwd) continue;
+    let foundIdx = -1;
+    sessions.find((s, idx) => {
+      if (!matched.has(idx) && s.working_directory === proc.cwd) { foundIdx = idx; return true; }
+    });
+    if (foundIdx >= 0) {
+      matched.add(foundIdx);
+      applyDevinSession(proc, sessions[foundIdx]);
+    }
+  }
+
+  // Second pass: unmatched procs get most recent unmatched sessions
+  const unmatched = procs.filter(p => p.model == null);
+  const remainingSessions = sessions.filter((_, i) => !matched.has(i));
+  for (let i = 0; i < unmatched.length && i < remainingSessions.length; i++) {
+    applyDevinSession(unmatched[i], remainingSessions[i]);
+  }
+
+  // Fallback titles
+  for (const proc of procs) {
+    if (proc.title === 'Devin' && proc.cwd) {
+      const parts = proc.cwd.split(/[\\/]/).filter(Boolean);
+      proc.title = parts.length >= 2
+        ? parts[parts.length - 2] + '/' + parts[parts.length - 1]
+        : parts[parts.length - 1] || proc.cwd;
+    }
+  }
+}
+
+function applyDevinSession(proc, session) {
+  const hasTitle = session.title && session.title !== 'New session' && session.title !== 'Untitled';
+  if (hasTitle) { proc.sessionTitle = session.title; proc.title = session.title; }
+  // Prefer the model recorded on the latest turn over the session default — users can switch mid-session
+  const modelName = session.last_model || session.model;
+  if (modelName) proc.model = modelName;
+  if (session.id) { proc.slug = session.id; proc.sessionId = session.id; }
+  if (session.backend_type) proc.userType = session.backend_type;
+
+  if (session.total_input != null) proc.inputTokens = session.total_input || 0;
+  if (session.total_output != null) proc.outputTokens = session.total_output || 0;
+  if (session.total_cache_read != null) proc.cacheReadTokens = session.total_cache_read || 0;
+  if (session.total_cache_write != null) proc.cacheCreateTokens = session.total_cache_write || 0;
+
+  // Context %: Devin doesn't expose a strict window per model in the DB; use last turn input vs CLI config limit
+  if (session.last_turn_input != null) {
+    const ctxWindow = CONFIG.contextLimit || 200000;
+    proc.contextPct = Math.max(0, Math.min(100, Math.round((ctxWindow - session.last_turn_input) / ctxWindow * 100)));
+  }
+}
+
+// --- Devin log view ---
+
+const devinLogCache = new Map(); // sessionId -> { dbMtime, entries }
+
+function readDevinSessionLog(proc, maxLines) {
+  if (!proc || !proc.sessionId) return [];
+
+  let dbMtime = 0;
+  try { dbMtime = fs.statSync(DEVIN_DB).mtimeMs; } catch { return []; }
+  try { const wm = fs.statSync(DEVIN_DB + '-wal').mtimeMs; if (wm > dbMtime) dbMtime = wm; } catch {}
+
+  const cached = devinLogCache.get(proc.sessionId);
+  if (cached && cached.dbMtime === dbMtime) {
+    return maxLines > 0 ? cached.entries.slice(-maxLines) : cached.entries;
+  }
+
+  const rows = queryDevinDb(`
+    SELECT chat_message, created_at
+    FROM message_nodes
+    WHERE session_id = '${proc.sessionId.replace(/'/g, "''")}'
+      AND (json_extract(chat_message, '$.role') = 'user'
+        OR json_extract(chat_message, '$.role') = 'assistant')
+    ORDER BY created_at ASC, node_id ASC
+  `);
+  if (!rows) return [];
+
+  const entries = [];
+  // Devin stores forked message chains, so the same message can appear under multiple node_ids.
+  // Dedupe by message_id to avoid showing duplicates in the log view.
+  const seenIds = new Set();
+  for (const row of rows) {
+    try {
+      const msg = JSON.parse(row.chat_message);
+      const role = msg.role;
+      if (role !== 'user' && role !== 'assistant') continue;
+      if (msg.message_id && seenIds.has(msg.message_id)) continue;
+      if (role === 'user' && msg.metadata && msg.metadata.is_user_input === false) continue;
+      const content = typeof msg.content === 'string' ? msg.content : '';
+      const text = content.replace(/\n/g, ' ').trim();
+      if (!text) continue;
+      // Skip system-prompt-like messages embedded as user role
+      if (role === 'user' && text.startsWith('<')) continue;
+      if (msg.message_id) seenIds.add(msg.message_id);
+      const prefix = role === 'user' ? 'USER' : 'ASSISTANT';
+      let timeStr = '';
+      const ts = msg.metadata && msg.metadata.created_at;
+      if (ts) {
+        try { timeStr = new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }); } catch {}
+      }
+      entries.push({ role, text: `${prefix}: ${text}`, timestamp: timeStr });
+    } catch {}
+  }
+
+  devinLogCache.set(proc.sessionId, { dbMtime, entries });
+  return maxLines > 0 ? entries.slice(-maxLines) : entries;
+}
+
 function parseLogEntry(data) {
   // Extract human-readable conversation text from a JSONL entry.
   // Returns { role: 'user'|'assistant', text: string, timestamp: string|null } or null if not a conversation line.
@@ -2381,6 +2642,7 @@ const LOG_TAIL_BYTES = 4 * 1024 * 1024; // 4MB — read enough to capture full s
 function readSessionLog(proc, maxLines) {
   if (maxLines === undefined) maxLines = 0; // 0 = no limit
   if (proc && proc.agentType === 'opencode') return readOpenCodeSessionLog(proc, maxLines);
+  if (proc && proc.agentType === 'devin') return readDevinSessionLog(proc, maxLines);
   // Find the session JSONL file for this process (same logic as assignSessionsToProcesses)
   if (!proc || !proc.cwd) return [];
 
@@ -3041,17 +3303,19 @@ function renderStatsBar(columns) {
   const claudeActive = allProcesses.filter(p => p.isActive && p.agentType === 'claude').length;
   const codexActive = allProcesses.filter(p => p.isActive && p.agentType === 'codex').length;
   const opencodeActive = allProcesses.filter(p => p.isActive && p.agentType === 'opencode').length;
+  const devinActive = allProcesses.filter(p => p.isActive && p.agentType === 'devin').length;
   const totalCost = allProcesses.reduce((sum, p) => sum + (p.cost || 0), 0);
   const costCap = 50;
 
   // Status pills — show per-agent breakdown if multiple agent types are present
   let activePill;
-  const agentTypesPresent = (claudeActive > 0 ? 1 : 0) + (codexActive > 0 ? 1 : 0) + (opencodeActive > 0 ? 1 : 0);
+  const agentTypesPresent = (claudeActive > 0 ? 1 : 0) + (codexActive > 0 ? 1 : 0) + (opencodeActive > 0 ? 1 : 0) + (devinActive > 0 ? 1 : 0);
   if (agentTypesPresent > 1) {
     let parts = [];
     if (claudeActive > 0) parts.push(`${claudeActive}cl`);
     if (codexActive > 0) parts.push(`${codexActive}cx`);
     if (opencodeActive > 0) parts.push(`${opencodeActive}oc`);
+    if (devinActive > 0) parts.push(`${devinActive}dv`);
     activePill = `${GREEN}\u25CF ${parts.join('+')}`;
   } else {
     activePill = `${GREEN}\u25CF ${activeCount} active`;
@@ -3146,7 +3410,7 @@ function renderPaneMode() {
   const endRow = Math.min(totalRows, scrollRow + maxVisibleCardRows);
 
   if (processes.length === 0) {
-    output += `${CLR_LINE}\n${DIM}  No agent processes found. (Monitoring Claude Code + Codex CLI + OpenCode)${RESET}${CLR_LINE}\n`;
+    output += `${CLR_LINE}\n${DIM}  No agent processes found. (Monitoring Claude Code + Codex CLI + OpenCode + Devin)${RESET}${CLR_LINE}\n`;
   }
 
   for (let r = scrollRow; r < endRow; r++) {
@@ -4030,7 +4294,7 @@ function renderNow() {
     const gEndIdx = Math.min(groupedFlatList.length, gStartIdx + maxVisible);
 
     if (groupedFlatList.length === 0) {
-      output += `${CLR_LINE}\n${DIM}  No agent processes found. (Monitoring Claude Code + Codex CLI + OpenCode)${RESET}${CLR_LINE}\n`;
+      output += `${CLR_LINE}\n${DIM}  No agent processes found. (Monitoring Claude Code + Codex CLI + OpenCode + Devin)${RESET}${CLR_LINE}\n`;
     }
 
     let procIndex = 0; // counter for process items only (skipping group headers)
@@ -4077,11 +4341,12 @@ function renderNow() {
   } else {
   // Non-grouped (normal) process list — with agent type sections
 
-  // Sort by agent type first (claude, codex, opencode), preserving existing sort within each type
+  // Sort by agent type first (claude, codex, opencode, devin), preserving existing sort within each type
   const claudeProcs = processes.filter(p => p.agentType === 'claude');
   const codexProcs = processes.filter(p => p.agentType === 'codex');
   const opencodeProcs = processes.filter(p => p.agentType === 'opencode');
-  const sectionedProcesses = [...claudeProcs, ...codexProcs, ...opencodeProcs];
+  const devinProcs = processes.filter(p => p.agentType === 'devin');
+  const sectionedProcesses = [...claudeProcs, ...codexProcs, ...opencodeProcs, ...devinProcs];
   // Remap selectedIndex to the sectioned ordering
   if (processes.length > 0 && sectionedProcesses.length > 0) {
     const selectedPid = processes[selectedIndex]?.pid;
@@ -4094,7 +4359,7 @@ function renderNow() {
   const endIdx = Math.min(processes.length, startIdx + maxVisible);
 
   if (processes.length === 0) {
-    output += `${CLR_LINE}\n${DIM}  No agent processes found. (Monitoring Claude Code + Codex CLI + OpenCode)${RESET}${CLR_LINE}\n`;
+    output += `${CLR_LINE}\n${DIM}  No agent processes found. (Monitoring Claude Code + Codex CLI + OpenCode + Devin)${RESET}${CLR_LINE}\n`;
   }
 
   // Track which section we're in to emit headers
@@ -4112,6 +4377,7 @@ function renderNow() {
         claude: { label: ' Claude Code ', color: ORANGE, count: claudeProcs.length },
         codex: { label: ' Codex CLI ', color: BLUE, count: codexProcs.length },
         opencode: { label: ' OpenCode ', color: OPENCODE_GREEN, count: opencodeProcs.length },
+        devin: { label: ' Devin ', color: DEVIN_VIOLET, count: devinProcs.length },
       };
       const cfg = sectionConfig[section] || sectionConfig.claude;
       if (cfg.count > 0) {
@@ -5898,6 +6164,11 @@ module.exports = {
   readOpenCodeSessionLog,
   hasSqlite3,
   queryOpenCodeDb,
+  // Devin support
+  getDevinProcesses,
+  assignDevinSessionsToProcesses,
+  readDevinSessionLog,
+  queryDevinDb,
   // Compaction detection
   detectCompaction,
   compactionState,
