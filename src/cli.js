@@ -363,6 +363,114 @@ Show git diff summary for the session's working directory.
   return 0;
 }
 
+// Returns the uid that owns a PID (Unix), or null on error / on Windows.
+// Used to refuse cross-user kills as defense-in-depth.
+function getPidUid(pid) {
+  if (process.platform === 'win32') return null;
+  try {
+    const { execSync } = require('node:child_process');
+    const out = execSync(`ps -o uid= -p ${pid}`, {
+      encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], timeout: 5000,
+    }).trim();
+    const n = parseInt(out, 10);
+    return Number.isFinite(n) ? n : null;
+  } catch {
+    return null;
+  }
+}
+
+function cmdKill(args) {
+  if (args.flags.help || args.flags.h) {
+    process.stdout.write(`Usage: ctop kill <pid> [--force] [--json]
+
+Send SIGTERM (or SIGKILL with --force) to one agent session.
+
+Authorization:
+  - You may always kill PIDs you own.
+  - Cross-user PIDs are refused (uid check on Unix; not enforced on Windows).
+  - There is no kill-all. Enumerate explicitly via \`ctop ls\` first.
+`);
+    return 0;
+  }
+  const pid = args.positional[0];
+  if (!pid) {
+    process.stderr.write('ctop kill: missing required <pid> argument\n');
+    return 1;
+  }
+  const n = Number(pid);
+  if (!Number.isFinite(n) || n <= 0) {
+    process.stderr.write(`ctop kill: invalid pid "${pid}"\n`);
+    return 1;
+  }
+
+  // Cross-user check (Unix only — process.getuid is undefined on Windows)
+  if (typeof process.getuid === 'function') {
+    const myUid = process.getuid();
+    const theirUid = getPidUid(n);
+    if (theirUid != null && theirUid !== myUid) {
+      const msg = `ctop kill: pid ${n} is owned by uid ${theirUid}, refusing (you are uid ${myUid})\n`;
+      if (args.flags.json) {
+        const fmt = loadFmt();
+        process.stdout.write(fmt.toJson({ pid: n, killed: false, message: msg.trim() }));
+      } else {
+        process.stderr.write(msg);
+      }
+      return 1;
+    }
+  }
+
+  const core = loadCore();
+  const fmt = loadFmt();
+  // Only allow killing PIDs that ctop actually knows about as agent sessions —
+  // prevents an agent from being tricked into killing arbitrary processes
+  // through ctop's interface. (You can still use the system `kill` for that.)
+  const procs = core.getAllAgentProcesses();
+  const proc = findProc(procs, n);
+  if (!proc) {
+    const msg = `pid ${n} is not a known agent session (use \`ctop ls\` to see what's running)`;
+    if (args.flags.json) {
+      process.stdout.write(fmt.toJson({ pid: n, killed: false, message: msg }));
+    } else {
+      process.stderr.write(`ctop kill: ${msg}\n`);
+    }
+    return 1;
+  }
+
+  const force = !!(args.flags.force || args.flags.f);
+  const signal = force ? 'SIGKILL' : 'SIGTERM';
+  const killed = core.killProcess(String(n), force);
+  const message = killed
+    ? `sent ${signal} to pid ${n} (${proc.agentType})`
+    : `failed to kill pid ${n}`;
+
+  if (args.flags.json) {
+    process.stdout.write(fmt.toJson({ pid: n, signal, killed, message }));
+  } else {
+    process.stdout.write(message + '\n');
+  }
+  return killed ? 0 : 1;
+}
+
+function cmdNotify(args) {
+  if (args.flags.help || args.flags.h) {
+    process.stdout.write(`Usage: ctop notify <title> <message>
+
+Send a desktop notification. Backend is osascript on macOS, libnotify
+on Linux, MessageBox on Windows.
+`);
+    return 0;
+  }
+  const title = args.positional[0];
+  const message = args.positional[1];
+  if (!title || !message) {
+    process.stderr.write('ctop notify: missing required <title> and <message> arguments\n');
+    return 1;
+  }
+  const core = loadCore();
+  core.sendNotification(title, message);
+  return 0;
+}
+
 // --- Router ---
 
 function run(subcommand, rawArgs) {
@@ -378,6 +486,8 @@ function run(subcommand, rawArgs) {
       case 'diff':   code = cmdDiff(args); break;
       case 'whoami': code = cmdWhoami(args); break;
       case 'alerts': code = cmdAlerts(args); break;
+      case 'kill':   code = cmdKill(args); break;
+      case 'notify': code = cmdNotify(args); break;
       default:
         process.stderr.write(`ctop: subcommand "${subcommand}" not yet implemented\n`);
         code = 1;
@@ -398,5 +508,5 @@ module.exports = {
   printRootHelp,
   run,
   // Exposed for unit testing without spawning child processes.
-  _handlers: { cmdLs, cmdGet, cmdStats, cmdLog, cmdSearch, cmdDiff, cmdWhoami, cmdAlerts },
+  _handlers: { cmdLs, cmdGet, cmdStats, cmdLog, cmdSearch, cmdDiff, cmdWhoami, cmdAlerts, cmdKill, cmdNotify },
 };

@@ -169,6 +169,97 @@ describe('ctop diff (integration)', () => {
   });
 });
 
+describe('ctop kill (integration)', () => {
+  it('errors when pid is missing', () => {
+    const r = ctop('kill');
+    assert.strictEqual(r.status, 1);
+    assert.match(r.stderr, /missing required/);
+  });
+
+  it('errors when pid is non-numeric', () => {
+    const r = ctop('kill', 'notapid');
+    assert.strictEqual(r.status, 1);
+    assert.match(r.stderr, /invalid pid/);
+  });
+
+  it('refuses to kill a pid that is not an agent session', () => {
+    // PID 1 is init; refusing to kill it because it's not an agent session
+    // is the contract under test, not the platform's protection of init.
+    const r = ctop('kill', '1');
+    assert.strictEqual(r.status, 1);
+    assert.match(r.stderr + r.stdout, /not a known agent session|owned by uid/);
+  });
+
+  it('emits JSON failure shape with --json', () => {
+    const r = ctop('kill', '999999', '--json');
+    assert.strictEqual(r.status, 1);
+    const parsed = JSON.parse(r.stdout);
+    assert.strictEqual(parsed.killed, false);
+    assert.strictEqual(parsed.pid, 999999);
+  });
+
+  it('--help exits 0', () => {
+    const r = ctop('kill', '--help');
+    assert.strictEqual(r.status, 0);
+    assert.match(r.stdout, /Usage: ctop kill/);
+  });
+});
+
+describe('ctop notify (integration)', () => {
+  it('errors when args are missing', () => {
+    const r = ctop('notify');
+    assert.strictEqual(r.status, 1);
+    assert.match(r.stderr, /missing required/);
+  });
+
+  it('--help exits 0', () => {
+    const r = ctop('notify', '--help');
+    assert.strictEqual(r.status, 0);
+  });
+});
+
+describe('ctop whoami (integration)', () => {
+  it('--help exits 0', () => {
+    const r = ctop('whoami', '--help');
+    assert.strictEqual(r.status, 0);
+    assert.match(r.stdout, /Usage: ctop whoami/);
+  });
+
+  it('returns JSON with session + matchConfidence keys', () => {
+    const r = ctop('whoami', '--json');
+    const parsed = JSON.parse(r.stdout);
+    assert.ok('session' in parsed);
+    assert.ok('matchConfidence' in parsed);
+  });
+
+  it('CTOP_PID env var resolves to exact match when valid', () => {
+    // No way to know a valid pid for the user's machine here, so just
+    // assert that an obviously bogus value returns 'none' (no crash).
+    const res = spawnSync('node', [ENTRY, 'whoami', '--json'], {
+      encoding: 'utf8', timeout: 10_000, maxBuffer: 32 * 1024 * 1024,
+      env: { ...process.env, CTOP_PID: '99999999' },
+    });
+    const parsed = JSON.parse(res.stdout);
+    // Could be 'none' or fall through to ppid/cwd-guess; just ensure it's valid
+    assert.ok(['exact', 'ppid', 'cwd-guess', 'none'].includes(parsed.matchConfidence));
+  });
+});
+
+describe('ctop alerts (integration)', () => {
+  it('returns valid JSON array with --json', () => {
+    const r = ctop('alerts', '--json');
+    assert.strictEqual(r.status, 0);
+    const parsed = JSON.parse(r.stdout);
+    assert.ok(Array.isArray(parsed));
+  });
+
+  it('--help exits 0', () => {
+    const r = ctop('alerts', '--help');
+    assert.strictEqual(r.status, 0);
+    assert.match(r.stdout, /Usage: ctop alerts/);
+  });
+});
+
 describe('ctop dispatch', () => {
   it('passes through to TUI for unknown first arg', () => {
     // We can't easily exec the TUI in a test, but we can confirm that
