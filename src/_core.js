@@ -3690,12 +3690,23 @@ function renderLogPane(startRow, paneWidth, paneHeight, proc) {
   if (!proc || paneHeight < 3) return '';
   let output = '';
 
-  // Header separator
-  const heading = ` Session Log (PID: ${proc.pid}) `;
-  const hLen = paneWidth - heading.length;
-  const leftDash = Math.floor(hLen / 2);
-  const rightDash = hLen - leftDash;
-  output += `${ESC}[${startRow};1H${DIM}${'─'.repeat(Math.max(0, leftDash))}${RESET}${BOLD}${CYAN}${heading}${RESET}${DIM}${'─'.repeat(Math.max(0, rightDash))}${RESET}${CLR_LINE}`;
+  // Header: "Session Log: <name> (pid)" on the left, agent badge on the right.
+  const agentInfo = {
+    claude:   { name: 'Claude',   color: ORANGE },
+    codex:    { name: 'Codex',    color: BLUE },
+    opencode: { name: 'OpenCode', color: OPENCODE_GREEN },
+  }[proc.agentType] || { name: 'Claude', color: ORANGE };
+  const rightLabel = ` ${agentInfo.name} `;
+  const rawName = proc.sessionTitle || proc.title || proc.slug || 'session';
+  // Reserve room for the agent badge + at least 4 dashes between segments
+  const prefix = ` Session Log: `;
+  const suffix = ` (${proc.pid}) `;
+  const reserved = visualWidth(prefix) + visualWidth(suffix) + visualWidth(rightLabel) + 4;
+  const nameMax = Math.max(8, paneWidth - reserved);
+  const truncName = visualWidth(rawName) > nameMax ? visualTruncate(rawName, nameMax - 1) + '…' : rawName;
+  const leftLabel = `${prefix}${truncName}${suffix}`;
+  const fillLen = Math.max(0, paneWidth - visualWidth(leftLabel) - visualWidth(rightLabel));
+  output += `${ESC}[${startRow};1H${BOLD}${CYAN}${leftLabel}${RESET}${DIM}${'─'.repeat(fillLen)}${RESET}${BOLD}${agentInfo.color}${rightLabel}${RESET}${CLR_LINE}`;
 
   const contentRows = paneHeight - 1; // 1 for header
   if (contentRows <= 0) return output;
