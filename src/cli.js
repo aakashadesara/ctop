@@ -261,6 +261,42 @@ Full-text search across session JSONL content.
   return 0;
 }
 
+function cmdWhoami(args) {
+  if (args.flags.help || args.flags.h) {
+    process.stdout.write(`Usage: ctop whoami [--json] [--pid-only]
+
+Detect which agent session the calling process is part of. Detection
+strategy (highest confidence first):
+
+  1. $CTOP_PID environment variable
+  2. Walk parent PIDs looking for an agent process
+  3. Match $PWD against the most-recent ACTIVE session in that cwd
+
+Returns { session, matchConfidence } where matchConfidence is one of
+"exact" | "ppid" | "cwd-guess" | "none".
+`);
+    return 0;
+  }
+  const core = loadCore();
+  const fmt = loadFmt();
+  const whoami = require('./whoami');
+  const procs = core.getAllAgentProcesses();
+  const result = whoami.detect(procs, fmt.summarize);
+  if (args.flags['pid-only']) {
+    if (result.session) {
+      process.stdout.write(String(result.session.pid) + '\n');
+      return 0;
+    }
+    return 1;
+  }
+  if (args.flags.json) {
+    process.stdout.write(fmt.toJson(result));
+  } else {
+    process.stdout.write(fmt.formatWhoamiHuman(result));
+  }
+  return result.session ? 0 : 1;
+}
+
 function cmdDiff(args) {
   if (args.flags.help || args.flags.h) {
     process.stdout.write(`Usage: ctop diff <pid|cwd> [--json]
@@ -311,6 +347,7 @@ function run(subcommand, rawArgs) {
       case 'log':    code = cmdLog(args); break;
       case 'search': code = cmdSearch(args); break;
       case 'diff':   code = cmdDiff(args); break;
+      case 'whoami': code = cmdWhoami(args); break;
       default:
         process.stderr.write(`ctop: subcommand "${subcommand}" not yet implemented\n`);
         code = 1;
@@ -331,5 +368,5 @@ module.exports = {
   printRootHelp,
   run,
   // Exposed for unit testing without spawning child processes.
-  _handlers: { cmdLs, cmdGet, cmdStats, cmdLog, cmdSearch, cmdDiff },
+  _handlers: { cmdLs, cmdGet, cmdStats, cmdLog, cmdSearch, cmdDiff, cmdWhoami },
 };
