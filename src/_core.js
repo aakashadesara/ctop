@@ -493,6 +493,53 @@ function clearAnimationTimer() {
   }
 }
 
+// Braille spinner for ACTIVE indicator. Animates only when the row had token
+// activity in the last 30s; otherwise renders the static full braille glyph.
+const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+const SPINNER_INTERVAL_MS = 80;
+const SPINNER_ACTIVITY_WINDOW_MS = 30000;
+const SPINNER_IDLE_CHAR = '⣿';
+let spinnerTimer = null;
+
+function getSpinnerFrame() {
+  return SPINNER_FRAMES[Math.floor(Date.now() / SPINNER_INTERVAL_MS) % SPINNER_FRAMES.length];
+}
+
+function hasRecentTokenActivity(proc, now = Date.now()) {
+  const hist = tokenHistory.get(proc.pid);
+  const lastActive = hist && hist.lastActive ? hist.lastActive : 0;
+  return lastActive > 0 && (now - lastActive) < SPINNER_ACTIVITY_WINDOW_MS;
+}
+
+function getActivityChar(proc) {
+  if (hasRecentTokenActivity(proc)) {
+    ensureSpinnerTimer();
+    return getSpinnerFrame();
+  }
+  return SPINNER_IDLE_CHAR;
+}
+
+function ensureSpinnerTimer() {
+  if (spinnerTimer) return;
+  spinnerTimer = setInterval(() => {
+    const now = Date.now();
+    const stillAnimating = Array.isArray(processes) && processes.some(p => p && hasRecentTokenActivity(p, now));
+    if (!stillAnimating) {
+      clearInterval(spinnerTimer);
+      spinnerTimer = null;
+      return;
+    }
+    render();
+  }, SPINNER_INTERVAL_MS);
+}
+
+function clearSpinnerTimer() {
+  if (spinnerTimer) {
+    clearInterval(spinnerTimer);
+    spinnerTimer = null;
+  }
+}
+
 // Command palette
 const COMMANDS = [
   { name: 'Kill selected process', shortcut: 'x', action: 'kill' },
@@ -3180,16 +3227,16 @@ function renderPaneMode() {
           let content = '';
           const inner = cardWidth - 4; // 2 for borders, 2 for padding
           if (line === 1) {
-            // PID + Status
+            // Status (with braille spinner) on left, PID on right
             let statusColor = isSelected ? '' : THEME.active;
             if (proc.isZombie) statusColor = isSelected ? '' : THEME.zombie;
             else if (proc.isStopped) statusColor = isSelected ? '' : THEME.stopped;
             else if (!proc.isActive) statusColor = isSelected ? '' : THEME.sleeping;
-            const statusDot = proc.isActive ? '●' : proc.isZombie ? '✗' : '○';
+            const statusDot = proc.isActive ? getActivityChar(proc) : proc.isZombie ? '✗' : '○';
             const pidPart = `PID:${proc.pid}`;
             const statusPart = `${statusDot} ${proc.status}`;
             const gap = inner - pidPart.length - proc.status.length - 2; // 2 for dot+space
-            content = `${selStart}│ ${pidPart}${' '.repeat(Math.max(1, gap))}${isSelected ? '' : statusColor}${statusPart}${isSelected ? '' : RESET}${selStart} │${selEnd}`;
+            content = `${selStart}│ ${isSelected ? '' : statusColor}${statusPart}${isSelected ? '' : RESET}${selStart}${' '.repeat(Math.max(1, gap))}${pidPart} │${selEnd}`;
           } else if (line === 2) {
             // CPU + MEM
             const cpuStr = `CPU:${proc.cpu.toFixed(1)}%`;
@@ -3739,7 +3786,7 @@ function renderLogPane(startRow, paneWidth, paneHeight, proc) {
 // Returns the ANSI string for the row (including trailing CLR_LINE + newline).
 function renderProcessRow(proc, isSelected, isPrevSelected, opts) {
   const { ctxBarMode, isNarrow, showCostCol, costColW, pluginCols,
-          showSparklines, sparkColW, gitColW, showTokRateCol, tokRateColW,
+          showSparklines, sparkColW, gitColW,
           listWidth, fixedColsTotal, showDetailPane } = opts;
   let row = '';
 
@@ -3759,13 +3806,14 @@ function renderProcessRow(proc, isSelected, isPrevSelected, opts) {
   // PID
   row += `${isSelected ? '' : THEME.accent}${proc.pid.padEnd(8)}`;
 
-  // Status with compaction indicator
+  // Status with braille spinner and compaction indicator
   let stClr = THEME.active;
   if (proc.isZombie) stClr = THEME.zombie;
   else if (proc.isStopped) stClr = THEME.stopped;
   else if (!proc.isActive) stClr = THEME.sleeping;
   const compactMark = proc.compacted ? '\u21BB' : '';
-  const statusText = `${proc.status}${compactMark}`.padEnd(10);
+  const spinChar = proc.isActive ? getActivityChar(proc) : proc.isZombie ? '\u2717' : '\u25CB';
+  const statusText = `${spinChar} ${proc.status}${compactMark}`.padEnd(11);
   row += `${isSelected ? '' : stClr}${statusText}${isSelected ? '' : RESET}`;
 
   // CTX LEFT
@@ -3896,17 +3944,6 @@ function renderProcessRow(proc, isSelected, isPrevSelected, opts) {
     }
   }
 
-  // TOK/S column
-  if (showTokRateCol) {
-    const rateVal = proc.tokenRate || 0;
-    const rateStr = formatTokenRate(rateVal);
-    if (!isSelected) {
-      row += rateVal > 0 ? GREEN : DIM;
-    }
-    row += `${rateStr.padEnd(tokRateColW)}`;
-    if (!isSelected) row += RESET;
-  }
-
   row += `${(isSelected || isPrevSelected) ? RESET : ''}${CLR_LINE}\n`;
   return row;
 }
@@ -3971,30 +4008,27 @@ function renderNow() {
   const sparkColW = 10; // 8 chars sparkline + 2 padding
   const gitColW = 10; // GIT column width (replaces MEM-HIST)
   const showSparklines = columns >= 180;
-  const tokRateColW = 7; // TOK/S column width
-  const showTokRateCol = columns >= 200;
   // Plugin columns — extra width from loaded plugins
   const pluginCols = plugins.filter(p => p.column);
   const pluginColsWidth = pluginCols.reduce((sum, p) => sum + (p.column.width || 10), 0);
-  // In narrow mode: PID(8) + STATUS(10) + CTX(6) + STARTED(12) + MODEL(14) + CPU%(7) + MEM%(5) + pad(2) = 64
-  // In wide mode: full columns with BRANCH, TITLE, DIRECTORY, and optionally COST + sparklines + TOK/S
+  // In narrow mode: PID(8) + STATUS(11) + CTX(6) + STARTED(12) + MODEL(14) + CPU%(7) + MEM%(5) + pad(2) = 65
+  // In wide mode: full columns with BRANCH, TITLE, DIRECTORY, and optionally COST + sparklines
   const fixedColsTotal = isNarrow
-    ? 8 + 10 + ctxColW + 12 + 14 + 7 + 7 + 2 + pluginColsWidth
-    : 8 + 10 + ctxColW + 12 + 32 + 22 + 14 + (showCostCol ? costColW : 0) + pluginColsWidth + 1 + 7 + (showSparklines ? sparkColW : 0) + 7 + (showSparklines ? gitColW : 0) + (showTokRateCol ? tokRateColW : 0) + 2;
+    ? 8 + 11 + ctxColW + 12 + 14 + 7 + 7 + 2 + pluginColsWidth
+    : 8 + 11 + ctxColW + 12 + 32 + 22 + 14 + (showCostCol ? costColW : 0) + pluginColsWidth + 1 + 7 + (showSparklines ? sparkColW : 0) + 7 + (showSparklines ? gitColW : 0) + 2;
   output += `${BOLD}${CYAN}`;
   if (isNarrow) {
-    output += `  ${'PID'.padEnd(8)}${'STATUS'.padEnd(10)}${'CTX'.padEnd(ctxColW)}${'STARTED'.padEnd(12)}${'MODEL'.padEnd(14)}`;
+    output += `  ${'PID'.padEnd(8)}${'STATUS'.padEnd(11)}${'CTX'.padEnd(ctxColW)}${'STARTED'.padEnd(12)}${'MODEL'.padEnd(14)}`;
     for (const p of pluginCols) output += `${(p.column.header || '').padEnd(p.column.width || 10)}`;
     output += `${'CPU%'.padEnd(7)}MEM%`;
   } else {
-    output += `  ${'PID'.padEnd(8)}${'STATUS'.padEnd(10)}${'CTX'.padEnd(ctxColW)}${'STARTED'.padEnd(12)}${'BRANCH'.padEnd(32)}${'TITLE'.padEnd(22)}${'MODEL'.padEnd(14)}`;
+    output += `  ${'PID'.padEnd(8)}${'STATUS'.padEnd(11)}${'CTX'.padEnd(ctxColW)}${'STARTED'.padEnd(12)}${'BRANCH'.padEnd(32)}${'TITLE'.padEnd(22)}${'MODEL'.padEnd(14)}`;
     if (showCostCol) output += `${'COST'.padEnd(costColW)}`;
     for (const p of pluginCols) output += `${(p.column.header || '').padEnd(p.column.width || 10)}`;
     output += `${'DIRECTORY'.padEnd(Math.max(0, listWidth - fixedColsTotal))}${'CPU%'.padEnd(7)}`;
     if (showSparklines) output += `${'CPU-HIST'.padEnd(sparkColW)}`;
     output += `${'MEM%'.padEnd(7)}`;
     if (showSparklines) output += `${'GIT'.padEnd(gitColW)}`;
-    if (showTokRateCol) output += `${'TOK/S'.padEnd(tokRateColW)}`;
   }
   output += `${RESET}${CLR_LINE}\n`;
   output += `${DIM}${'─'.repeat(listWidth)}${RESET}${CLR_LINE}\n`;
@@ -4053,7 +4087,7 @@ function renderNow() {
 
         output += renderProcessRow(proc, isSelected, false, {
           ctxBarMode, isNarrow, showCostCol, costColW, pluginCols,
-          showSparklines, sparkColW, gitColW, showTokRateCol, tokRateColW,
+          showSparklines, sparkColW, gitColW,
           listWidth, fixedColsTotal, showDetailPane,
         });
       }
@@ -4112,7 +4146,7 @@ function renderNow() {
     const isPrevSelected = CONFIG.animations && selectionAnimFrame > 0 && i === prevSelectedIndex;
     output += renderProcessRow(proc, isSelected, isPrevSelected, {
       ctxBarMode, isNarrow, showCostCol, costColW, pluginCols,
-      showSparklines, sparkColW, gitColW, showTokRateCol, tokRateColW,
+      showSparklines, sparkColW, gitColW,
       listWidth, fixedColsTotal, showDetailPane,
     });
 
@@ -5710,6 +5744,7 @@ async function playBootAnimation(columns, rows) {
 function cleanup() {
   // Clear animation timer
   clearAnimationTimer();
+  clearSpinnerTimer();
   // Call plugin cleanup functions
   for (const p of plugins) {
     if (typeof p.cleanup === 'function') {
