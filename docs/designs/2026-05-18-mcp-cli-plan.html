@@ -1,0 +1,771 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ctop CLI + MCP — Design Plan</title>
+<style>
+  :root {
+    --bg:           #0d1117;
+    --surface:      #161b22;
+    --surface-2:    #1c2128;
+    --text:         #f0f6fc;
+    --text-body:    #c9d1d9;
+    --text-muted:   #8b949e;
+    --text-faint:   #6e7681;
+    --green:        #7ee787;
+    --green-dark:   #238636;
+    --green-bg:     #1a3a2a;
+    --blue:         #58a6ff;
+    --blue-dark:    #1f6feb;
+    --blue-bg:      #1a2a3a;
+    --red:          #f85149;
+    --red-bg:       #3b1a1a;
+    --orange:       #f0883e;
+    --orange-bg:    #3b2e1a;
+    --purple:       #bc8cff;
+    --purple-bg:    #2a1a3a;
+    --yellow:       #e3b341;
+    --yellow-bg:    #2a2a1a;
+    --border:       #30363d;
+    --border-hover: #58a6ff;
+    --mono:  'SF Mono', 'Fira Code', ui-monospace, Menlo, Monaco, monospace;
+    --sans:  -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    --radius:    8px;
+    --radius-sm: 6px;
+    --radius-pill: 99px;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text-body);
+    font-family: var(--sans);
+    font-size: 15px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+  main { max-width: 1080px; margin: 0 auto; padding: 3rem 1.5rem 6rem; }
+
+  /* Typography */
+  h1 { font-size: 2.25rem; color: var(--text); margin: 0 0 0.5rem; font-weight: 700; letter-spacing: -0.02em; }
+  h2 { font-size: 1.5rem; color: var(--text); margin: 3rem 0 1rem; font-weight: 600; letter-spacing: -0.01em; border-bottom: 1px solid var(--border); padding-bottom: 0.5rem; }
+  h3 { font-size: 1.1rem; color: var(--text); margin: 1.75rem 0 0.5rem; font-weight: 600; }
+  h4 { font-size: 0.95rem; color: var(--text); margin: 1.25rem 0 0.5rem; font-weight: 600; }
+  p { margin: 0 0 1rem; color: var(--text-body); }
+  a { color: var(--blue); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code { font-family: var(--mono); font-size: 0.85em; background: var(--surface-2); color: var(--green); padding: 0.1em 0.35em; border-radius: 4px; }
+  ul, ol { color: var(--text-body); padding-left: 1.5rem; }
+  li { margin-bottom: 0.35rem; }
+  hr { border: 0; border-top: 1px solid var(--border); margin: 2rem 0; }
+
+  /* Header */
+  header { margin-bottom: 2.5rem; }
+  .subtitle { color: var(--text-muted); font-size: 1.05rem; margin: 0 0 0.75rem; }
+  .meta { display: flex; gap: 1rem; flex-wrap: wrap; align-items: center; font-family: var(--mono); font-size: 0.78rem; color: var(--text-faint); }
+  .meta span { display: inline-flex; align-items: center; gap: 0.35rem; }
+  .meta span::before { content: ''; width: 4px; height: 4px; background: var(--text-faint); border-radius: 50%; }
+  .meta span:first-child::before { display: none; }
+
+  /* TL;DR callout */
+  .tldr {
+    background: linear-gradient(135deg, var(--green-bg) 0%, var(--surface) 100%);
+    border: 1px solid var(--green-dark);
+    border-left: 3px solid var(--green);
+    border-radius: var(--radius);
+    padding: 1.25rem 1.5rem;
+    margin-bottom: 2.5rem;
+  }
+  .tldr .label { font-family: var(--mono); font-size: 0.7rem; color: var(--green); text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 0.5rem; }
+  .tldr p { color: var(--text); margin: 0; }
+  .tldr p + p { margin-top: 0.5rem; }
+
+  /* Cards */
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 1.25rem 1.5rem;
+    margin-bottom: 1rem;
+  }
+
+  /* Stat cards */
+  .stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 1rem; margin: 1rem 0 2rem; }
+  .stat-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 1.25rem 1rem; text-align: center; }
+  .stat-card .num { font-family: var(--mono); font-size: 2rem; font-weight: 700; color: var(--blue); line-height: 1; }
+  .stat-card .num.green { color: var(--green); }
+  .stat-card .num.purple { color: var(--purple); }
+  .stat-card .num.orange { color: var(--orange); }
+  .stat-card .label { font-size: 0.7rem; color: var(--text-faint); text-transform: uppercase; letter-spacing: 0.08em; margin-top: 0.5rem; font-weight: 600; }
+  .stat-card .sub { font-size: 0.75rem; color: var(--text-muted); margin-top: 0.35rem; }
+
+  /* Badges */
+  .badge { display: inline-block; font-size: 0.65rem; padding: 0.18rem 0.55rem; border-radius: var(--radius-pill); text-transform: uppercase; font-weight: 700; letter-spacing: 0.05em; font-family: var(--mono); }
+  .badge-green { background: var(--green-bg); color: var(--green); }
+  .badge-red { background: var(--red-bg); color: var(--red); }
+  .badge-orange { background: var(--orange-bg); color: var(--orange); }
+  .badge-purple { background: var(--purple-bg); color: var(--purple); }
+  .badge-blue { background: var(--blue-bg); color: var(--blue); }
+  .badge-yellow { background: var(--yellow-bg); color: var(--yellow); }
+
+  /* Code blocks */
+  .code-block {
+    font-family: var(--mono); font-size: 0.8rem;
+    background: var(--bg); border: 1px solid var(--border);
+    border-radius: var(--radius-sm); padding: 0.9rem 1rem;
+    overflow-x: auto; line-height: 1.65;
+    color: var(--text-body);
+    margin: 0.5rem 0;
+  }
+  .code-block .c { color: var(--text-faint); }       /* comments */
+  .code-block .k { color: var(--purple); }           /* keywords */
+  .code-block .s { color: var(--green); }            /* strings */
+  .code-block .n { color: var(--blue); }             /* numbers */
+  .code-block .f { color: var(--blue); }             /* functions */
+  .code-block .v { color: var(--orange); }           /* variables */
+  .code-block .p { color: var(--text-faint); }       /* punctuation */
+  .code-block .prompt { color: var(--green); user-select: none; }
+
+  /* Tables */
+  .data-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; margin: 0.5rem 0 1.5rem; }
+  .data-table th { text-align: left; padding: 0.6rem 0.75rem; color: var(--text); border-bottom: 2px solid var(--border); font-weight: 600; font-size: 0.8rem; }
+  .data-table td { padding: 0.6rem 0.75rem; color: var(--text-body); border-bottom: 1px solid var(--surface-2); vertical-align: top; }
+  .data-table tr:hover td { background: var(--surface); }
+  .data-table .tool-name { font-family: var(--mono); color: var(--green); font-weight: 600; }
+  .data-table .args { font-family: var(--mono); font-size: 0.78rem; color: var(--text-muted); }
+
+  /* Two-column comparison */
+  .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin: 1rem 0 1.5rem; }
+  @media (max-width: 720px) { .two-col { grid-template-columns: 1fr; } }
+  .col-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 1.25rem; }
+  .col-card h4 { margin-top: 0; display: flex; align-items: center; gap: 0.5rem; }
+  .col-card h4 .badge { font-size: 0.6rem; }
+
+  /* Tool detail card */
+  .tool-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 1.25rem 1.5rem;
+    margin-bottom: 1rem;
+  }
+  .tool-card .header { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 0.5rem; flex-wrap: wrap; }
+  .tool-card .tool-id { font-family: var(--mono); font-size: 1.05rem; color: var(--green); font-weight: 600; }
+  .tool-card .desc { color: var(--text-muted); font-size: 0.9rem; margin-bottom: 0.75rem; }
+  .tool-card .args-list { font-family: var(--mono); font-size: 0.78rem; color: var(--text-body); margin: 0.5rem 0 0.75rem; padding: 0.5rem 0.75rem; background: var(--surface-2); border-radius: var(--radius-sm); border-left: 2px solid var(--blue); }
+  .tool-card .args-list .arg-name { color: var(--orange); }
+  .tool-card .args-list .arg-req { color: var(--red); }
+  .tool-card .args-list .arg-opt { color: var(--text-faint); }
+  .tool-card .returns { font-family: var(--mono); font-size: 0.78rem; color: var(--purple); margin-top: 0.35rem; }
+
+  /* Mental model diagram (ASCII) */
+  .diagram {
+    font-family: var(--mono);
+    font-size: 0.8rem;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 1.5rem 1rem;
+    color: var(--text-body);
+    line-height: 1.4;
+    white-space: pre;
+    overflow-x: auto;
+    margin: 1rem 0;
+  }
+
+  /* Phase timeline */
+  .phases { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 1rem; margin: 1rem 0; }
+  .phase {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 1.25rem;
+    position: relative;
+  }
+  .phase.p1 { border-left: 3px solid var(--green); }
+  .phase.p2 { border-left: 3px solid var(--blue); }
+  .phase.p3 { border-left: 3px solid var(--purple); }
+  .phase .phase-label { font-family: var(--mono); font-size: 0.7rem; color: var(--text-faint); text-transform: uppercase; letter-spacing: 0.1em; }
+  .phase .phase-title { font-size: 1rem; color: var(--text); font-weight: 600; margin: 0.35rem 0; }
+  .phase .phase-time { font-family: var(--mono); font-size: 0.75rem; color: var(--blue); margin-bottom: 0.75rem; }
+  .phase ul { font-size: 0.85rem; padding-left: 1.1rem; margin: 0; }
+  .phase ul li { color: var(--text-body); margin-bottom: 0.25rem; }
+
+  /* Open questions */
+  .question {
+    background: var(--surface);
+    border-left: 3px solid var(--yellow);
+    border-radius: var(--radius-sm);
+    padding: 1rem 1.25rem;
+    margin-bottom: 0.75rem;
+  }
+  .question .q { color: var(--text); font-weight: 600; margin-bottom: 0.35rem; }
+  .question .a { color: var(--text-muted); font-size: 0.9rem; }
+
+  /* Callouts */
+  .callout { background: var(--blue-bg); border-left: 3px solid var(--blue); border-radius: var(--radius-sm); padding: 0.9rem 1.25rem; margin: 1rem 0; font-size: 0.9rem; color: var(--text-body); }
+  .callout.warn { background: var(--orange-bg); border-left-color: var(--orange); }
+  .callout.danger { background: var(--red-bg); border-left-color: var(--red); }
+  .callout.label { display: inline-block; font-family: var(--mono); font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--blue); margin-right: 0.5rem; font-weight: 700; }
+
+  /* Section anchors */
+  .section-num { color: var(--text-faint); font-family: var(--mono); font-weight: 400; margin-right: 0.5rem; }
+
+  /* Footer */
+  footer { margin-top: 4rem; padding-top: 2rem; border-top: 1px solid var(--border); color: var(--text-faint); font-size: 0.85rem; text-align: center; }
+</style>
+</head>
+<body>
+<main>
+
+<header>
+  <h1>ctop as an Agent Surface</h1>
+  <p class="subtitle">Exposing session data via CLI + MCP so AI agents can introspect themselves and coordinate across terminals.</p>
+  <div class="meta">
+    <span>Design Plan</span>
+    <span>2026-05-18</span>
+    <span>Status: Draft</span>
+    <span>Issue: <a href="https://twitter.com/imjaredz">@imjaredz idea</a></span>
+  </div>
+</header>
+
+<div class="tldr">
+  <div class="label">TL;DR</div>
+  <p>Ship two surfaces on top of ctop's existing session data — a thin <code>ctop</code> CLI in JSON-output mode (lives in core, zero-dep) and a separate <code>ctop-mcp</code> package (depends on the MCP SDK).</p>
+  <p>Expose ~10 tools split across <span class="badge badge-green">READ</span> <span class="badge badge-blue">SELF</span> <span class="badge badge-orange">ALERT</span> <span class="badge badge-red">WRITE</span>. The <code>whoami</code> and <code>get_alerts</code> tools are the killer features — they let a session ask "should <em>I</em> compact?" or "which of my <em>sister</em> sessions is in trouble?"</p>
+  <p>Phase 1 (CLI) is ~1 day. Phase 2 (MCP wrapper) is ~1 day. Phase 3 (streaming resources) is a follow-up.</p>
+</div>
+
+<h2><span class="section-num">01</span>Why</h2>
+
+<p>From the tweet thread: <em>"this is sick! can I have my master agent control my ctop??"</em> — Jared Zoneraich</p>
+
+<p>Today, every Claude/Codex/OpenCode session runs in its own terminal, blind to its siblings. The user is the only entity holding the cross-session picture, and they're holding it via eyeballs on the ctop TUI. That doesn't compose with agents:</p>
+
+<ul>
+  <li>An agent burning context can't see it's about to compact until the editor warns it — by then the next message will trigger a costly compaction.</li>
+  <li>A "master" agent dispatching to sub-agents has no way to read what they're working on, kill ghost sessions, or notice one is stalled.</li>
+  <li>Cross-cutting checks (am I duplicating work happening in branch <code>feat/x</code> over in another window?) require human cross-referencing.</li>
+</ul>
+
+<p>ctop already aggregates this data — it's just trapped inside a TUI render loop. Exposing it programmatically costs us ~300 lines of glue.</p>
+
+<h3>The mental model</h3>
+<div class="diagram">       terminal 1            terminal 2            terminal 3
+       ┌──────────┐          ┌──────────┐          ┌──────────┐
+       │ claude   │          │ codex    │          │ opencode │  ← agent sessions
+       │ (master) │          │ (sub)    │          │ (sub)    │
+       └────┬─────┘          └────┬─────┘          └────┬─────┘
+            │                     │                     │
+            │ session JSONL       │ session JSONL       │ session sqlite
+            ▼                     ▼                     ▼
+       ┌────────────────────────────────────────────────────────┐
+       │  ctop core  (getAllAgentProcesses, readSessionLog…)    │
+       └──────────────────────┬─────────────────────────────────┘
+                              │
+              ┌───────────────┴───────────────┐
+              ▼                               ▼
+       ┌──────────────┐                ┌──────────────┐
+       │  ctop CLI    │                │  ctop-mcp    │   ← new surfaces
+       │  --json mode │                │  stdio JSONRPC│
+       └──────┬───────┘                └──────┬───────┘
+              │                               │
+              ▼                               ▼
+        any tool: shell,                Claude / Codex /
+        cron, agent's Bash              OpenCode tool registry</div>
+
+<h2><span class="section-num">02</span>What ctop already knows</h2>
+
+<p>For each session, ctop has these fields populated by <code>getAllAgentProcesses()</code> and friends. Everything below is <em>free</em> — no new collection needed.</p>
+
+<div class="stat-grid">
+  <div class="stat-card">
+    <div class="num green">36</div>
+    <div class="label">Fields / session</div>
+    <div class="sub">pid, model, tokens, cost, branch, cwd, status, contextPct, …</div>
+  </div>
+  <div class="stat-card">
+    <div class="num">3</div>
+    <div class="label">Agent backends</div>
+    <div class="sub">Claude · Codex · OpenCode</div>
+  </div>
+  <div class="stat-card">
+    <div class="num purple">~5s</div>
+    <div class="label">Refresh cadence</div>
+    <div class="sub">Already polling on TUI tick</div>
+  </div>
+  <div class="stat-card">
+    <div class="num orange">0</div>
+    <div class="label">Network calls</div>
+    <div class="sub">All reads are local fs / ps</div>
+  </div>
+</div>
+
+<details class="card" style="margin-top: 0.5rem;">
+  <summary style="cursor: pointer; color: var(--text); font-weight: 600;">Full per-session field list →</summary>
+  <div style="margin-top: 1rem; columns: 2; column-gap: 2rem; font-family: var(--mono); font-size: 0.78rem; color: var(--text-muted);">
+    <div>pid</div>
+    <div>agentType (claude · codex · opencode)</div>
+    <div>title (Claude Code · Codex CLI · …)</div>
+    <div>sessionId</div>
+    <div>sessionTitle</div>
+    <div>slug</div>
+    <div>cwd</div>
+    <div>command</div>
+    <div>startDate / startTime</div>
+    <div>status (ACTIVE · SLEEPING · STOPPED · ZOMBIE)</div>
+    <div>cpu (%)</div>
+    <div>mem (%)</div>
+    <div>model</div>
+    <div>contextPct (% free)</div>
+    <div>inputTokens</div>
+    <div>outputTokens</div>
+    <div>cacheCreateTokens</div>
+    <div>cacheReadTokens</div>
+    <div>serviceTier</div>
+    <div>stopReason</div>
+    <div>cost (USD)</div>
+    <div>gitBranch</div>
+    <div>tokenRate (tokens/sec)</div>
+    <div>lastTurnMs</div>
+    <div>compacted (bool)</div>
+    <div>compactionCount</div>
+    <div>rateLimits</div>
+    <div>timestamp</div>
+    <div>requestId</div>
+    <div>userType</div>
+    <div>version</div>
+    <div>+ derived: conversation log, git diff, search</div>
+  </div>
+</details>
+
+<h2><span class="section-num">03</span>Two surfaces, one core</h2>
+
+<div class="two-col">
+  <div class="col-card">
+    <h4>CLI <span class="badge badge-green">PHASE 1</span></h4>
+    <p style="color: var(--text-muted); font-size: 0.9rem;">Subcommands of the existing <code>ctop</code> binary. JSON output, pipeable, zero-dep. Works for any agent that can shell out, plus humans + cron.</p>
+    <div class="code-block"><span class="prompt">$</span> ctop ls <span class="c">--json</span>
+<span class="prompt">$</span> ctop get 18472 <span class="c">--json</span>
+<span class="prompt">$</span> ctop log 18472 <span class="c">--tail 50</span>
+<span class="prompt">$</span> ctop whoami <span class="c">--json</span>
+<span class="prompt">$</span> ctop alerts
+<span class="prompt">$</span> ctop diff 18472
+<span class="prompt">$</span> ctop kill 18472 <span class="c">--force</span></div>
+  </div>
+  <div class="col-card">
+    <h4>MCP server <span class="badge badge-blue">PHASE 2</span></h4>
+    <p style="color: var(--text-muted); font-size: 0.9rem;">Separate <code>ctop-mcp</code> npm package speaking stdio JSON-RPC. Schema-discoverable by Claude Code, Codex, Cursor, etc. Same tool surface, agent-native.</p>
+    <div class="code-block"><span class="c"># ~/.claude.json</span>
+<span class="p">{</span>
+  <span class="s">"mcpServers"</span><span class="p">:</span> <span class="p">{</span>
+    <span class="s">"ctop"</span><span class="p">:</span> <span class="p">{</span>
+      <span class="s">"command"</span><span class="p">:</span> <span class="s">"npx"</span><span class="p">,</span>
+      <span class="s">"args"</span><span class="p">:</span> <span class="p">[</span><span class="s">"-y"</span><span class="p">,</span> <span class="s">"ctop-mcp"</span><span class="p">]</span>
+    <span class="p">}</span>
+  <span class="p">}</span>
+<span class="p">}</span></div>
+  </div>
+</div>
+
+<div class="callout">
+  <span class="label">DESIGN CALL</span> Both surfaces share one implementation. <code>ctop-mcp</code> imports core functions from <code>ctop-claude</code> as a peer dep and wraps each in an MCP tool definition. No duplicated logic, no extra polling loop.
+</div>
+
+<h2><span class="section-num">04</span>Tool catalog</h2>
+
+<p>Ten tools, four categories. Every tool is also a CLI subcommand of the same name.</p>
+
+<table class="data-table">
+  <thead>
+    <tr>
+      <th style="width: 28%;">Tool</th>
+      <th style="width: 12%;">Category</th>
+      <th>Purpose</th>
+      <th style="width: 22%;">Args</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td class="tool-name">list_sessions</td>
+      <td><span class="badge badge-green">READ</span></td>
+      <td>Summary array of every running agent session</td>
+      <td class="args">agent? · cwd? · status?</td>
+    </tr>
+    <tr>
+      <td class="tool-name">get_session</td>
+      <td><span class="badge badge-green">READ</span></td>
+      <td>Full detail object for one PID</td>
+      <td class="args">pid</td>
+    </tr>
+    <tr>
+      <td class="tool-name">read_session_log</td>
+      <td><span class="badge badge-green">READ</span></td>
+      <td>Conversation transcript (user + assistant messages)</td>
+      <td class="args">pid · tail? · since?</td>
+    </tr>
+    <tr>
+      <td class="tool-name">search_sessions</td>
+      <td><span class="badge badge-green">READ</span></td>
+      <td>Full-text search across all session JSONL content</td>
+      <td class="args">query · agent? · cwd?</td>
+    </tr>
+    <tr>
+      <td class="tool-name">get_git_diff</td>
+      <td><span class="badge badge-green">READ</span></td>
+      <td>Uncommitted changes in a session's working dir</td>
+      <td class="args">pid <em>or</em> cwd</td>
+    </tr>
+    <tr>
+      <td class="tool-name">get_aggregate_stats</td>
+      <td><span class="badge badge-green">READ</span></td>
+      <td>Totals across all sessions (cost, tokens, active count, …)</td>
+      <td class="args">—</td>
+    </tr>
+    <tr>
+      <td class="tool-name">whoami</td>
+      <td><span class="badge badge-blue">SELF</span></td>
+      <td>Session object for <em>the calling agent</em> (auto-detected)</td>
+      <td class="args">—</td>
+    </tr>
+    <tr>
+      <td class="tool-name">get_alerts</td>
+      <td><span class="badge badge-orange">ALERT</span></td>
+      <td>Computed warnings: low-context, idle, compacting, ghost, rate-limited</td>
+      <td class="args">severity?</td>
+    </tr>
+    <tr>
+      <td class="tool-name">kill_session</td>
+      <td><span class="badge badge-red">WRITE</span></td>
+      <td>SIGTERM or SIGKILL a PID. Self-only by default; opt-in to kill others</td>
+      <td class="args">pid · force?</td>
+    </tr>
+    <tr>
+      <td class="tool-name">send_notification</td>
+      <td><span class="badge badge-red">WRITE</span></td>
+      <td>Desktop notification (macOS notification center / Linux libnotify)</td>
+      <td class="args">title · message</td>
+    </tr>
+  </tbody>
+</table>
+
+<h2><span class="section-num">05</span>The killer tool: <code>whoami</code></h2>
+
+<p>Every other read tool requires the agent to know <em>which</em> session it's looking at. <code>whoami</code> closes that loop — it returns "you are this session." That changes what the agent can do:</p>
+
+<ul>
+  <li>"Am I running out of context?" → <code>whoami().contextPct &lt; 15</code> → suggest <code>/compact</code> before next turn</li>
+  <li>"What have I cost so far?" → <code>whoami().cost</code></li>
+  <li>"Am I duplicating work in another session on this same branch?" → <code>list_sessions({cwd: whoami().cwd})</code></li>
+</ul>
+
+<h4>Detection strategy (in priority order)</h4>
+<ol>
+  <li><code>CTOP_PID</code> env var (most explicit; CLI/MCP server may set it for child agents)</li>
+  <li>Walk <code>process.ppid</code> chain looking for a known agent binary in <code>getAllAgentProcesses()</code></li>
+  <li>Fall back to matching <code>$PWD</code> against session <code>cwd</code> — pick the most-recent ACTIVE one (single-match heuristic)</li>
+  <li>Return <code>null</code> if none of the above resolve — never guess across users</li>
+</ol>
+
+<div class="callout warn">
+  <span class="label">FALLBACK RISK</span> The cwd-match heuristic can return the wrong session if the user runs two Claude sessions in the same directory. Always include <code>matchConfidence: "exact" | "ppid" | "cwd-guess"</code> in the response so agents know whether to trust it.
+</div>
+
+<h2><span class="section-num">06</span>Per-tool detail</h2>
+
+<div class="tool-card">
+  <div class="header">
+    <span class="tool-id">list_sessions</span>
+    <span class="badge badge-green">READ</span>
+  </div>
+  <div class="desc">Returns a compact summary of every running agent session. Optimized for cheap calls — strips the verbose fields. Use <code>get_session</code> for full detail.</div>
+  <div class="args-list"><span class="arg-name">agent</span><span class="arg-opt">?: "claude" | "codex" | "opencode"</span>  <span class="c">// filter by backend</span>
+<span class="arg-name">cwd</span><span class="arg-opt">?: string</span>                              <span class="c">// filter by directory (prefix match)</span>
+<span class="arg-name">status</span><span class="arg-opt">?: "active" | "sleeping" | "all"</span>      <span class="c">// default: "active"</span></div>
+  <div class="returns">→ Array&lt;{pid, agent, model, cwd, branch, contextPct, cost, status, startedAgo}&gt;</div>
+  <div class="code-block" style="margin-top: 0.75rem;"><span class="c">// Example return</span>
+<span class="p">[</span>
+  <span class="p">{</span>
+    <span class="s">"pid"</span><span class="p">:</span> <span class="n">18472</span><span class="p">,</span> <span class="s">"agent"</span><span class="p">:</span> <span class="s">"claude"</span><span class="p">,</span> <span class="s">"model"</span><span class="p">:</span> <span class="s">"claude-opus-4-7"</span><span class="p">,</span>
+    <span class="s">"cwd"</span><span class="p">:</span> <span class="s">"~/code/ctop"</span><span class="p">,</span> <span class="s">"branch"</span><span class="p">:</span> <span class="s">"mcp-cli"</span><span class="p">,</span>
+    <span class="s">"contextPct"</span><span class="p">:</span> <span class="n">72</span><span class="p">,</span> <span class="s">"cost"</span><span class="p">:</span> <span class="n">1.84</span><span class="p">,</span> <span class="s">"status"</span><span class="p">:</span> <span class="s">"ACTIVE"</span><span class="p">,</span>
+    <span class="s">"startedAgo"</span><span class="p">:</span> <span class="s">"22m"</span>
+  <span class="p">},</span>
+  <span class="p">{</span> <span class="s">"pid"</span><span class="p">:</span> <span class="n">19103</span><span class="p">,</span> <span class="s">"agent"</span><span class="p">:</span> <span class="s">"codex"</span><span class="p">,</span> <span class="p">...</span> <span class="p">}</span>
+<span class="p">]</span></div>
+</div>
+
+<div class="tool-card">
+  <div class="header">
+    <span class="tool-id">get_alerts</span>
+    <span class="badge badge-orange">ALERT</span>
+  </div>
+  <div class="desc">Returns computed warnings across <em>all</em> sessions. Lets a master agent ask "what needs attention right now?" without re-deriving thresholds. Levels are <code>info | warn | critical</code>.</div>
+  <div class="args-list"><span class="arg-name">severity</span><span class="arg-opt">?: "warn" | "critical"</span>   <span class="c">// minimum level to return; default: "warn"</span></div>
+  <div class="returns">→ Array&lt;{pid, kind, severity, message, suggested}&gt;</div>
+  <div class="code-block" style="margin-top: 0.75rem;"><span class="c">// Example return</span>
+<span class="p">[</span>
+  <span class="p">{</span>
+    <span class="s">"pid"</span><span class="p">:</span> <span class="n">19103</span><span class="p">,</span> <span class="s">"kind"</span><span class="p">:</span> <span class="s">"low_context"</span><span class="p">,</span> <span class="s">"severity"</span><span class="p">:</span> <span class="s">"critical"</span><span class="p">,</span>
+    <span class="s">"message"</span><span class="p">:</span> <span class="s">"codex session at 8% context, will compact next turn"</span><span class="p">,</span>
+    <span class="s">"suggested"</span><span class="p">:</span> <span class="s">"run /compact or hand off to fresh session"</span>
+  <span class="p">},</span>
+  <span class="p">{</span>
+    <span class="s">"pid"</span><span class="p">:</span> <span class="n">15001</span><span class="p">,</span> <span class="s">"kind"</span><span class="p">:</span> <span class="s">"ghost"</span><span class="p">,</span> <span class="s">"severity"</span><span class="p">:</span> <span class="s">"warn"</span><span class="p">,</span>
+    <span class="s">"message"</span><span class="p">:</span> <span class="s">"claude session STOPPED 47m ago, holding 412MB RAM"</span><span class="p">,</span>
+    <span class="s">"suggested"</span><span class="p">:</span> <span class="s">"kill_session(15001)"</span>
+  <span class="p">}</span>
+<span class="p">]</span></div>
+  <h4 style="margin-top: 1rem;">Alert kinds</h4>
+  <ul style="font-size: 0.88rem;">
+    <li><code>low_context</code> — contextPct &lt; 15 (warn) or &lt; 8 (critical)</li>
+    <li><code>compacting</code> — compaction event detected this tick</li>
+    <li><code>idle</code> — ACTIVE with tokenRate=0 for &gt; 10 minutes</li>
+    <li><code>ghost</code> — STOPPED/ZOMBIE consuming &gt; 100MB</li>
+    <li><code>rate_limited</code> — rateLimits non-null and near quota</li>
+    <li><code>cost_spike</code> — &gt; $5 cost on a single session</li>
+  </ul>
+</div>
+
+<div class="tool-card">
+  <div class="header">
+    <span class="tool-id">kill_session</span>
+    <span class="badge badge-red">WRITE</span>
+  </div>
+  <div class="desc">Send SIGTERM (default) or SIGKILL (<code>force: true</code>) to a session. The only destructive tool. Subject to auth model in §07.</div>
+  <div class="args-list"><span class="arg-name">pid</span><span class="arg-req">: number</span>                <span class="c">// required, no kill-all shortcut</span>
+<span class="arg-name">force</span><span class="arg-opt">?: boolean = false</span>     <span class="c">// SIGKILL instead of SIGTERM</span></div>
+  <div class="returns">→ {killed: bool, signal: "SIGTERM" | "SIGKILL", message: string}</div>
+</div>
+
+<details>
+  <summary style="cursor: pointer; color: var(--text); font-weight: 600; padding: 0.5rem 0;">Remaining 7 tool specs →</summary>
+
+<div class="tool-card" style="margin-top: 1rem;">
+  <div class="header"><span class="tool-id">get_session</span><span class="badge badge-green">READ</span></div>
+  <div class="desc">Full detail for one session — every field from the per-session list above.</div>
+  <div class="args-list"><span class="arg-name">pid</span><span class="arg-req">: number</span></div>
+  <div class="returns">→ Session (all 36 fields)</div>
+</div>
+
+<div class="tool-card">
+  <div class="header"><span class="tool-id">read_session_log</span><span class="badge badge-green">READ</span></div>
+  <div class="desc">Conversation transcript for one session (user + assistant text only — tool_use blocks stripped). Already implemented as <code>readSessionLog</code>.</div>
+  <div class="args-list"><span class="arg-name">pid</span><span class="arg-req">: number</span>
+<span class="arg-name">tail</span><span class="arg-opt">?: number = 50</span>          <span class="c">// last N messages, 0 = all</span>
+<span class="arg-name">since</span><span class="arg-opt">?: ISO timestamp</span>       <span class="c">// only messages after this</span></div>
+  <div class="returns">→ Array&lt;{role: "user"|"assistant", text, timestamp}&gt;</div>
+</div>
+
+<div class="tool-card">
+  <div class="header"><span class="tool-id">search_sessions</span><span class="badge badge-green">READ</span></div>
+  <div class="desc">Substring search across all JSONL session content. Returns matching sessions with snippet context.</div>
+  <div class="args-list"><span class="arg-name">query</span><span class="arg-req">: string</span>
+<span class="arg-name">agent</span><span class="arg-opt">?: "claude" | "codex" | "opencode"</span>
+<span class="arg-name">cwd</span><span class="arg-opt">?: string</span></div>
+  <div class="returns">→ Array&lt;{pid, sessionFile, snippets: string[]}&gt;</div>
+</div>
+
+<div class="tool-card">
+  <div class="header"><span class="tool-id">get_git_diff</span><span class="badge badge-green">READ</span></div>
+  <div class="desc">Uncommitted changes in a session's cwd. Wraps existing <code>getGitDiffSummary</code>.</div>
+  <div class="args-list"><span class="arg-name">pid</span><span class="arg-opt">?: number</span>             <span class="c">// either pid or cwd required</span>
+<span class="arg-name">cwd</span><span class="arg-opt">?: string</span></div>
+  <div class="returns">→ {insertions, deletions, untracked, files: [{file, insertions, deletions}]}</div>
+</div>
+
+<div class="tool-card">
+  <div class="header"><span class="tool-id">get_aggregate_stats</span><span class="badge badge-green">READ</span></div>
+  <div class="desc">Totals across all sessions. Already implemented as <code>calculateAggregateStats</code>.</div>
+  <div class="args-list"><span class="c">// no args</span></div>
+  <div class="returns">→ {totalCost, totalInput, totalOutput, totalCache, avgContextUtil, active, dead, total}</div>
+</div>
+
+<div class="tool-card">
+  <div class="header"><span class="tool-id">whoami</span><span class="badge badge-blue">SELF</span></div>
+  <div class="desc">Returns the session object for the calling agent (or null if unresolvable). Detection: CTOP_PID → ppid walk → cwd match.</div>
+  <div class="args-list"><span class="c">// no args</span></div>
+  <div class="returns">→ Session | null, plus matchConfidence: "exact" | "ppid" | "cwd-guess" | "none"</div>
+</div>
+
+<div class="tool-card">
+  <div class="header"><span class="tool-id">send_notification</span><span class="badge badge-red">WRITE</span></div>
+  <div class="desc">Desktop notification via macOS osascript / libnotify / win10toast. Already wired in <code>sendNotification</code>.</div>
+  <div class="args-list"><span class="arg-name">title</span><span class="arg-req">: string</span>
+<span class="arg-name">message</span><span class="arg-req">: string</span></div>
+  <div class="returns">→ {sent: boolean}</div>
+</div>
+
+</details>
+
+<h2><span class="section-num">07</span>Authorization model</h2>
+
+<p>Read tools surface data the agent could read off disk anyway — no new privilege. Write tools are different: a "master agent" killing a sister session is the kind of footgun where we want defense-in-depth.</p>
+
+<table class="data-table">
+  <thead>
+    <tr><th>Capability</th><th>Default</th><th>Opt-in via</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>All read tools</td>
+      <td><span class="badge badge-green">allowed</span></td>
+      <td>—</td>
+    </tr>
+    <tr>
+      <td><code>kill_session</code> on own PID</td>
+      <td><span class="badge badge-green">allowed</span></td>
+      <td>—</td>
+    </tr>
+    <tr>
+      <td><code>kill_session</code> on other PIDs</td>
+      <td><span class="badge badge-red">denied</span></td>
+      <td><code>CTOP_MCP_ALLOW_KILL=1</code></td>
+    </tr>
+    <tr>
+      <td><code>send_notification</code></td>
+      <td><span class="badge badge-green">allowed</span></td>
+      <td>—</td>
+    </tr>
+    <tr>
+      <td>Cross-user access</td>
+      <td><span class="badge badge-red">denied</span></td>
+      <td>not supported — process owner check</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="callout danger">
+  <span class="label">SECURITY</span> The MCP server only reads what the user running it already has filesystem access to. No new privilege escalation. Cross-user kill is explicitly blocked by checking <code>process.geteuid()</code> against the target PID's owner.
+</div>
+
+<h2><span class="section-num">08</span>Zero-dep constraint</h2>
+
+<p>The package README badge says <strong>"Zero Dependencies."</strong> This is a real promise worth preserving — it's part of why ctop installs cleanly under <code>npx</code>. Two options for the MCP server:</p>
+
+<div class="two-col">
+  <div class="col-card">
+    <h4>Option A · Separate package <span class="badge badge-green">RECOMMENDED</span></h4>
+    <p style="color: var(--text-muted); font-size: 0.9rem;">Ship <code>ctop-mcp</code> as its own npm package. Peer-depends on <code>ctop-claude</code>. Users who want MCP install both; users who want just the TUI keep zero deps.</p>
+    <ul style="font-size: 0.85rem;">
+      <li>Clean separation — TUI stays pristine</li>
+      <li>Familiar pattern (eslint vs eslint-config-x)</li>
+      <li>MCP SDK version can move independently</li>
+    </ul>
+  </div>
+  <div class="col-card">
+    <h4>Option B · Hand-roll JSON-RPC</h4>
+    <p style="color: var(--text-muted); font-size: 0.9rem;">MCP is stdio JSON-RPC 2.0 with a known message schema. ~200 lines of Node, no SDK. Could live in core.</p>
+    <ul style="font-size: 0.85rem;">
+      <li>Preserves zero-dep across the board</li>
+      <li>More code to maintain as MCP spec evolves</li>
+      <li>Loses SDK conveniences (validation, logging helpers)</li>
+    </ul>
+  </div>
+</div>
+
+<p><strong>Recommendation:</strong> Option A. The trade — adding one optional package — is worth the SDK's protocol coverage and version-tracking. If the SDK proves heavy, fall back to B as a v2 refactor.</p>
+
+<h2><span class="section-num">09</span>Rollout phases</h2>
+
+<div class="phases">
+  <div class="phase p1">
+    <div class="phase-label">Phase 1</div>
+    <div class="phase-title">CLI subcommands</div>
+    <div class="phase-time">~1 day · ships in next minor</div>
+    <ul>
+      <li>Add subcommand router to <code>claude-manager</code> entrypoint</li>
+      <li>Implement <code>ls · get · log · search · diff · stats · whoami · alerts · kill</code> as one-shot commands</li>
+      <li>All output JSON with <code>--json</code>, human-readable by default</li>
+      <li>Add tests under <code>test/cli/</code></li>
+      <li>Update README with the new commands</li>
+    </ul>
+  </div>
+  <div class="phase p2">
+    <div class="phase-label">Phase 2</div>
+    <div class="phase-title">ctop-mcp package</div>
+    <div class="phase-time">~1 day · separate npm release</div>
+    <ul>
+      <li>New <code>packages/ctop-mcp/</code> directory (or sibling repo)</li>
+      <li>Depends on <code>@modelcontextprotocol/sdk</code> + <code>ctop-claude</code></li>
+      <li>Wraps each CLI subcommand as an MCP tool with JSON schema</li>
+      <li>Stdio transport; auto-detected <code>CTOP_PID</code> for whoami</li>
+      <li>Example claude.json / codex.toml configs in README</li>
+    </ul>
+  </div>
+  <div class="phase p3">
+    <div class="phase-label">Phase 3</div>
+    <div class="phase-title">Streaming resources</div>
+    <div class="phase-time">follow-up · ~3 days</div>
+    <ul>
+      <li>Expose <code>ctop://sessions</code> as an MCP resource list</li>
+      <li>Expose <code>ctop://sessions/{pid}/log</code> for live tailing</li>
+      <li>fs.watch the JSONL files; emit MCP <code>notifications/resources/updated</code></li>
+      <li>Lets master agent <em>subscribe</em> to sister sessions instead of polling</li>
+    </ul>
+  </div>
+</div>
+
+<h2><span class="section-num">10</span>Open questions</h2>
+
+<div class="question">
+  <div class="q">Should <code>list_sessions</code> include the current calling session, or filter it out by default?</div>
+  <div class="a">Filtering it out simplifies "list of <em>others</em>" use cases (the master/sub pattern), but is a sharp edge for "give me the global picture." Lean: include it, label with <code>isCaller: true</code>, and let the agent filter.</div>
+</div>
+
+<div class="question">
+  <div class="q">How does <code>whoami</code> behave when called from a non-agent shell (e.g. via cron or a wrapper script)?</div>
+  <div class="a">Return <code>{session: null, matchConfidence: "none"}</code> — never guess. The cwd-match fallback only fires if there's exactly one ACTIVE session matching <code>$PWD</code>.</div>
+</div>
+
+<div class="question">
+  <div class="q">Should we expose the conversation log of <em>other</em> sessions, or only the caller's own?</div>
+  <div class="a">Yes to others — the data is on disk anyway, and the master-agent pattern requires it. But add a flag to <code>ctop-mcp</code> (<code>CTOP_MCP_READ_OWN_ONLY=1</code>) for users who want stricter isolation.</div>
+</div>
+
+<div class="question">
+  <div class="q">Token-usage and cost are observable side channels. Any privacy concern with cross-process reads?</div>
+  <div class="a">Same trust model as the TUI today — single-user box, single user's processes. Cross-user is blocked by uid check. Anything sensitive in conversation logs is already on disk in plaintext.</div>
+</div>
+
+<div class="question">
+  <div class="q">Do we need rate limiting on <code>get_alerts</code> / <code>list_sessions</code> when called by an agent?</div>
+  <div class="a">Probably not — the underlying <code>ps + lsof + fs.read</code> path is already cached at ~5s granularity. Add a simple 1s minimum interval between identical calls in <code>ctop-mcp</code> to be safe.</div>
+</div>
+
+<h2><span class="section-num">11</span>What this unlocks</h2>
+
+<div class="card">
+  <h4 style="margin-top: 0;">Pattern: self-aware compaction</h4>
+  <div class="code-block"><span class="c">// In an agent's system prompt or hook</span>
+<span class="k">if</span> <span class="p">(</span><span class="f">whoami</span><span class="p">()</span><span class="p">.</span><span class="v">contextPct</span> <span class="p">&lt;</span> <span class="n">15</span><span class="p">)</span> <span class="p">{</span>
+  <span class="v">user</span><span class="p">.</span><span class="f">suggest</span><span class="p">(</span><span class="s">"context low — /compact recommended"</span><span class="p">);</span>
+<span class="p">}</span></div>
+</div>
+
+<div class="card">
+  <h4 style="margin-top: 0;">Pattern: master agent coordinating subs</h4>
+  <div class="code-block"><span class="k">const</span> subs <span class="p">=</span> <span class="f">list_sessions</span><span class="p">({</span> <span class="v">cwd</span><span class="p">:</span> <span class="f">whoami</span><span class="p">()</span><span class="p">.</span><span class="v">cwd</span> <span class="p">})</span>
+  <span class="p">.</span><span class="f">filter</span><span class="p">(</span><span class="v">s</span> <span class="p">=&gt;</span> <span class="p">!</span><span class="v">s</span><span class="p">.</span><span class="v">isCaller</span><span class="p">);</span>
+<span class="k">for</span> <span class="p">(</span><span class="k">const</span> sub <span class="k">of</span> subs<span class="p">)</span> <span class="p">{</span>
+  <span class="k">const</span> recent <span class="p">=</span> <span class="f">read_session_log</span><span class="p">({</span> <span class="v">pid</span><span class="p">:</span> sub<span class="p">.</span><span class="v">pid</span><span class="p">,</span> <span class="v">tail</span><span class="p">:</span> <span class="n">10</span> <span class="p">});</span>
+  <span class="c">// dispatch based on what subs are working on</span>
+<span class="p">}</span></div>
+</div>
+
+<div class="card">
+  <h4 style="margin-top: 0;">Pattern: cleanup on session end</h4>
+  <div class="code-block"><span class="c">// Stop hook</span>
+<span class="k">const</span> ghosts <span class="p">=</span> <span class="f">get_alerts</span><span class="p">({</span> <span class="v">severity</span><span class="p">:</span> <span class="s">"warn"</span> <span class="p">})</span>
+  <span class="p">.</span><span class="f">filter</span><span class="p">(</span><span class="v">a</span> <span class="p">=&gt;</span> <span class="v">a</span><span class="p">.</span><span class="v">kind</span> <span class="p">===</span> <span class="s">"ghost"</span><span class="p">);</span>
+<span class="k">for</span> <span class="p">(</span><span class="k">const</span> g <span class="k">of</span> ghosts<span class="p">)</span> <span class="f">kill_session</span><span class="p">({</span> <span class="v">pid</span><span class="p">:</span> g<span class="p">.</span><span class="v">pid</span> <span class="p">});</span></div>
+</div>
+
+<footer>
+  Design doc · ctop · 2026-05-18 · Issue-track in <code>docs/designs/</code>
+</footer>
+
+</main>
+</body>
+</html>

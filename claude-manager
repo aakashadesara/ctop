@@ -1,5 +1,17 @@
 #!/usr/bin/env node
 
+// Subcommand dispatch — must run BEFORE requiring _core (loadConfig fires at
+// module-load and would parse our subcommand args as TUI flags).
+const cli = require('./src/cli');
+const firstArg = process.argv[2];
+
+if (cli.isSubcommand(firstArg)) {
+  process.env.CTOP_SUBCOMMAND = firstArg;
+  cli.run(firstArg, process.argv.slice(3));
+  // cli.run terminates via process.exit; defensive fall-through:
+  process.exit(0);
+}
+
 const core = require('./src/_core');
 
 // Run main() only when executed directly

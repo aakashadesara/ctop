@@ -179,8 +179,8 @@ function loadConfig() {
       if (rc.bootAnimation === false) config.bootAnimation = false;
     }
   } catch (e) {}
-  // CLI flags override
-  const args = process.argv.slice(2);
+  // CLI flags override. Skip in subcommand mode — cli.js owns its own arg parsing.
+  const args = process.env.CTOP_SUBCOMMAND ? [] : process.argv.slice(2);
   for (let i = 0; i < args.length; i++) {
     if ((args[i] === '--refresh' || args[i] === '-r') && args[i + 1]) {
       config.refreshInterval = Number(args[++i]) * 1000;
@@ -193,14 +193,27 @@ function loadConfig() {
     } else if (args[i] === '--help' || args[i] === '-h') {
       console.log(`ctop — AI Agent process manager (Claude Code + Codex CLI + OpenCode)
 
-Usage: ctop [options]
+Usage: ctop [options]            Start interactive TUI
+       ctop <command> [args]     Run a one-shot subcommand
 
-Options:
+TUI options:
   --refresh, -r <seconds>    Refresh interval (default: 5)
   --context-limit, -c <n>    Context window token limit (default: 1000000)
   --pane                     Start in pane/grid view
   --no-animation             Skip boot animation
   -h, --help                 Show this help
+
+Subcommands (run \`ctop <cmd> --help\` for details):
+  ls          List all running agent sessions
+  get <pid>   Show full detail for one session
+  log <pid>   Print conversation transcript
+  search <q>  Full-text search session content
+  diff <pid>  Show git diff for session's cwd
+  stats       Aggregate stats across all sessions
+  whoami      Detect the calling session
+  alerts      Show low-context / idle / ghost warnings
+  kill <pid>  Send SIGTERM (or SIGKILL with --force)
+  notify      Send a desktop notification
 
 Config file: ~/.ctoprc (JSON)
   {
