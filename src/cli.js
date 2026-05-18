@@ -261,6 +261,35 @@ Full-text search across session JSONL content.
   return 0;
 }
 
+function cmdAlerts(args) {
+  if (args.flags.help || args.flags.h) {
+    process.stdout.write(`Usage: ctop alerts [--severity warn|critical|info] [--json]
+
+Show computed warnings across all sessions. Alert kinds:
+
+  low_context   contextPct below threshold (warn < 15, critical < 8)
+  compacting    compaction event detected
+  idle          ACTIVE but no token activity for > 10 min
+  ghost         STOPPED/ZOMBIE holding significant memory
+  rate_limited  session hit API quota
+  cost_spike    single session over $5
+`);
+    return 0;
+  }
+  const core = loadCore();
+  const fmt = loadFmt();
+  const alerts = require('./alerts');
+  const procs = core.getAllAgentProcesses();
+  const severity = args.flags.severity || 'warn';
+  const result = alerts.compute(procs, { severity });
+  if (args.flags.json) {
+    process.stdout.write(fmt.toJson(result));
+  } else {
+    process.stdout.write(fmt.formatAlertsHuman(result));
+  }
+  return 0;
+}
+
 function cmdWhoami(args) {
   if (args.flags.help || args.flags.h) {
     process.stdout.write(`Usage: ctop whoami [--json] [--pid-only]
@@ -348,6 +377,7 @@ function run(subcommand, rawArgs) {
       case 'search': code = cmdSearch(args); break;
       case 'diff':   code = cmdDiff(args); break;
       case 'whoami': code = cmdWhoami(args); break;
+      case 'alerts': code = cmdAlerts(args); break;
       default:
         process.stderr.write(`ctop: subcommand "${subcommand}" not yet implemented\n`);
         code = 1;
@@ -368,5 +398,5 @@ module.exports = {
   printRootHelp,
   run,
   // Exposed for unit testing without spawning child processes.
-  _handlers: { cmdLs, cmdGet, cmdStats, cmdLog, cmdSearch, cmdDiff, cmdWhoami },
+  _handlers: { cmdLs, cmdGet, cmdStats, cmdLog, cmdSearch, cmdDiff, cmdWhoami, cmdAlerts },
 };
