@@ -264,9 +264,11 @@ function loadPlugins(pluginDir) {
 }
 
 let plugins = [];
-// Load plugins at startup (only when running as main)
-if (require.main === module) {
-  plugins = loadPlugins();
+
+function ensurePluginsLoaded(pluginDir) {
+  if (plugins.length > 0) return plugins;
+  plugins = loadPlugins(pluginDir);
+  return plugins;
 }
 
 // Pricing per million tokens (USD) — as of 2025
@@ -6035,6 +6037,8 @@ function cleanup() {
 }
 
 async function main() {
+  ensurePluginsLoaded();
+
   // Setup terminal
   if (!process.stdin.isTTY) {
     console.error('This program requires an interactive terminal.');
@@ -6167,6 +6171,7 @@ module.exports = {
   buildGroupedFlatList,
   // Plugin system
   loadPlugins,
+  ensurePluginsLoaded,
   // History tracking
   loadHistory,
   pruneHistory,

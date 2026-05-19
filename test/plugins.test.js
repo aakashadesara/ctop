@@ -4,7 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 
-const { loadPlugins, _state } = require('../claude-manager');
+const { loadPlugins, ensurePluginsLoaded, _state } = require('../claude-manager');
 
 // Helper: create a temp plugin directory with plugin files
 function makeTempPluginDir() {
@@ -85,6 +85,24 @@ describe('Plugin loading', () => {
     const plugins = loadPlugins(tmpDir);
     assert.strictEqual(plugins.length, 1);
     assert.strictEqual(plugins[0].wasInitialized(), true);
+  });
+
+  it('loads plugins from main startup path', () => {
+    writePlugin(tmpDir, 'startup-plugin.js', `
+      module.exports = {
+        name: 'startup-plugin',
+        column: {
+          header: 'START',
+          width: 8,
+          getValue: () => 'loaded',
+        },
+      };
+    `);
+    _state.plugins = [];
+    const plugins = ensurePluginsLoaded(tmpDir);
+    assert.strictEqual(plugins.length, 1);
+    assert.strictEqual(plugins[0].name, 'startup-plugin');
+    assert.strictEqual(_state.plugins[0].column.getValue({}), 'loaded');
   });
 });
 
