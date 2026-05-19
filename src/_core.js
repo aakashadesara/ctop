@@ -155,10 +155,10 @@ const DEFAULT_CONFIG = {
   bootAnimation: true,
 };
 
-function loadConfig() {
+function loadConfig(options = {}) {
   const config = { ...DEFAULT_CONFIG };
   // Load ~/.ctoprc
-  const rcPath = path.join(os.homedir(), '.ctoprc');
+  const rcPath = options.rcPath || process.env.CTOP_CONFIG_PATH || path.join(os.homedir(), '.ctoprc');
   try {
     if (fs.existsSync(rcPath)) {
       const rc = JSON.parse(fs.readFileSync(rcPath, 'utf8'));
@@ -425,9 +425,10 @@ function groupProcesses(procs) {
 
 function shortenCwd(cwd) {
   if (!cwd) return 'unknown';
-  const parts = cwd.split('/').filter(Boolean);
-  if (parts.length >= 2) return parts.slice(-2).join('/');
-  return parts.join('/') || cwd;
+  const home = os.homedir();
+  if (cwd === home) return '~';
+  if (cwd.startsWith(`${home}${path.sep}`)) return `~${cwd.slice(home.length)}`;
+  return cwd;
 }
 
 function buildGroupedFlatList(procs) {
@@ -2689,7 +2690,7 @@ const sessionLogCache = new Map(); // filePath -> { mtimeMs, size, entries }
 const LOG_TAIL_BYTES = 4 * 1024 * 1024; // 4MB — read enough to capture full session log
 
 function readSessionLog(proc, maxLines) {
-  if (maxLines === undefined) maxLines = 0; // 0 = no limit
+  if (maxLines === undefined) maxLines = 50;
   if (proc && proc.agentType === 'opencode') return readOpenCodeSessionLog(proc, maxLines);
   if (proc && proc.agentType === 'devin') return readDevinSessionLog(proc, maxLines);
   // Find the session JSONL file for this process (same logic as assignSessionsToProcesses)

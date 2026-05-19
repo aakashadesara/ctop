@@ -18,36 +18,29 @@ describe('boot animation config', () => {
   });
 
   describe('config file parsing', () => {
-    const rcPath = path.join(os.homedir(), '.ctoprc');
-    let originalRc = null;
-    let hadRc = false;
+    let tmpDir;
+    let rcPath;
 
     beforeEach(() => {
-      hadRc = fs.existsSync(rcPath);
-      if (hadRc) {
-        originalRc = fs.readFileSync(rcPath, 'utf8');
-      }
+      tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ctop-boot-test-'));
+      rcPath = path.join(tmpDir, '.ctoprc');
     });
 
     afterEach(() => {
-      if (hadRc) {
-        fs.writeFileSync(rcPath, originalRc);
-      } else {
-        try { fs.unlinkSync(rcPath); } catch (e) {}
-      }
+      fs.rmSync(tmpDir, { recursive: true, force: true });
     });
 
     it('reads bootAnimation: false from .ctoprc', () => {
       fs.writeFileSync(rcPath, JSON.stringify({ bootAnimation: false }));
       const { loadConfig } = require('../claude-manager');
-      const config = loadConfig();
+      const config = loadConfig({ rcPath });
       assert.equal(config.bootAnimation, false);
     });
 
     it('keeps bootAnimation true when .ctoprc does not set it', () => {
       fs.writeFileSync(rcPath, JSON.stringify({ refreshInterval: 3000 }));
       const { loadConfig } = require('../claude-manager');
-      const config = loadConfig();
+      const config = loadConfig({ rcPath });
       assert.equal(config.bootAnimation, true);
     });
   });
