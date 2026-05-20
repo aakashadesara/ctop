@@ -2102,6 +2102,7 @@ function assignSessionsToProcesses(procs) {
           'cacheReadTokens', 'outputTokens', 'serviceTier', 'timestamp', 'requestId', 'lastTurnMs']) {
           if (data[key] !== null && data[key] !== undefined) sorted[i][key] = data[key];
         }
+        sorted[i].subagents = getClaudeSubagents(projectPath, sorted[i].sessionId);
       }
     }
   }
@@ -2115,6 +2116,128 @@ function assignSessionsToProcesses(procs) {
         : parts[parts.length - 1] || proc.cwd;
     }
   }
+}
+
+// --- Claude Code sub-agent (sidechain) detection ---
+
+// Active-window for a sub-agent: file modified within this many ms is "active".
+// 30s matches SPINNER_ACTIVITY_WINDOW_MS so the live-now semantics line up
+// with the spinner that animates the row.
+const SUBAGENT_ACTIVE_MS = 30_000;
+
+const subagentDirCache = new Map(); // dirPath -> { dirMtime, entries }
+const subagentFileCache = new Map(); // filePath -> { mtimeMs, size, meta }
+
+function readSubagentFileMeta(filePath) {
+  let st;
+  try { st = fs.statSync(filePath); } catch { return null; }
+
+  const hit = subagentFileCache.get(filePath);
+  if (hit && hit.mtimeMs === st.mtimeMs && hit.size === st.size) {
+    return { ...hit.meta, mtimeMs: st.mtimeMs };
+  }
+
+  const meta = {
+    description: null, model: null, subagentType: null,
+    inputTokens: 0, outputTokens: 0, cacheTokens: 0,
+    mtimeMs: st.mtimeMs,
+  };
+  try {
+    const fd = fs.openSync(filePath, 'r');
+    // Head: first 16KB — pulls out the first user prompt + initial model.
+    const headSize = Math.min(16384, st.size);
+    const headBuf = Buffer.alloc(headSize);
+    fs.readSync(fd, headBuf, 0, headSize, 0);
+    const headLines = headBuf.toString('utf8').split('\n');
+    for (const line of headLines) {
+      if (!line.trim()) continue;
+      try {
+        const data = JSON.parse(line);
+        if (!meta.description && data.type === 'user' && data.message) {
+          const c = data.message.content;
+          const text = typeof c === 'string'
+            ? c
+            : (Array.isArray(c) ? ((c.find(p => p.type === 'text') || {}).text || '') : '');
+          if (text && !text.startsWith('<')) {
+            meta.description = stripAnsi(text).split('\n')[0].replace(/[\x00-\x1f\x7f]/g, ' ').trim().substring(0, 80);
+          }
+        }
+        if (!meta.model && data.message && data.message.model) {
+          meta.model = data.message.model;
+        }
+        if (meta.description && meta.model) break;
+      } catch {}
+    }
+
+    // Tail: last 32KB — accumulate the most recent assistant usage block.
+    // Sub-agent files are small (Explore tasks are typically <100KB total),
+    // so this often overlaps the head pass for short runs — that's fine.
+    const tailSize = Math.min(32768, st.size);
+    const tailBuf = Buffer.alloc(tailSize);
+    fs.readSync(fd, tailBuf, 0, tailSize, st.size - tailSize);
+    fs.closeSync(fd);
+    const tailLines = tailBuf.toString('utf8').split('\n').reverse();
+    for (const line of tailLines) {
+      if (!line.trim()) continue;
+      try {
+        const data = JSON.parse(line);
+        const u = data.message && data.message.usage;
+        if (u) {
+          meta.inputTokens = u.input_tokens || 0;
+          meta.outputTokens = u.output_tokens || 0;
+          meta.cacheTokens = (u.cache_creation_input_tokens || 0) + (u.cache_read_input_tokens || 0);
+          if (!meta.model && data.message.model) meta.model = data.message.model;
+          break;
+        }
+      } catch {}
+    }
+  } catch {}
+
+  subagentFileCache.set(filePath, { mtimeMs: st.mtimeMs, size: st.size, meta });
+  return meta;
+}
+
+function getClaudeSubagents(projectPath, sessionId) {
+  if (!sessionId) return [];
+  const dirPath = path.join(projectPath, sessionId, 'subagents');
+
+  let dirStat;
+  try { dirStat = fs.statSync(dirPath); } catch { return []; }
+  if (!dirStat.isDirectory()) return [];
+
+  const now = Date.now();
+  let names;
+  const hit = subagentDirCache.get(dirPath);
+  if (hit && hit.dirMtime === dirStat.mtimeMs) {
+    names = hit.entries;
+  } else {
+    try {
+      names = fs.readdirSync(dirPath).filter(n => n.startsWith('agent-') && n.endsWith('.jsonl'));
+    } catch { return []; }
+    subagentDirCache.set(dirPath, { dirMtime: dirStat.mtimeMs, entries: names });
+  }
+
+  const out = [];
+  for (const name of names) {
+    const filePath = path.join(dirPath, name);
+    const meta = readSubagentFileMeta(filePath);
+    if (!meta) continue;
+    const ageMs = now - meta.mtimeMs;
+    if (ageMs > SUBAGENT_ACTIVE_MS) continue; // only surface live sub-agents
+    out.push({
+      agentId: name.replace(/^agent-/, '').replace(/\.jsonl$/, ''),
+      description: meta.description || '(sub-agent)',
+      model: meta.model || null,
+      subagentType: meta.subagentType || null,
+      inputTokens: meta.inputTokens || 0,
+      outputTokens: meta.outputTokens || 0,
+      cacheTokens: meta.cacheTokens || 0,
+      lastActivityMs: meta.mtimeMs,
+      ageMs,
+    });
+  }
+  out.sort((a, b) => b.lastActivityMs - a.lastActivityMs);
+  return out;
 }
 
 // --- Codex CLI session data ---
@@ -4236,6 +4359,84 @@ function renderProcessRow(proc, isSelected, isPrevSelected, opts) {
   return row;
 }
 
+// Renders an indented sub-agent (sidechain) row under a Claude parent process.
+// Sub-agents have no PID of their own (they run inside the parent) so this
+// row is non-selectable and uses dimmed styling to read as secondary content.
+function renderSubagentRow(sub, opts) {
+  const { ctxBarMode, isNarrow, showCostCol, costColW, pluginCols,
+          showSparklines, sparkColW, gitColW,
+          listWidth, fixedColsTotal } = opts;
+  const ctxColW = ctxBarMode ? 16 : 6;
+  let row = '';
+
+  // Selection indicator slot (kept empty: sub-agents are not selectable)
+  row += '  ';
+
+  // PID slot (8): spinner + indent guide. Row only renders within the
+  // active window, so we can drive the braille spinner unconditionally.
+  ensureSpinnerTimer();
+  const spin = getSpinnerFrame();
+  row += `${DIM}  ${spin}  \u21B3  ${RESET}`;
+
+  // STATUS (11): SIDECHAIN in cyan
+  row += `${CYAN}SIDECHAIN  ${RESET}`;
+
+  // CTX slot: dashes
+  row += `${DIM}${'--'.padEnd(ctxColW)}${RESET}`;
+
+  // STARTED (12): age since last activity
+  const ageS = Math.max(0, Math.floor(sub.ageMs / 1000));
+  const ageStr = ageS < 1 ? 'just now' : ageS < 60 ? `${ageS}s ago` : `${Math.floor(ageS / 60)}m ago`;
+  row += `${DIM}${ageStr.padEnd(12)}${RESET}`;
+
+  if (!isNarrow) {
+    // BRANCH + TITLE area combined for the description (32 + 22 = 54)
+    const descMax = 32 + 22 - 1;
+    const descStr = sub.description || '(sub-agent)';
+    row += `${DIM}${visualPadEnd(visualTruncate(descStr, descMax), 54)}${RESET}`;
+  }
+
+  // MODEL (14)
+  const modelStr = sub.model ? sub.model.replace(/^claude-/, '') : '--';
+  row += `${DIM}${modelStr.substring(0, 13).padEnd(14)}${RESET}`;
+
+  // COST slot: sub-agent's own approximate cost from its token usage
+  if (showCostCol && !isNarrow) {
+    const cost = calculateCost({
+      model: sub.model,
+      inputTokens: sub.inputTokens,
+      outputTokens: sub.outputTokens,
+      cacheCreateTokens: 0,
+      cacheReadTokens: sub.cacheTokens,
+      agentType: 'claude',
+    });
+    const costStr = cost === null ? '--' : formatCost(cost);
+    row += `${DIM}${costStr.padEnd(costColW)}${RESET}`;
+  }
+  // Plugin columns: blank
+  for (const p of pluginCols) {
+    const w = p.column.width || 10;
+    row += ' '.repeat(w);
+  }
+  if (!isNarrow) {
+    const dirMaxLen = Math.max(0, listWidth - fixedColsTotal);
+    row += ' '.repeat(dirMaxLen) + ' ';
+  }
+  // CPU%
+  row += `${DIM}${'--'.padEnd(7)}${RESET}`;
+  if (showSparklines) {
+    row += ' '.repeat(sparkColW);
+  }
+  // MEM%
+  row += `${DIM}${showSparklines ? '--'.padEnd(7) : '--'}${RESET}`;
+  if (showSparklines) {
+    row += ' '.repeat(gitColW);
+  }
+
+  row += `${CLR_LINE}\n`;
+  return row;
+}
+
 // render() coalesces redraws via setImmediate so a burst of keystrokes
 // produces at most one screen write. Stdin events queued before the
 // next tick get processed first, which is what keeps j/k responsive.
@@ -4378,6 +4579,14 @@ function renderNow() {
           showSparklines, sparkColW, gitColW,
           listWidth, fixedColsTotal, showDetailPane,
         });
+
+        if (proc.subagents && proc.subagents.length) {
+          const rowOpts = { ctxBarMode, isNarrow, showCostCol, costColW, pluginCols,
+            showSparklines, sparkColW, gitColW, listWidth, fixedColsTotal };
+          for (const sub of proc.subagents) {
+            output += renderSubagentRow(sub, rowOpts);
+          }
+        }
       }
     }
 
@@ -4439,6 +4648,15 @@ function renderNow() {
       showSparklines, sparkColW, gitColW,
       listWidth, fixedColsTotal, showDetailPane,
     });
+
+    // Indented sub-agent (sidechain) rows under Claude parents
+    if (proc.subagents && proc.subagents.length) {
+      const rowOpts = { ctxBarMode, isNarrow, showCostCol, costColW, pluginCols,
+        showSparklines, sparkColW, gitColW, listWidth, fixedColsTotal };
+      for (const sub of proc.subagents) {
+        output += renderSubagentRow(sub, rowOpts);
+      }
+    }
 
     // Show model + stopReason on detail line for selected item (only when no detail pane)
     if (!showDetailPane && isSelected && (proc.model || proc.stopReason)) {
@@ -6266,6 +6484,10 @@ module.exports = {
   parseLogEntry,
   readSessionLog,
   getSessionFilesForProject,
+  // Sub-agents (Claude sidechain detection)
+  getClaudeSubagents,
+  renderSubagentRow,
+  SUBAGENT_ACTIVE_MS,
   // Timeline
   parseSessionTimeline,
   getSessionFileForProc,
