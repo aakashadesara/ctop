@@ -24,6 +24,7 @@
 - **5 color themes** — default, minimal, dracula, solarized, monokai (+ custom)
 - **Plugin system** — extend with custom columns via `~/.ctop/plugins/`
 - **Compaction & rate limit detection** — flags compaction events and quota usage
+- **CLI mode for agents** — `ctop ls`, `ctop whoami`, `ctop alerts`, … (see [CLI mode](#cli-mode-for-agents-and-scripts))
 
 ![CTOP Features](assets/features.gif)
 
@@ -78,9 +79,74 @@ Mouse: click to select, scroll to navigate.
 
 ---
 
+## Agent skill
+
+A self-contained [`ctop` skill](skills/ctop/SKILL.md) ships in this repo. Drop it into Claude Code so any agent learns when and how to call `ctop`:
+
+```bash
+# Per-project
+mkdir -p .claude/skills && cp -r skills/ctop .claude/skills/
+
+# Or user-wide
+mkdir -p ~/.claude/skills && cp -r skills/ctop ~/.claude/skills/
+```
+
+Once installed, ask any Claude Code session things like _"what other agents am I running"_, _"how much have my sessions cost"_, _"is my context about to compact"_ — the agent will reach for `ctop` automatically.
+
+Skill files:
+
+- [`SKILL.md`](skills/ctop/SKILL.md) — trigger sheet + common patterns
+- [`reference.md`](skills/ctop/reference.md) — full per-command spec
+- [`examples.md`](skills/ctop/examples.md) — copy-pasteable recipes
+
+## CLI mode (for agents and scripts)
+
+`ctop` with no args starts the interactive TUI. `ctop <subcommand>` runs a one-shot query and exits, so AI agents can introspect their own sessions and sister sessions from another terminal.
+
+```bash
+ctop ls                          # Table of every running agent
+ctop ls --json                   # Same, machine-parseable
+ctop ls --agent claude           # Filter by backend
+ctop ls --cwd ~/code/myproj      # Filter by directory
+
+ctop get <pid> --json            # Full detail on one session
+ctop log <pid> --tail 20         # Last 20 conversation messages
+ctop search "TODO" --json        # Full-text search across sessions
+ctop diff <pid>                  # Git diff for the session's cwd
+ctop stats --json                # Aggregate cost / tokens / counts
+
+ctop whoami                      # Detect which session you're in
+ctop whoami --pid-only           # PID only, for scripting
+ctop alerts                      # Low-context / idle / ghost warnings
+ctop alerts --severity critical  # Only critical-level alerts
+
+ctop kill <pid>                  # SIGTERM (must be your own user)
+ctop kill <pid> --force          # SIGKILL
+ctop notify "title" "message"    # Desktop notification
+```
+
+`whoami` detects the calling session via `$CTOP_PID` → parent-PID walk → `$PWD` match, with a `matchConfidence` label (`exact | ppid | cwd-guess | none`) so agents know how much to trust the answer.
+
+Read tools surface data that the user could read off disk anyway. `kill` enforces uid ownership and an agent-session check before sending the signal — there is no kill-all.
+
+### Examples
+
+```bash
+# Find sessions about to compact
+ctop ls --json | jq '.[] | select(.contextPct != null and .contextPct < 20)'
+
+# Self-aware compaction (hook)
+[ "$(ctop whoami --json | jq -r .session.contextPct)" -lt 15 ] && \
+  echo "context low — consider /compact"
+
+# Clean up ghost sessions
+ctop alerts --json | jq -r '.[] | select(.kind=="ghost") | .pid' | \
+  xargs -I {} ctop kill {} --force
+```
+
 ## Configuration
 
-### CLI flags
+### CLI flags (TUI mode)
 
 ```bash
 ctop --refresh 3             # Refresh every 3 seconds
