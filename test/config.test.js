@@ -28,67 +28,57 @@ describe('loadConfig', () => {
   });
 
   describe('config file parsing', () => {
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ctop-test-'));
-    const rcPath = path.join(os.homedir(), '.ctoprc');
-    let originalRc = null;
-    let hadRc = false;
+    let tmpDir;
+    let rcPath;
 
     beforeEach(() => {
-      // Back up existing .ctoprc if present
-      hadRc = fs.existsSync(rcPath);
-      if (hadRc) {
-        originalRc = fs.readFileSync(rcPath, 'utf8');
-      }
+      tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ctop-test-'));
+      rcPath = path.join(tmpDir, '.ctoprc');
     });
 
     afterEach(() => {
-      // Restore original .ctoprc
-      if (hadRc) {
-        fs.writeFileSync(rcPath, originalRc);
-      } else {
-        try { fs.unlinkSync(rcPath); } catch (e) {}
-      }
+      fs.rmSync(tmpDir, { recursive: true, force: true });
     });
 
     it('reads refreshInterval from .ctoprc', () => {
       fs.writeFileSync(rcPath, JSON.stringify({ refreshInterval: 10000 }));
       const { loadConfig } = require('../claude-manager');
-      const config = loadConfig();
+      const config = loadConfig({ rcPath });
       assert.equal(config.refreshInterval, 10000);
     });
 
     it('reads contextLimit from .ctoprc', () => {
       fs.writeFileSync(rcPath, JSON.stringify({ contextLimit: 500000 }));
       const { loadConfig } = require('../claude-manager');
-      const config = loadConfig();
+      const config = loadConfig({ rcPath });
       assert.equal(config.contextLimit, 500000);
     });
 
     it('reads defaultView from .ctoprc', () => {
       fs.writeFileSync(rcPath, JSON.stringify({ defaultView: 'pane' }));
       const { loadConfig } = require('../claude-manager');
-      const config = loadConfig();
+      const config = loadConfig({ rcPath });
       assert.equal(config.defaultView, 'pane');
     });
 
     it('reads theme from .ctoprc', () => {
       fs.writeFileSync(rcPath, JSON.stringify({ theme: 'minimal' }));
       const { loadConfig } = require('../claude-manager');
-      const config = loadConfig();
+      const config = loadConfig({ rcPath });
       assert.equal(config.theme, 'minimal');
     });
 
     it('ignores invalid defaultView values', () => {
       fs.writeFileSync(rcPath, JSON.stringify({ defaultView: 'grid' }));
       const { loadConfig } = require('../claude-manager');
-      const config = loadConfig();
+      const config = loadConfig({ rcPath });
       assert.equal(config.defaultView, 'list');
     });
 
     it('ignores invalid theme values', () => {
       fs.writeFileSync(rcPath, JSON.stringify({ theme: 'dark' }));
       const { loadConfig } = require('../claude-manager');
-      const config = loadConfig();
+      const config = loadConfig({ rcPath });
       assert.equal(config.theme, 'default');
     });
   });
