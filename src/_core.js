@@ -282,6 +282,23 @@ if (require.main === module) {
   plugins = loadPlugins();
 }
 
+// Canonical agent type identifiers. Referenced everywhere an agentType is
+// assigned, compared, or branched on so the four supported agents stay in
+// sync as detectors, renderers, and pricing logic evolve.
+const AGENT = Object.freeze({
+  CLAUDE:   'claude',
+  CODEX:    'codex',
+  OPENCODE: 'opencode',
+  DEVIN:    'devin',
+});
+
+const AGENT_TITLES = Object.freeze({
+  [AGENT.CLAUDE]:   'Claude Code',
+  [AGENT.CODEX]:    'Codex CLI',
+  [AGENT.OPENCODE]: 'OpenCode',
+  [AGENT.DEVIN]:    'Devin',
+});
+
 // Pricing per million tokens (USD) — as of 2025
 const MODEL_PRICING = {
   'claude-sonnet-4-6': { input: 3, output: 15, cacheWrite: 3.75, cacheRead: 0.30 },
@@ -325,9 +342,9 @@ function calculateCost(proc) {
     else if (modelLower.includes('ollama') || modelLower.includes('qwen') || modelLower.includes('llama')) pricing = MODEL_PRICING['ollama'];
     else if (modelLower.includes('swe-1') && modelLower.includes('fast')) pricing = MODEL_PRICING['swe-1-6-fast'];
     else if (modelLower.includes('swe-1') || modelLower.startsWith('swe-')) pricing = MODEL_PRICING['swe-1-6'];
-    else if (proc.agentType === 'codex') pricing = MODEL_PRICING['gpt-4.1']; // default for codex
-    else if (proc.agentType === 'opencode') pricing = MODEL_PRICING['claude-sonnet-4-6']; // default for opencode
-    else if (proc.agentType === 'devin') pricing = MODEL_PRICING['swe-1-6']; // default for devin
+    else if (proc.agentType === AGENT.CODEX) pricing = MODEL_PRICING['gpt-4.1']; // default for codex
+    else if (proc.agentType === AGENT.OPENCODE) pricing = MODEL_PRICING['claude-sonnet-4-6']; // default for opencode
+    else if (proc.agentType === AGENT.DEVIN) pricing = MODEL_PRICING['swe-1-6']; // default for devin
     else pricing = MODEL_PRICING['claude-sonnet-4-6']; // default to sonnet
   }
   const cost = (
@@ -339,10 +356,13 @@ function calculateCost(proc) {
   return cost;
 }
 
-function formatCost(cost) {
+// digits=2 keeps the legacy "<$0.01" threshold for the TUI's compact display.
+// digits>2 (e.g., the `ctop get` detail view) skips it so users see the exact
+// fractional cost instead of a rounded sentinel.
+function formatCost(cost, digits = 2) {
   if (cost === null) return '--';
-  if (cost < 0.01) return '<$0.01';
-  return '$' + cost.toFixed(2);
+  if (digits === 2 && cost < 0.01) return '<$0.01';
+  return '$' + cost.toFixed(digits);
 }
 
 function formatTokenCount(n) {
@@ -737,7 +757,7 @@ function renderHistoryChart(history, columns) {
     const hourLabel = formatHourLabel(h);
     const barLen = Math.round((b.cost / maxCost) * barWidth);
     const bar = barLen > 0 ? '\u2588'.repeat(barLen) : '';
-    const costStr = b.cost > 0 ? `$${b.cost.toFixed(2)}` : '';
+    const costStr = b.cost > 0 ? formatCost(b.cost) : '';
     out += `  ${DIM}${hourLabel}${RESET} ${YELLOW}${bar}${RESET} ${DIM}${costStr}${RESET}${CLR_LINE}\n`;
   }
 
@@ -1179,7 +1199,7 @@ function checkStateTransitions(currentProcs) {
     if (activeDuration < minDuration) continue;
 
     // Build notification
-    const proc = current || { pid, slug: null, title: 'Agent session', model: null, agentType: 'claude' };
+    const proc = current || { pid, slug: null, title: 'Agent session', model: null, agentType: AGENT.CLAUDE };
     proc._activeDurationMs = activeDuration;
     const message = formatNotificationMessage(proc);
     sendNotification('ctop \u2014 Session Completed', message);
@@ -1240,8 +1260,8 @@ function getClaudeProcessesWindows() {
         startTime,
         command,
         cwd,
-        agentType: 'claude',
-        title: 'Claude Code',
+        agentType: AGENT.CLAUDE,
+        title: AGENT_TITLES[AGENT.CLAUDE],
         contextPct: null,
         model: null,
         stopReason: null,
@@ -1329,7 +1349,7 @@ function getCodexProcesses() {
       procs.push({
         pid, cpu: parseFloat(cpu) || 0, mem: parseFloat(mem) || 0,
         stat, startDate, startTime, command, cwd,
-        agentType: 'codex', title: 'Codex CLI',
+        agentType: AGENT.CODEX, title: AGENT_TITLES[AGENT.CODEX],
         contextPct: null, model: null, stopReason: null, gitBranch: null,
         slug: null, sessionTitle: null, sessionId: null, version: null, userType: null,
         inputTokens: null, cacheCreateTokens: null, cacheReadTokens: null,
@@ -1374,7 +1394,7 @@ function getCodexProcessesWindows() {
         pid, cpu: cpuVal, mem: parseFloat(memPct.toFixed(1)),
         stat: 'R', startDate, startTime: formatStartTime(startDate),
         command: p.CommandLine || '', cwd: getProcessCwd(pid),
-        agentType: 'codex', title: 'Codex CLI',
+        agentType: AGENT.CODEX, title: AGENT_TITLES[AGENT.CODEX],
         contextPct: null, model: null, stopReason: null, gitBranch: null,
         slug: null, sessionTitle: null, sessionId: null, version: null, userType: null,
         inputTokens: null, cacheCreateTokens: null, cacheReadTokens: null,
@@ -1433,7 +1453,7 @@ function getOpenCodeProcesses() {
       procs.push({
         pid, cpu: parseFloat(cpu) || 0, mem: parseFloat(mem) || 0,
         stat, startDate, startTime, command, cwd,
-        agentType: 'opencode', title: 'OpenCode',
+        agentType: AGENT.OPENCODE, title: AGENT_TITLES[AGENT.OPENCODE],
         contextPct: null, model: null, stopReason: null, gitBranch: null,
         slug: null, sessionTitle: null, sessionId: null, version: null, userType: null,
         inputTokens: null, cacheCreateTokens: null, cacheReadTokens: null,
@@ -1500,7 +1520,7 @@ function getDevinProcesses() {
       procs.push({
         pid, cpu: parseFloat(cpu) || 0, mem: parseFloat(mem) || 0,
         stat, startDate, startTime, command, cwd,
-        agentType: 'devin', title: 'Devin',
+        agentType: AGENT.DEVIN, title: AGENT_TITLES[AGENT.DEVIN],
         contextPct: null, model: null, stopReason: null, gitBranch: null,
         slug: null, sessionTitle: null, sessionId: null, version: null, userType: null,
         inputTokens: null, cacheCreateTokens: null, cacheReadTokens: null,
@@ -1573,8 +1593,8 @@ function getClaudeProcesses() {
         startTime,
         command,
         cwd,
-        agentType: 'claude',
-        title: 'Claude Code',
+        agentType: AGENT.CLAUDE,
+        title: AGENT_TITLES[AGENT.CLAUDE],
         contextPct: null,
         model: null,
         stopReason: null,
@@ -2824,8 +2844,8 @@ const LOG_TAIL_BYTES = 4 * 1024 * 1024; // 4MB — read enough to capture full s
 
 function readSessionLog(proc, maxLines) {
   if (maxLines === undefined) maxLines = 0; // 0 = no limit
-  if (proc && proc.agentType === 'opencode') return readOpenCodeSessionLog(proc, maxLines);
-  if (proc && proc.agentType === 'devin') return readDevinSessionLog(proc, maxLines);
+  if (proc && proc.agentType === AGENT.OPENCODE) return readOpenCodeSessionLog(proc, maxLines);
+  if (proc && proc.agentType === AGENT.DEVIN) return readDevinSessionLog(proc, maxLines);
   // Find the session JSONL file for this process (same logic as assignSessionsToProcesses)
   if (!proc || !proc.cwd) return [];
 
@@ -3483,10 +3503,10 @@ function formatTimeShort(date) {
 function renderStatsBar(columns) {
   const activeCount = allProcesses.filter(p => p.isActive).length;
   const deadCount = allProcesses.filter(p => !p.isActive).length;
-  const claudeActive = allProcesses.filter(p => p.isActive && p.agentType === 'claude').length;
-  const codexActive = allProcesses.filter(p => p.isActive && p.agentType === 'codex').length;
-  const opencodeActive = allProcesses.filter(p => p.isActive && p.agentType === 'opencode').length;
-  const devinActive = allProcesses.filter(p => p.isActive && p.agentType === 'devin').length;
+  const claudeActive = allProcesses.filter(p => p.isActive && p.agentType === AGENT.CLAUDE).length;
+  const codexActive = allProcesses.filter(p => p.isActive && p.agentType === AGENT.CODEX).length;
+  const opencodeActive = allProcesses.filter(p => p.isActive && p.agentType === AGENT.OPENCODE).length;
+  const devinActive = allProcesses.filter(p => p.isActive && p.agentType === AGENT.DEVIN).length;
   const totalCost = allProcesses.reduce((sum, p) => sum + (p.cost || 0), 0);
   const costCap = 50;
 
@@ -4408,7 +4428,7 @@ function renderSubagentRow(sub, opts) {
       outputTokens: sub.outputTokens,
       cacheCreateTokens: 0,
       cacheReadTokens: sub.cacheTokens,
-      agentType: 'claude',
+      agentType: AGENT.CLAUDE,
     });
     const costStr = cost === null ? '--' : formatCost(cost);
     row += `${DIM}${costStr.padEnd(costColW)}${RESET}`;
@@ -4598,10 +4618,10 @@ function renderNow() {
   // Non-grouped (normal) process list — with agent type sections
 
   // Sort by agent type first (claude, codex, opencode, devin), preserving existing sort within each type
-  const claudeProcs = processes.filter(p => p.agentType === 'claude');
-  const codexProcs = processes.filter(p => p.agentType === 'codex');
-  const opencodeProcs = processes.filter(p => p.agentType === 'opencode');
-  const devinProcs = processes.filter(p => p.agentType === 'devin');
+  const claudeProcs = processes.filter(p => p.agentType === AGENT.CLAUDE);
+  const codexProcs = processes.filter(p => p.agentType === AGENT.CODEX);
+  const opencodeProcs = processes.filter(p => p.agentType === AGENT.OPENCODE);
+  const devinProcs = processes.filter(p => p.agentType === AGENT.DEVIN);
   const sectionedProcesses = [...claudeProcs, ...codexProcs, ...opencodeProcs, ...devinProcs];
   // Remap selectedIndex to the sectioned ordering
   if (processes.length > 0 && sectionedProcesses.length > 0) {
@@ -6360,6 +6380,8 @@ async function main() {
 
 module.exports = {
   main,
+  AGENT,
+  AGENT_TITLES,
   calculateCost,
   formatCost,
   formatTokenCount,
