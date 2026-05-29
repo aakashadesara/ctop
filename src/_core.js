@@ -1217,6 +1217,39 @@ function checkStateTransitions(currentProcs) {
   }
 }
 
+// Canonical shape of a row in the process list. Every agent detector (claude,
+// codex, opencode, devin — unix + windows) routes through this factory so the
+// 24+ optional fields stay in sync as renderers add new ones to consume.
+// `extras` exists for one-off fields a specific detector wants to override.
+function makeProcessRecord({
+  pid, cpu, mem, stat, startDate, command, cwd,
+  agentType, isActive, isZombie, isStopped,
+  extras = {},
+}) {
+  return {
+    pid,
+    cpu: parseFloat(cpu) || 0,
+    mem: parseFloat(mem) || 0,
+    stat,
+    startDate,
+    startTime: formatStartTime(startDate),
+    command,
+    cwd,
+    agentType,
+    title: AGENT_TITLES[agentType],
+    contextPct: null, model: null, stopReason: null, gitBranch: null,
+    slug: null, sessionTitle: null, sessionId: null, version: null, userType: null,
+    inputTokens: null, cacheCreateTokens: null, cacheReadTokens: null,
+    outputTokens: null, serviceTier: null, timestamp: null,
+    requestId: null, lastTurnMs: null,
+    compacted: false, compactionCount: 0,
+    rateLimits: null,
+    isActive, isZombie, isStopped,
+    status: isZombie ? 'ZOMBIE' : isStopped ? 'STOPPED' : isActive ? 'ACTIVE' : 'SLEEPING',
+    ...extras,
+  };
+}
+
 function getClaudeProcessesWindows() {
   try {
     const psCmd = `powershell -Command "Get-Process | Where-Object {$_.CommandLine -like '*claude*' -and $_.CommandLine -notlike '*claude-manager*' -and $_.CommandLine -notlike '*ctop*'} | Select-Object Id,CPU,WorkingSet64,StartTime,CommandLine | ConvertTo-Json"`;
@@ -1246,45 +1279,14 @@ function getClaudeProcessesWindows() {
         else startDate = new Date(p.StartTime);
       }
 
-      const startTime = formatStartTime(startDate);
       const cwd = getProcessCwd(pid);
 
-      procs.push({
-        pid,
-        cpu: cpuVal,
-        mem: parseFloat(memPct.toFixed(1)),
-        stat: 'R',
-        startDate,
-        startTime,
-        command,
-        cwd,
+      procs.push(makeProcessRecord({
+        pid, cpu: cpuVal, mem: memPct.toFixed(1), stat: 'R',
+        startDate, command, cwd,
         agentType: AGENT.CLAUDE,
-        title: AGENT_TITLES[AGENT.CLAUDE],
-        contextPct: null,
-        model: null,
-        stopReason: null,
-        gitBranch: null,
-        slug: null,
-        sessionTitle: null,
-        sessionId: null,
-        version: null,
-        userType: null,
-        inputTokens: null,
-        cacheCreateTokens: null,
-        cacheReadTokens: null,
-        outputTokens: null,
-        serviceTier: null,
-        timestamp: null,
-        requestId: null,
-        lastTurnMs: null,
-        compacted: false,
-        compactionCount: 0,
-        rateLimits: null,
-        isActive: true,
-        isZombie: false,
-        isStopped: false,
-        status: 'ACTIVE'
-      });
+        isActive: true, isZombie: false, isStopped: false,
+      }));
     }
 
     procs.sort((a, b) => a.startDate - b.startDate);
@@ -1338,24 +1340,16 @@ function getCodexProcesses() {
       if (!isCodexBinary) continue;
 
       const startDate = new Date(lstartStr);
-      const startTime = formatStartTime(startDate);
       const cwd = getProcessCwd(pid);
       const isActive = !stat.includes('Z') && !stat.includes('T');
       const isZombie = stat.includes('Z');
       const isStopped = stat.includes('T');
 
-      procs.push({
-        pid, cpu: parseFloat(cpu) || 0, mem: parseFloat(mem) || 0,
-        stat, startDate, startTime, command, cwd,
-        agentType: AGENT.CODEX, title: AGENT_TITLES[AGENT.CODEX],
-        contextPct: null, model: null, stopReason: null, gitBranch: null,
-        slug: null, sessionTitle: null, sessionId: null, version: null, userType: null,
-        inputTokens: null, cacheCreateTokens: null, cacheReadTokens: null,
-        outputTokens: null, serviceTier: null, timestamp: null,
-        requestId: null, lastTurnMs: null, compacted: false, compactionCount: 0,
+      procs.push(makeProcessRecord({
+        pid, cpu, mem, stat, startDate, command, cwd,
+        agentType: AGENT.CODEX,
         isActive, isZombie, isStopped,
-        status: isZombie ? 'ZOMBIE' : isStopped ? 'STOPPED' : isActive ? 'ACTIVE' : 'SLEEPING'
-      });
+      }));
     }
 
     procs.sort((a, b) => a.startDate - b.startDate);
@@ -1388,18 +1382,12 @@ function getCodexProcessesWindows() {
         if (m) startDate = new Date(parseInt(m[1], 10));
         else startDate = new Date(p.StartTime);
       }
-      procs.push({
-        pid, cpu: cpuVal, mem: parseFloat(memPct.toFixed(1)),
-        stat: 'R', startDate, startTime: formatStartTime(startDate),
-        command: p.CommandLine || '', cwd: getProcessCwd(pid),
-        agentType: AGENT.CODEX, title: AGENT_TITLES[AGENT.CODEX],
-        contextPct: null, model: null, stopReason: null, gitBranch: null,
-        slug: null, sessionTitle: null, sessionId: null, version: null, userType: null,
-        inputTokens: null, cacheCreateTokens: null, cacheReadTokens: null,
-        outputTokens: null, serviceTier: null, timestamp: null,
-        requestId: null, lastTurnMs: null, compacted: false, compactionCount: 0,
-        isActive: true, isZombie: false, isStopped: false, status: 'ACTIVE'
-      });
+      procs.push(makeProcessRecord({
+        pid, cpu: cpuVal, mem: memPct.toFixed(1), stat: 'R',
+        startDate, command: p.CommandLine || '', cwd: getProcessCwd(pid),
+        agentType: AGENT.CODEX,
+        isActive: true, isZombie: false, isStopped: false,
+      }));
     }
     procs.sort((a, b) => a.startDate - b.startDate);
     assignCodexSessionsToProcesses(procs);
@@ -1442,25 +1430,16 @@ function getOpenCodeProcesses() {
       if (!isOpenCodeBinary) continue;
 
       const startDate = new Date(lstartStr);
-      const startTime = formatStartTime(startDate);
       const cwd = getProcessCwd(pid);
       const isActive = !stat.includes('Z') && !stat.includes('T');
       const isZombie = stat.includes('Z');
       const isStopped = stat.includes('T');
 
-      procs.push({
-        pid, cpu: parseFloat(cpu) || 0, mem: parseFloat(mem) || 0,
-        stat, startDate, startTime, command, cwd,
-        agentType: AGENT.OPENCODE, title: AGENT_TITLES[AGENT.OPENCODE],
-        contextPct: null, model: null, stopReason: null, gitBranch: null,
-        slug: null, sessionTitle: null, sessionId: null, version: null, userType: null,
-        inputTokens: null, cacheCreateTokens: null, cacheReadTokens: null,
-        outputTokens: null, serviceTier: null, timestamp: null,
-        requestId: null, lastTurnMs: null, compacted: false, compactionCount: 0,
-        rateLimits: null,
+      procs.push(makeProcessRecord({
+        pid, cpu, mem, stat, startDate, command, cwd,
+        agentType: AGENT.OPENCODE,
         isActive, isZombie, isStopped,
-        status: isZombie ? 'ZOMBIE' : isStopped ? 'STOPPED' : isActive ? 'ACTIVE' : 'SLEEPING'
-      });
+      }));
     }
 
     procs.sort((a, b) => a.startDate - b.startDate);
@@ -1509,25 +1488,16 @@ function getDevinProcesses() {
       if (!isDevinBinary) continue;
 
       const startDate = new Date(lstartStr);
-      const startTime = formatStartTime(startDate);
       const cwd = getProcessCwd(pid);
       const isActive = !stat.includes('Z') && !stat.includes('T');
       const isZombie = stat.includes('Z');
       const isStopped = stat.includes('T');
 
-      procs.push({
-        pid, cpu: parseFloat(cpu) || 0, mem: parseFloat(mem) || 0,
-        stat, startDate, startTime, command, cwd,
-        agentType: AGENT.DEVIN, title: AGENT_TITLES[AGENT.DEVIN],
-        contextPct: null, model: null, stopReason: null, gitBranch: null,
-        slug: null, sessionTitle: null, sessionId: null, version: null, userType: null,
-        inputTokens: null, cacheCreateTokens: null, cacheReadTokens: null,
-        outputTokens: null, serviceTier: null, timestamp: null,
-        requestId: null, lastTurnMs: null, compacted: false, compactionCount: 0,
-        rateLimits: null,
+      procs.push(makeProcessRecord({
+        pid, cpu, mem, stat, startDate, command, cwd,
+        agentType: AGENT.DEVIN,
         isActive, isZombie, isStopped,
-        status: isZombie ? 'ZOMBIE' : isStopped ? 'STOPPED' : isActive ? 'ACTIVE' : 'SLEEPING'
-      });
+      }));
     }
 
     procs.sort((a, b) => a.startDate - b.startDate);
@@ -1572,7 +1542,6 @@ function getClaudeProcesses() {
 
       // Parse start time
       const startDate = new Date(lstartStr);
-      const startTime = formatStartTime(startDate);
 
       // Get working directory (cache populated by resolveCwds above)
       const cwd = getProcessCwd(pid);
@@ -1582,42 +1551,11 @@ function getClaudeProcesses() {
       const isZombie = stat.includes('Z');
       const isStopped = stat.includes('T');
 
-      procs.push({
-        pid,
-        cpu: parseFloat(cpu) || 0,
-        mem: parseFloat(mem) || 0,
-        stat,
-        startDate,
-        startTime,
-        command,
-        cwd,
+      procs.push(makeProcessRecord({
+        pid, cpu, mem, stat, startDate, command, cwd,
         agentType: AGENT.CLAUDE,
-        title: AGENT_TITLES[AGENT.CLAUDE],
-        contextPct: null,
-        model: null,
-        stopReason: null,
-        gitBranch: null,
-        slug: null,
-        sessionTitle: null,
-        sessionId: null,
-        version: null,
-        userType: null,
-        inputTokens: null,
-        cacheCreateTokens: null,
-        cacheReadTokens: null,
-        outputTokens: null,
-        serviceTier: null,
-        timestamp: null,
-        requestId: null,
-        lastTurnMs: null,
-        compacted: false,
-        compactionCount: 0,
-        rateLimits: null,
-        isActive,
-        isZombie,
-        isStopped,
-        status: isZombie ? 'ZOMBIE' : isStopped ? 'STOPPED' : isActive ? 'ACTIVE' : 'SLEEPING'
-      });
+        isActive, isZombie, isStopped,
+      }));
     }
 
     // Sort by start time (oldest first = created first at top)
@@ -6388,6 +6326,7 @@ module.exports = {
   main,
   AGENT,
   AGENT_TITLES,
+  makeProcessRecord,
   calculateCost,
   formatCost,
   formatTokenCount,
