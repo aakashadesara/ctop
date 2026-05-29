@@ -993,14 +993,12 @@ function renderWaveformSparkline(width) {
 function readSessionMessageActivity(proc) {
   if (!proc || !proc.cwd) return [];
 
-  const projectDirName = proc.cwd.replace(/\//g, '-');
-  const projectPath = path.join(process.env.HOME || '', '.claude', 'projects', projectDirName);
+  const projectPath = claudeProjectPath(proc.cwd);
+  if (!safeExists(projectPath)) return [];
 
-  try { if (!fs.existsSync(projectPath)) return []; } catch (e) { return []; }
-
-  const files = getSessionFilesForProject(projectPath);
-  if (files.length === 0) return [];
-  const filePath = files[0].path;
+  const sessionFile = getMostRecentSessionFile(projectPath);
+  if (!sessionFile) return [];
+  const filePath = sessionFile.path;
 
   try {
     const content = fs.readFileSync(filePath, 'utf8');
@@ -2037,20 +2035,41 @@ function cwdToProjectDirName(cwd) {
   return cwd.replace(/[\\/]/g, '-').replace(/:/g, '');
 }
 
+// Resolves the Claude Code per-project session directory for a cwd
+// (~/.claude/projects/<encoded-cwd>). Used everywhere a session JSONL needs
+// to be located.
+function claudeProjectPath(cwd) {
+  return path.join(os.homedir(), '.claude', 'projects', cwdToProjectDirName(cwd));
+}
+
+// Returns the most recent session file descriptor for a project, or null
+// when there are none. `getSessionFilesForProject` already sorts by mtime
+// descending, so files[0] is the right one for "tail the latest session".
+function getMostRecentSessionFile(projectPath) {
+  const files = getSessionFilesForProject(projectPath);
+  return files.length > 0 ? files[0] : null;
+}
+
+// fs.existsSync can throw on Windows when a path component lacks read
+// permission; the rest of ctop already wraps it defensively in several
+// places, so centralize the try/catch here.
+function safeExists(p) {
+  try { return fs.existsSync(p); } catch { return false; }
+}
+
 function executeSearch(query) {
   searchResults.clear();
   if (!query) return;
 
   for (const proc of processes) {
     if (!proc.cwd) continue;
-    const projectDirName = cwdToProjectDirName(proc.cwd);
-    const projectPath = path.join(os.homedir(), '.claude', 'projects', projectDirName);
-    if (!fs.existsSync(projectPath)) continue;
+    const projectPath = claudeProjectPath(proc.cwd);
+    if (!safeExists(projectPath)) continue;
 
-    const files = getSessionFilesForProject(projectPath);
     // Search the most recent session file for this process
-    if (files.length > 0) {
-      const result = searchSessionContent(projectPath, files[0].name, query);
+    const sessionFile = getMostRecentSessionFile(projectPath);
+    if (sessionFile) {
+      const result = searchSessionContent(projectPath, sessionFile.name, query);
       if (result.matched) {
         searchResults.set(proc.pid, result.snippets);
       }
@@ -2099,10 +2118,8 @@ function assignSessionsToProcesses(procs) {
   }
 
   for (const [cwd, groupProcs] of groups) {
-    const projectDirName = cwdToProjectDirName(cwd);
-    const projectPath = path.join(os.homedir(), '.claude', 'projects', projectDirName);
-
-    if (!fs.existsSync(projectPath)) continue;
+    const projectPath = claudeProjectPath(cwd);
+    if (!safeExists(projectPath)) continue;
 
     const files = getSessionFilesForProject(projectPath);
     // Take the N most recently modified session files for N processes
@@ -2849,25 +2866,19 @@ function readSessionLog(proc, maxLines) {
   // Find the session JSONL file for this process (same logic as assignSessionsToProcesses)
   if (!proc || !proc.cwd) return [];
 
-  const projectDirName = cwdToProjectDirName(proc.cwd);
-  const projectPath = path.join(os.homedir(), '.claude', 'projects', projectDirName);
-
-  try {
-    if (!fs.existsSync(projectPath)) return [];
-  } catch (e) {
-    return [];
-  }
+  const projectPath = claudeProjectPath(proc.cwd);
+  if (!safeExists(projectPath)) return [];
 
   // Use exact session file if sessionId is known, otherwise fall back to most recent
   let filePath;
   if (proc.sessionId) {
     const exact = path.join(projectPath, `${proc.sessionId}.jsonl`);
-    try { if (fs.existsSync(exact)) filePath = exact; } catch {}
+    if (safeExists(exact)) filePath = exact;
   }
   if (!filePath) {
-    const files = getSessionFilesForProject(projectPath);
-    if (files.length === 0) return [];
-    filePath = files[0].path;
+    const sessionFile = getMostRecentSessionFile(projectPath);
+    if (!sessionFile) return [];
+    filePath = sessionFile.path;
   }
 
   let st;
@@ -3037,15 +3048,10 @@ function parseSessionTimeline(filePath) {
 function getSessionFileForProc(proc) {
   // Find the most recent session JSONL file path for a given process
   if (!proc || !proc.cwd) return null;
-  const projectDirName = cwdToProjectDirName(proc.cwd);
-  const projectPath = path.join(os.homedir(), '.claude', 'projects', projectDirName);
-  try {
-    if (!fs.existsSync(projectPath)) return null;
-  } catch (e) {
-    return null;
-  }
-  const files = getSessionFilesForProject(projectPath);
-  return files.length > 0 ? files[0].path : null;
+  const projectPath = claudeProjectPath(proc.cwd);
+  if (!safeExists(projectPath)) return null;
+  const sessionFile = getMostRecentSessionFile(projectPath);
+  return sessionFile ? sessionFile.path : null;
 }
 
 function formatElapsed(ms) {
@@ -6472,6 +6478,9 @@ module.exports = {
   // Windows / cross-platform exports
   buildKillCommand,
   cwdToProjectDirName,
+  claudeProjectPath,
+  getMostRecentSessionFile,
+  safeExists,
   IS_MAC,
   IS_LINUX,
   IS_WIN,
