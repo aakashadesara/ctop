@@ -1250,6 +1250,26 @@ function makeProcessRecord({
   };
 }
 
+// Parses a single line of `ps -eo pid,user,pcpu,pmem,stat,lstart,command`
+// output. `lstart` always spans 5 whitespace-separated fields ("Sun Feb 23
+// 15:44:00 2025"), so the command begins at index 10. State flags follow
+// BSD ps conventions: 'Z' = zombie, 'T' = traced/stopped.
+function parsePsLine(line) {
+  const parts = line.trim().split(/\s+/);
+  const pid = parts[0];
+  const cpu = parts[2];
+  const mem = parts[3];
+  const stat = parts[4];
+  const lstartStr = parts.slice(5, 10).join(' ');
+  const command = parts.slice(10).join(' ');
+  const startDate = new Date(lstartStr);
+  const cwd = getProcessCwd(pid);
+  const isActive = !stat.includes('Z') && !stat.includes('T');
+  const isZombie = stat.includes('Z');
+  const isStopped = stat.includes('T');
+  return { pid, cpu, mem, stat, command, startDate, cwd, isActive, isZombie, isStopped };
+}
+
 function getClaudeProcessesWindows() {
   try {
     const psCmd = `powershell -Command "Get-Process | Where-Object {$_.CommandLine -like '*claude*' -and $_.CommandLine -notlike '*claude-manager*' -and $_.CommandLine -notlike '*ctop*'} | Select-Object Id,CPU,WorkingSet64,StartTime,CommandLine | ConvertTo-Json"`;
@@ -1320,36 +1340,20 @@ function getCodexProcesses() {
     resolveCwds(lines.map(l => l.trim().split(/\s+/)[0]));
 
     for (const line of lines) {
-      const parts = line.trim().split(/\s+/);
-      const pid = parts[0];
-      const cpu = parts[2];
-      const mem = parts[3];
-      const stat = parts[4];
-      const lstartStr = parts.slice(5, 10).join(' ');
-      const command = parts.slice(10).join(' ');
+      const ps = parsePsLine(line);
 
       // Only match the actual codex binary, not child processes or shims.
       // The native binary path contains 'codex-darwin' or 'codex-linux' or ends with '/codex'
       // Also accept a bare 'codex' command.
-      const isCodexBinary = command.match(/\/codex\/codex\b/) ||
-                            command.match(/\bcodex-darwin/) ||
-                            command.match(/\bcodex-linux/) ||
-                            command.match(/\bcodex-win/) ||
-                            command.match(/^\S*\/codex\s/) ||
-                            command.match(/^codex\s/);
+      const isCodexBinary = ps.command.match(/\/codex\/codex\b/) ||
+                            ps.command.match(/\bcodex-darwin/) ||
+                            ps.command.match(/\bcodex-linux/) ||
+                            ps.command.match(/\bcodex-win/) ||
+                            ps.command.match(/^\S*\/codex\s/) ||
+                            ps.command.match(/^codex\s/);
       if (!isCodexBinary) continue;
 
-      const startDate = new Date(lstartStr);
-      const cwd = getProcessCwd(pid);
-      const isActive = !stat.includes('Z') && !stat.includes('T');
-      const isZombie = stat.includes('Z');
-      const isStopped = stat.includes('T');
-
-      procs.push(makeProcessRecord({
-        pid, cpu, mem, stat, startDate, command, cwd,
-        agentType: AGENT.CODEX,
-        isActive, isZombie, isStopped,
-      }));
+      procs.push(makeProcessRecord({ ...ps, agentType: AGENT.CODEX }));
     }
 
     procs.sort((a, b) => a.startDate - b.startDate);
@@ -1415,31 +1419,15 @@ function getOpenCodeProcesses() {
     resolveCwds(lines.map(l => l.trim().split(/\s+/)[0]));
 
     for (const line of lines) {
-      const parts = line.trim().split(/\s+/);
-      const pid = parts[0];
-      const cpu = parts[2];
-      const mem = parts[3];
-      const stat = parts[4];
-      const lstartStr = parts.slice(5, 10).join(' ');
-      const command = parts.slice(10).join(' ');
+      const ps = parsePsLine(line);
 
       // Match the opencode binary — typically at ~/.opencode/bin/opencode
-      const isOpenCodeBinary = command.match(/\.opencode\/bin\/opencode\b/) ||
-                               command.match(/\/opencode\s/) ||
-                               command.match(/^opencode\s/);
+      const isOpenCodeBinary = ps.command.match(/\.opencode\/bin\/opencode\b/) ||
+                               ps.command.match(/\/opencode\s/) ||
+                               ps.command.match(/^opencode\s/);
       if (!isOpenCodeBinary) continue;
 
-      const startDate = new Date(lstartStr);
-      const cwd = getProcessCwd(pid);
-      const isActive = !stat.includes('Z') && !stat.includes('T');
-      const isZombie = stat.includes('Z');
-      const isStopped = stat.includes('T');
-
-      procs.push(makeProcessRecord({
-        pid, cpu, mem, stat, startDate, command, cwd,
-        agentType: AGENT.OPENCODE,
-        isActive, isZombie, isStopped,
-      }));
+      procs.push(makeProcessRecord({ ...ps, agentType: AGENT.OPENCODE }));
     }
 
     procs.sort((a, b) => a.startDate - b.startDate);
@@ -1470,34 +1458,18 @@ function getDevinProcesses() {
     resolveCwds(lines.map(l => l.trim().split(/\s+/)[0]));
 
     for (const line of lines) {
-      const parts = line.trim().split(/\s+/);
-      const pid = parts[0];
-      const cpu = parts[2];
-      const mem = parts[3];
-      const stat = parts[4];
-      const lstartStr = parts.slice(5, 10).join(' ');
-      const command = parts.slice(10).join(' ');
+      const ps = parsePsLine(line);
 
       // Match the devin binary — installed at ~/.local/bin/devin or run from versioned share dir
-      const isDevinBinary = command.match(/\.local\/share\/devin\/cli\/.*\/bin\/devin\b/) ||
-                            command.match(/\.local\/bin\/devin\b/) ||
-                            command.match(/\/devin\s/) ||
-                            command.match(/\/devin$/) ||
-                            command.match(/^devin\s/) ||
-                            command.match(/^devin$/);
+      const isDevinBinary = ps.command.match(/\.local\/share\/devin\/cli\/.*\/bin\/devin\b/) ||
+                            ps.command.match(/\.local\/bin\/devin\b/) ||
+                            ps.command.match(/\/devin\s/) ||
+                            ps.command.match(/\/devin$/) ||
+                            ps.command.match(/^devin\s/) ||
+                            ps.command.match(/^devin$/);
       if (!isDevinBinary) continue;
 
-      const startDate = new Date(lstartStr);
-      const cwd = getProcessCwd(pid);
-      const isActive = !stat.includes('Z') && !stat.includes('T');
-      const isZombie = stat.includes('Z');
-      const isStopped = stat.includes('T');
-
-      procs.push(makeProcessRecord({
-        pid, cpu, mem, stat, startDate, command, cwd,
-        agentType: AGENT.DEVIN,
-        isActive, isZombie, isStopped,
-      }));
+      procs.push(makeProcessRecord({ ...ps, agentType: AGENT.DEVIN }));
     }
 
     procs.sort((a, b) => a.startDate - b.startDate);
@@ -1529,33 +1501,8 @@ function getClaudeProcesses() {
     resolveCwds(lines.map(l => l.trim().split(/\s+/)[0]));
 
     for (const line of lines) {
-      // Parse the line - lstart takes 5 fields (e.g., "Sun Feb 23 15:44:00 2025")
-      const parts = line.trim().split(/\s+/);
-      const pid = parts[0];
-      const user = parts[1];
-      const cpu = parts[2];
-      const mem = parts[3];
-      const stat = parts[4];
-      // lstart is parts[5] through parts[9] (e.g., "Sun Feb 23 15:44:00 2025")
-      const lstartStr = parts.slice(5, 10).join(' ');
-      const command = parts.slice(10).join(' ');
-
-      // Parse start time
-      const startDate = new Date(lstartStr);
-
-      // Get working directory (cache populated by resolveCwds above)
-      const cwd = getProcessCwd(pid);
-
-      // Determine process state
-      const isActive = !stat.includes('Z') && !stat.includes('T');
-      const isZombie = stat.includes('Z');
-      const isStopped = stat.includes('T');
-
-      procs.push(makeProcessRecord({
-        pid, cpu, mem, stat, startDate, command, cwd,
-        agentType: AGENT.CLAUDE,
-        isActive, isZombie, isStopped,
-      }));
+      const ps = parsePsLine(line);
+      procs.push(makeProcessRecord({ ...ps, agentType: AGENT.CLAUDE }));
     }
 
     // Sort by start time (oldest first = created first at top)
@@ -6327,6 +6274,7 @@ module.exports = {
   AGENT,
   AGENT_TITLES,
   makeProcessRecord,
+  parsePsLine,
   calculateCost,
   formatCost,
   formatTokenCount,
