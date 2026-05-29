@@ -3,6 +3,7 @@
 // pipeable by default).
 
 const os = require('os');
+const { pad, truncate } = require('./formatting');
 
 // Shortens a cwd by replacing $HOME with ~, used in human-readable tables.
 function shortenHome(cwd) {
@@ -11,21 +12,6 @@ function shortenHome(cwd) {
   if (cwd === home) return '~';
   if (cwd.startsWith(home + '/')) return '~' + cwd.slice(home.length);
   return cwd;
-}
-
-function truncate(str, max) {
-  if (!str) return '';
-  const s = String(str);
-  if (s.length <= max) return s;
-  return s.slice(0, max - 1) + '…';
-}
-
-// Pads a string to width with spaces (right-pad). Width counts in chars,
-// not visual cells; CLI output is plain ASCII so they match.
-function pad(str, width) {
-  const s = String(str ?? '');
-  if (s.length >= width) return s;
-  return s + ' '.repeat(width - s.length);
 }
 
 // Reduces a proc to the SessionSummary shape used by `ctop ls`. Missing
