@@ -1270,6 +1270,85 @@ function parsePsLine(line) {
   return { pid, cpu, mem, stat, command, startDate, cwd, isActive, isZombie, isStopped };
 }
 
+// Drives the unix `ps`-based discovery flow shared by every non-Windows agent
+// detector. The detector-specific bits are passed in:
+//   - agentType:      the AGENT.* constant used on the resulting records
+//   - grepFilter:     the `grep ... | grep -v ...` chain piped after `ps -eo ...`
+//   - matches:        optional second-pass regex predicate on the command
+//                     column (the grep prefilter is a fuzzy match)
+//   - assignSessions: writes per-agent session metadata onto the procs array
+function detectAgentProcesses({ agentType, grepFilter, matches, assignSessions }) {
+  try {
+    const psOutput = execSync(
+      `ps -eo pid,user,pcpu,pmem,stat,lstart,command | ${grepFilter}`,
+      { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }
+    ).trim();
+
+    if (!psOutput) return [];
+
+    const lines = psOutput.split('\n').filter(Boolean);
+
+    // Batch-resolve all cwds in one lsof call before the per-PID loop.
+    // Resolves a couple of extra non-matching PIDs harmlessly — cheaper
+    // than re-running the binary regex twice.
+    resolveCwds(lines.map(l => l.trim().split(/\s+/)[0]));
+
+    const procs = [];
+    for (const line of lines) {
+      const ps = parsePsLine(line);
+      if (matches && !matches(ps.command)) continue;
+      procs.push(makeProcessRecord({ ...ps, agentType }));
+    }
+
+    procs.sort((a, b) => a.startDate - b.startDate);
+    if (assignSessions) assignSessions(procs);
+    for (const proc of procs) { proc.cost = calculateCost(proc); }
+    return procs;
+  } catch (e) {
+    return [];
+  }
+}
+
+// Per-agent detector configs. assignXSessionsToProcesses references resolve
+// via function-declaration hoisting; the configs themselves are evaluated at
+// module load, but the functions they point at don't run until the detector
+// is invoked from main().
+const CODEX_DETECTOR = {
+  agentType: AGENT.CODEX,
+  grepFilter: "grep 'codex' | grep -v 'ctop' | grep -v 'grep' | grep -v 'npm' | grep -v 'node '",
+  // Only match the actual codex binary, not child processes or shims. The
+  // native binary path contains 'codex-darwin' or 'codex-linux' or ends with
+  // '/codex'. Also accept a bare 'codex' command.
+  matches: (cmd) => /\/codex\/codex\b|\bcodex-darwin|\bcodex-linux|\bcodex-win|^\S*\/codex\s|^codex\s/.test(cmd),
+  assignSessions: (procs) => assignCodexSessionsToProcesses(procs),
+};
+
+const OPENCODE_DETECTOR = {
+  agentType: AGENT.OPENCODE,
+  grepFilter: "grep 'opencode' | grep -v 'ctop' | grep -v 'grep' | grep -v 'npm'",
+  // Match the opencode binary — typically at ~/.opencode/bin/opencode
+  matches: (cmd) => /\.opencode\/bin\/opencode\b|\/opencode\s|^opencode\s/.test(cmd),
+  assignSessions: (procs) => assignOpenCodeSessionsToProcesses(procs),
+};
+
+const DEVIN_DETECTOR = {
+  agentType: AGENT.DEVIN,
+  grepFilter: "grep 'devin' | grep -v 'ctop' | grep -v 'claude-manager' | grep -v 'grep' | grep -v 'npm' | grep -v 'node '",
+  // Match the devin binary — installed at ~/.local/bin/devin or run from a
+  // versioned share dir.
+  matches: (cmd) => /\.local\/share\/devin\/cli\/.*\/bin\/devin\b|\.local\/bin\/devin\b|\/devin\s|\/devin$|^devin\s|^devin$/.test(cmd),
+  assignSessions: (procs) => assignDevinSessionsToProcesses(procs),
+};
+
+const CLAUDE_DETECTOR = {
+  agentType: AGENT.CLAUDE,
+  grepFilter: "grep 'claude' | grep -v 'claude-manager' | grep -v 'ctop' | grep -v 'Claude.app' | grep -v 'grep'",
+  // No second-pass binary filter; the grep prefilter is sufficient here
+  // because the Claude CLI does not have shim variants like codex does.
+  matches: null,
+  assignSessions: (procs) => assignSessionsToProcesses(procs),
+};
+
 function getClaudeProcessesWindows() {
   try {
     const psCmd = `powershell -Command "Get-Process | Where-Object {$_.CommandLine -like '*claude*' -and $_.CommandLine -notlike '*claude-manager*' -and $_.CommandLine -notlike '*ctop*'} | Select-Object Id,CPU,WorkingSet64,StartTime,CommandLine | ConvertTo-Json"`;
@@ -1321,48 +1400,7 @@ function getClaudeProcessesWindows() {
 }
 
 function getCodexProcesses() {
-  if (IS_WIN) return getCodexProcessesWindows();
-
-  try {
-    const psOutput = execSync(
-      `ps -eo pid,user,pcpu,pmem,stat,lstart,command | grep 'codex' | grep -v 'ctop' | grep -v 'grep' | grep -v 'npm' | grep -v 'node '`,
-      { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }
-    ).trim();
-
-    if (!psOutput) return [];
-
-    const lines = psOutput.split('\n').filter(Boolean);
-    const procs = [];
-
-    // Batch-resolve all cwds in one lsof call before the per-PID loop.
-    // Resolves a couple of extra non-codex PIDs harmlessly — cheaper than
-    // re-running the binary regex twice.
-    resolveCwds(lines.map(l => l.trim().split(/\s+/)[0]));
-
-    for (const line of lines) {
-      const ps = parsePsLine(line);
-
-      // Only match the actual codex binary, not child processes or shims.
-      // The native binary path contains 'codex-darwin' or 'codex-linux' or ends with '/codex'
-      // Also accept a bare 'codex' command.
-      const isCodexBinary = ps.command.match(/\/codex\/codex\b/) ||
-                            ps.command.match(/\bcodex-darwin/) ||
-                            ps.command.match(/\bcodex-linux/) ||
-                            ps.command.match(/\bcodex-win/) ||
-                            ps.command.match(/^\S*\/codex\s/) ||
-                            ps.command.match(/^codex\s/);
-      if (!isCodexBinary) continue;
-
-      procs.push(makeProcessRecord({ ...ps, agentType: AGENT.CODEX }));
-    }
-
-    procs.sort((a, b) => a.startDate - b.startDate);
-    assignCodexSessionsToProcesses(procs);
-    for (const proc of procs) { proc.cost = calculateCost(proc); }
-    return procs;
-  } catch (e) {
-    return [];
-  }
+  return IS_WIN ? getCodexProcessesWindows() : detectAgentProcesses(CODEX_DETECTOR);
 }
 
 function getCodexProcessesWindows() {
@@ -1404,122 +1442,18 @@ function getCodexProcessesWindows() {
 
 function getOpenCodeProcesses() {
   if (IS_WIN) return []; // OpenCode not yet supported on Windows
-
-  try {
-    const psOutput = execSync(
-      `ps -eo pid,user,pcpu,pmem,stat,lstart,command | grep 'opencode' | grep -v 'ctop' | grep -v 'grep' | grep -v 'npm'`,
-      { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }
-    ).trim();
-
-    if (!psOutput) return [];
-
-    const lines = psOutput.split('\n').filter(Boolean);
-    const procs = [];
-
-    resolveCwds(lines.map(l => l.trim().split(/\s+/)[0]));
-
-    for (const line of lines) {
-      const ps = parsePsLine(line);
-
-      // Match the opencode binary — typically at ~/.opencode/bin/opencode
-      const isOpenCodeBinary = ps.command.match(/\.opencode\/bin\/opencode\b/) ||
-                               ps.command.match(/\/opencode\s/) ||
-                               ps.command.match(/^opencode\s/);
-      if (!isOpenCodeBinary) continue;
-
-      procs.push(makeProcessRecord({ ...ps, agentType: AGENT.OPENCODE }));
-    }
-
-    procs.sort((a, b) => a.startDate - b.startDate);
-    assignOpenCodeSessionsToProcesses(procs);
-    for (const proc of procs) { proc.cost = calculateCost(proc); }
-    return procs;
-  } catch (e) {
-    return [];
-  }
+  return detectAgentProcesses(OPENCODE_DETECTOR);
 }
 
 // --- Devin process detection ---
 
 function getDevinProcesses() {
   if (IS_WIN) return []; // Devin terminal not yet supported on Windows in ctop
-
-  try {
-    const psOutput = execSync(
-      `ps -eo pid,user,pcpu,pmem,stat,lstart,command | grep 'devin' | grep -v 'ctop' | grep -v 'claude-manager' | grep -v 'grep' | grep -v 'npm' | grep -v 'node '`,
-      { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }
-    ).trim();
-
-    if (!psOutput) return [];
-
-    const lines = psOutput.split('\n').filter(Boolean);
-    const procs = [];
-
-    resolveCwds(lines.map(l => l.trim().split(/\s+/)[0]));
-
-    for (const line of lines) {
-      const ps = parsePsLine(line);
-
-      // Match the devin binary — installed at ~/.local/bin/devin or run from versioned share dir
-      const isDevinBinary = ps.command.match(/\.local\/share\/devin\/cli\/.*\/bin\/devin\b/) ||
-                            ps.command.match(/\.local\/bin\/devin\b/) ||
-                            ps.command.match(/\/devin\s/) ||
-                            ps.command.match(/\/devin$/) ||
-                            ps.command.match(/^devin\s/) ||
-                            ps.command.match(/^devin$/);
-      if (!isDevinBinary) continue;
-
-      procs.push(makeProcessRecord({ ...ps, agentType: AGENT.DEVIN }));
-    }
-
-    procs.sort((a, b) => a.startDate - b.startDate);
-    assignDevinSessionsToProcesses(procs);
-    for (const proc of procs) { proc.cost = calculateCost(proc); }
-    return procs;
-  } catch (e) {
-    return [];
-  }
+  return detectAgentProcesses(DEVIN_DETECTOR);
 }
 
 function getClaudeProcesses() {
-  if (IS_WIN) return getClaudeProcessesWindows();
-
-  try {
-    // Get all claude processes with elapsed time for sorting
-    // Using lstart for actual start time sorting
-    const psOutput = execSync(
-      `ps -eo pid,user,pcpu,pmem,stat,lstart,command | grep 'claude' | grep -v 'claude-manager' | grep -v 'ctop' | grep -v 'Claude.app' | grep -v 'grep'`,
-      { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }
-    ).trim();
-
-    if (!psOutput) return [];
-
-    const lines = psOutput.split('\n').filter(Boolean);
-    const procs = [];
-
-    // Batch-resolve all cwds in one lsof call before the per-PID loop.
-    resolveCwds(lines.map(l => l.trim().split(/\s+/)[0]));
-
-    for (const line of lines) {
-      const ps = parsePsLine(line);
-      procs.push(makeProcessRecord({ ...ps, agentType: AGENT.CLAUDE }));
-    }
-
-    // Sort by start time (oldest first = created first at top)
-    procs.sort((a, b) => a.startDate - b.startDate);
-
-    // Assign session data (title + context) by matching sessions to processes per cwd
-    assignSessionsToProcesses(procs);
-
-    // Calculate cost for each process
-    for (const proc of procs) {
-      proc.cost = calculateCost(proc);
-    }
-
-    return procs;
-  } catch (e) {
-    return [];
-  }
+  return IS_WIN ? getClaudeProcessesWindows() : detectAgentProcesses(CLAUDE_DETECTOR);
 }
 
 // Get all agent processes (Claude + Codex + OpenCode + Devin)
@@ -6275,6 +6209,7 @@ module.exports = {
   AGENT_TITLES,
   makeProcessRecord,
   parsePsLine,
+  detectAgentProcesses,
   calculateCost,
   formatCost,
   formatTokenCount,
