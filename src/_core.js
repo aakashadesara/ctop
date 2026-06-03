@@ -614,6 +614,8 @@ const COMMANDS = [
   { name: 'Kill selected process', shortcut: 'x', action: 'kill' },
   { name: 'Force kill selected process', shortcut: 'X', action: 'force-kill' },
   { name: 'Kill all processes', shortcut: 'K', action: 'kill-all' },
+  { name: 'Kill marked sessions (bulk)', shortcut: 'x', action: 'kill-selected' },
+  { name: 'Clear marked selection', shortcut: 'Esc', action: 'clear-selection' },
   { name: 'Toggle pane view', shortcut: 'P', action: 'toggle-pane' },
   { name: 'Group by project directory', shortcut: 'G', action: 'toggle-group' },
   { name: 'Toggle dashboard', shortcut: 'd', action: 'toggle-dashboard' },
@@ -5561,9 +5563,17 @@ function showHelp() {
   output += `  ${CYAN}Tab${RESET}       Expand/collapse group (in grouped mode)\n`;
   output += `  ${CYAN}P${RESET}         Toggle pane/grid view\n\n`;
 
+  output += `${BOLD}SELECT (bulk actions):${RESET}\n`;
+  output += `  ${CYAN}Space${RESET}     Mark / unmark the current session\n`;
+  output += `  ${CYAN}Shift+↑/↓${RESET} Extend the marked range up / down\n`;
+  output += `  ${CYAN}V${RESET}         Range-select mode — then move to extend (works without Shift+arrow)\n`;
+  output += `  ${CYAN}a${RESET}         Select all / clear all visible sessions\n`;
+  output += `  ${CYAN}Shift+Click${RESET} Mark a row (best-effort; some terminals reserve Shift for selection)\n`;
+  output += `  ${CYAN}ESC${RESET}       Clear the selection\n\n`;
+
   output += `${BOLD}ACTIONS:${RESET}\n`;
-  output += `  ${CYAN}x${RESET}         Kill selected process (SIGTERM - graceful)\n`;
-  output += `  ${CYAN}X${RESET}         Force kill selected process (SIGKILL)\n`;
+  output += `  ${CYAN}x${RESET}         Kill selected (SIGTERM); kills all marked sessions if any (with confirmation)\n`;
+  output += `  ${CYAN}X${RESET}         Force kill selected (SIGKILL); kills all marked sessions if any (with confirmation)\n`;
   output += `  ${CYAN}K${RESET}         Kill ALL agent processes (with confirmation)\n`;
   output += `  ${CYAN}A${RESET}         Kill ALL stopped/dead processes (with confirmation)\n`;
   output += `  ${CYAN}o${RESET}         Open working directory in file manager\n`;
