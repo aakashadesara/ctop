@@ -19,7 +19,7 @@
 - **Live log tailing** — stream conversation in a split pane (`L`)
 - **Sort, filter, search** — by CPU, memory, context, branch, model, or full-text (`F`)
 - **Dashboard & history** — aggregate stats (`d`), 24-hour usage charts (`H`)
-- **Process control** — kill sessions (graceful or force), quick-jump to project dir
+- **Process control** — kill sessions (graceful or force), bulk multi-select close, quick-jump to project dir
 - **Desktop notifications** — get notified when sessions complete
 - **5 color themes** — default, minimal, dracula, solarized, monokai (+ custom)
 - **Plugin system** — extend with custom columns via `~/.ctop/plugins/`
@@ -60,6 +60,9 @@ Then run `ctop`. If no agents are running, you'll see an empty state — start a
 | `h`/`l` or `←`/`→` | Navigate (pane mode) |
 | `g` / `G` | Jump to first / last |
 | `P` | Toggle list / pane view |
+| `Space` | Mark / unmark session (multi-select) |
+| `Shift+↑`/`↓` or `V` | Extend / start a marked range |
+| `a` | Select all visible / clear |
 | `s` / `S` | Cycle sort / reverse |
 | `/` | Filter |
 | `F` | Full-text search conversations |
@@ -68,14 +71,28 @@ Then run `ctop`. If no agents are running, you'll see an empty state — start a
 | `H` | Toggle 24-hour history |
 | `W` | Timeline view |
 | `T` | Cycle color theme |
-| `x` / `X` | Kill (SIGTERM / SIGKILL) |
+| `x` / `X` | Kill (SIGTERM / SIGKILL) — bulk if rows are marked |
 | `K` | Kill ALL agents |
 | `o` / `e` / `t` | Open dir in Finder / editor / terminal |
 | `n` | Toggle notifications |
 | `?` | Help |
+| `Esc` | Clear selection (or filter / search) |
 | `q` | Quit |
 
-Mouse: click to select, scroll to navigate.
+Mouse: click to select, scroll to navigate, `Shift`+click to mark (best-effort).
+
+### Bulk actions
+
+Mark several sessions and act on them at once. Press `Space` to mark the session
+under the cursor, or hold `Shift` while pressing `↑`/`↓` to extend a range; press
+`V` for vim-style range mode (then move to extend) and `a` to select all visible.
+With sessions marked, `x` / `X` close the whole set after a confirmation prompt;
+`Esc` clears the selection. Works in list, pane, and group views.
+
+> **Shift+click note:** many terminals (Terminal.app, iTerm2, GNOME Terminal, …)
+> reserve `Shift`+click for their own text selection and never forward it to the
+> app, so `Shift`+click marking is best-effort. The keyboard path
+> (`Space` / `Shift`+`↑`/`↓` / `V`) works everywhere.
 
 ---
 

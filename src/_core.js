@@ -39,31 +39,31 @@ const DEVIN_VIOLET = `${ESC}[38;5;141m`;
 // Built-in color themes
 const THEMES = {
   default: {
-    header: ORANGE, headerBg: BG_ORANGE, selection: BG_ORANGE,
+    header: ORANGE, headerBg: BG_ORANGE, selection: BG_ORANGE, marked: `${ESC}[48;5;24m`,
     active: GREEN, stopped: YELLOW, zombie: RED, sleeping: DIM,
     ctxLow: RED, ctxMed: ORANGE, ctxHigh: YELLOW, ctxOk: GREEN,
     border: DIM, accent: CYAN, cost: GREEN,
   },
   minimal: {
-    header: WHITE, headerBg: `${ESC}[48;5;236m`, selection: `${ESC}[48;5;236m`,
+    header: WHITE, headerBg: `${ESC}[48;5;236m`, selection: `${ESC}[48;5;236m`, marked: `${ESC}[48;5;240m`,
     active: GREEN, stopped: YELLOW, zombie: RED, sleeping: DIM,
     ctxLow: RED, ctxMed: YELLOW, ctxHigh: DIM, ctxOk: DIM,
     border: DIM, accent: DIM, cost: DIM,
   },
   dracula: {
-    header: `${ESC}[38;5;189m`, headerBg: `${ESC}[48;5;60m`, selection: `${ESC}[48;5;60m`,
+    header: `${ESC}[38;5;189m`, headerBg: `${ESC}[48;5;60m`, selection: `${ESC}[48;5;60m`, marked: `${ESC}[48;5;62m`,
     active: `${ESC}[38;5;80m`, stopped: `${ESC}[38;5;228m`, zombie: `${ESC}[38;5;210m`, sleeping: DIM,
     ctxLow: `${ESC}[38;5;210m`, ctxMed: `${ESC}[38;5;215m`, ctxHigh: `${ESC}[38;5;228m`, ctxOk: `${ESC}[38;5;80m`,
     border: `${ESC}[38;5;61m`, accent: `${ESC}[38;5;141m`, cost: `${ESC}[38;5;80m`,
   },
   solarized: {
-    header: `${ESC}[38;5;136m`, headerBg: `${ESC}[48;5;23m`, selection: `${ESC}[48;5;23m`,
+    header: `${ESC}[38;5;136m`, headerBg: `${ESC}[48;5;23m`, selection: `${ESC}[48;5;23m`, marked: `${ESC}[48;5;24m`,
     active: `${ESC}[38;5;64m`, stopped: `${ESC}[38;5;136m`, zombie: `${ESC}[38;5;160m`, sleeping: DIM,
     ctxLow: `${ESC}[38;5;160m`, ctxMed: `${ESC}[38;5;166m`, ctxHigh: `${ESC}[38;5;136m`, ctxOk: `${ESC}[38;5;64m`,
     border: `${ESC}[38;5;240m`, accent: `${ESC}[38;5;33m`, cost: `${ESC}[38;5;64m`,
   },
   monokai: {
-    header: `${ESC}[38;5;197m`, headerBg: `${ESC}[48;5;236m`, selection: `${ESC}[48;5;59m`,
+    header: `${ESC}[38;5;197m`, headerBg: `${ESC}[48;5;236m`, selection: `${ESC}[48;5;59m`, marked: `${ESC}[48;5;24m`,
     active: `${ESC}[38;5;148m`, stopped: `${ESC}[38;5;228m`, zombie: `${ESC}[38;5;197m`, sleeping: DIM,
     ctxLow: `${ESC}[38;5;197m`, ctxMed: `${ESC}[38;5;208m`, ctxHigh: `${ESC}[38;5;228m`, ctxOk: `${ESC}[38;5;148m`,
     border: `${ESC}[38;5;242m`, accent: `${ESC}[38;5;81m`, cost: `${ESC}[38;5;148m`,
@@ -398,6 +398,12 @@ let viewMode = CONFIG.defaultView;
 let paneCol = 0;
 let paneRow = 0;
 
+// Bulk selection state (see Bulk Actions plan). Keyed by pid (stable while a process
+// is alive) — never by array index, since index meaning shifts across list/pane/group.
+const markedPids = new Set();   // pids marked for a bulk action
+let selectionAnchor = null;     // index (in the *active* list) where a Shift-range started; null = none
+let rangeMode = false;          // explicit "visual" range mode (toggled by V): plain arrows extend the selection
+
 // Sort & filter state
 const SORT_MODES = ['age', 'cpu', 'mem', 'context'];
 let sortMode = 'age'; // default: oldest first
@@ -452,6 +458,50 @@ function buildGroupedFlatList(procs) {
     }
   }
   return items;
+}
+
+// --- Bulk selection helpers (group-aware) ---
+// The list selectedIndex currently indexes: groupedFlatList when grouped, else processes.
+function activeList() { return groupByProject ? groupedFlatList : processes; }
+
+// pid under the cursor, group-aware. Returns null on a group header (or empty list).
+function cursorPid() {
+  if (groupByProject) {
+    const item = groupedFlatList[selectedIndex];
+    return item && item.type === 'process' ? item.proc.pid : null;
+  }
+  const p = processes[selectedIndex];
+  return p ? p.pid : null;
+}
+
+// toggle the mark for one pid (no-op when pid is null, e.g. cursor on a group header)
+function toggleMark(pid) {
+  if (pid == null) return;
+  if (markedPids.has(pid)) markedPids.delete(pid);
+  else markedPids.add(pid);
+}
+
+// mark every *process* whose index is in [min(a,b), max(a,b)] of the active list.
+// In group view this walks groupedFlatList and collects .proc.pid only for type==='process'
+// items (headers in range are skipped); otherwise it walks processes. The anchor index
+// passed in must come from the same list (selectionAnchor is kept in active-list space).
+function markRange(anchorIdx, targetIdx) {
+  if (anchorIdx == null || targetIdx == null) return;
+  const list = activeList();
+  const lo = Math.min(anchorIdx, targetIdx), hi = Math.max(anchorIdx, targetIdx);
+  for (let i = lo; i <= hi; i++) {
+    const item = list[i];
+    if (!item) continue;
+    const pid = groupByProject ? (item.type === 'process' ? item.proc.pid : null) : item.pid;
+    if (pid != null) markedPids.add(pid);
+  }
+}
+
+// drop marks for pids that no longer exist (keys off the full live set, allProcesses)
+function pruneMarks() {
+  if (markedPids.size === 0) return;
+  const live = new Set(allProcesses.map(p => p.pid));
+  for (const pid of markedPids) if (!live.has(pid)) markedPids.delete(pid);
 }
 
 // Animation state
@@ -565,6 +615,8 @@ const COMMANDS = [
   { name: 'Kill selected process', shortcut: 'x', action: 'kill' },
   { name: 'Force kill selected process', shortcut: 'X', action: 'force-kill' },
   { name: 'Kill all processes', shortcut: 'K', action: 'kill-all' },
+  { name: 'Kill marked sessions (bulk)', shortcut: 'x', action: 'kill-selected' },
+  { name: 'Clear marked selection', shortcut: 'Esc', action: 'clear-selection' },
   { name: 'Toggle pane view', shortcut: 'P', action: 'toggle-pane' },
   { name: 'Group by project directory', shortcut: 'G', action: 'toggle-group' },
   { name: 'Toggle dashboard', shortcut: 'd', action: 'toggle-dashboard' },
@@ -3395,6 +3447,12 @@ function applySortAndFilter() {
   if (selectedIndex >= processes.length) {
     selectedIndex = Math.max(0, processes.length - 1);
   }
+
+  // Bulk selection: drop marks for pids that have disappeared (keys off allProcesses, the
+  // full live set, so a marked-but-filtered-out session that's still alive is kept). Reset
+  // the range anchor — it's an index, and groupedFlatList isn't rebuilt here, so it can go stale.
+  pruneMarks();
+  selectionAnchor = null;
 }
 
 function renderDashboard(columns) {
@@ -3522,6 +3580,9 @@ function renderStatsBar(columns) {
   // Grouping indicator
   if (groupByProject) line += `  ${DIM}\u2502${RESET}  ${CYAN}\u25A6 Grouped${RESET}`;
 
+  // Bulk selection indicator
+  if (markedPids.size > 0) line += `  ${DIM}\u2502${RESET}  ${BLUE}${BOLD}\u25A6 ${markedPids.size} selected${RESET}`;
+
   // Filter / search indicators (keep as-is when active)
   if (filterText) line += `  ${DIM}\u2502${RESET}  ${YELLOW}/${filterText}${RESET}${DIM} (${processes.length}/${allProcesses.length})${RESET}`;
   if (filterInput) line += `  ${DIM}\u2502${RESET}  ${BG_BLUE}${WHITE} /${filterText}\u2588 ${RESET}`;
@@ -3612,16 +3673,20 @@ function renderPaneMode() {
       for (let ci = 0; ci < rowCards.length; ci++) {
         const { proc, idx } = rowCards[ci];
         const isSelected = idx === selectedIndex;
+        const isMarked = markedPids.has(proc.pid);
         const selStart = isSelected ? `${THEME.selection}${WHITE}${BOLD}` : '';
         const selEnd = isSelected ? RESET : RESET;
+        // Marked-but-unselected cards get a colored border + ▦ marker; selected wins for color.
+        const borderStart = isSelected ? `${THEME.selection}${WHITE}${BOLD}` : (isMarked ? `${THEME.marked}${WHITE}${BOLD}` : '');
 
         let cell = '';
         if (line === 0) {
-          // Top border
-          cell = `${selStart}┌${'─'.repeat(cardWidth - 2)}┐${selEnd}`;
+          // Top border (▦ marker when the card is marked — keeps total width = cardWidth)
+          const topBar = isMarked ? `${'─'.repeat(cardWidth - 3)}▦` : '─'.repeat(cardWidth - 2);
+          cell = `${borderStart}┌${topBar}┐${selEnd}`;
         } else if (line === cardHeight - 1) {
           // Bottom border
-          cell = `${selStart}└${'─'.repeat(cardWidth - 2)}┘${selEnd}`;
+          cell = `${borderStart}└${'─'.repeat(cardWidth - 2)}┘${selEnd}`;
         } else {
           // Content lines
           let content = '';
@@ -4201,10 +4266,14 @@ function renderProcessRow(proc, isSelected, isPrevSelected, opts) {
           listWidth, fixedColsTotal, showDetailPane } = opts;
   let row = '';
 
-  // Selection indicator
+  // Selection / mark indicator. Color precedence: selected > marked > prev-selected-fade > search-match > none.
+  // A marked row always shows the ▦ glyph; marked-but-unselected gets a blue gutter chip (prefix only, kept to 2 cols).
   const hasSearchMatch = searchQuery && searchResults.has(proc.pid);
+  const isMarked = markedPids.has(proc.pid);
   if (isSelected) {
-    row += `${THEME.selection}${WHITE}${BOLD}> `;
+    row += `${THEME.selection}${WHITE}${BOLD}${isMarked ? '▦' : '>'} `;
+  } else if (isMarked) {
+    row += `${THEME.marked}${WHITE}${BOLD}▦ ${RESET}`;
   } else if (isPrevSelected) {
     const fade = selectionAnimFrame === 3 ? `${ESC}[48;5;238m` : selectionAnimFrame === 2 ? `${ESC}[48;5;237m` : `${ESC}[48;5;236m`;
     row += `${fade}  `;
@@ -4892,6 +4961,16 @@ function killAllProcesses(force = false) {
   return killed;
 }
 
+function killSelected(force = false) {
+  let killed = 0;
+  for (const pid of markedPids) {
+    if (killProcess(pid, force)) {
+      killed++;
+    }
+  }
+  return killed;
+}
+
 function cycleTheme() {
   const idx = THEME_NAMES.indexOf(currentThemeName);
   const nextIdx = (idx + 1) % THEME_NAMES.length;
@@ -5284,9 +5363,10 @@ function renderPalette() {
 
 function executeCommand(action) {
   switch (action) {
-    case 'kill':
-      if (processes[selectedIndex]) {
-        killProcess(processes[selectedIndex].pid, false);
+    case 'kill': {
+      const pid = cursorPid();
+      if (pid != null) {
+        killProcess(pid, false);
         setTimeout(() => {
           allProcesses = getAllAgentProcesses(); applySortAndFilter();
           lastRefresh = new Date();
@@ -5295,9 +5375,11 @@ function executeCommand(action) {
         }, 300);
       }
       break;
-    case 'force-kill':
-      if (processes[selectedIndex]) {
-        killProcess(processes[selectedIndex].pid, true);
+    }
+    case 'force-kill': {
+      const pid = cursorPid();
+      if (pid != null) {
+        killProcess(pid, true);
         setTimeout(() => {
           allProcesses = getAllAgentProcesses(); applySortAndFilter();
           lastRefresh = new Date();
@@ -5306,9 +5388,26 @@ function executeCommand(action) {
         }, 300);
       }
       break;
+    }
     case 'kill-all':
       confirmKillAll = true;
       process.stdout.write(`\n${BG_RED}${WHITE}${BOLD} Kill ALL ${allProcesses.length} agent processes? (y/N)${RESET}`);
+      break;
+    case 'kill-selected':
+      if (markedPids.size > 0) {
+        confirmKillSelected = true;
+        confirmKillSelectedForce = false;
+        process.stdout.write(`\n${BG_RED}${WHITE}${BOLD} Kill ${markedPids.size} selected session${markedPids.size === 1 ? '' : 's'}? (y/N)${RESET}`);
+      } else {
+        statusMessage = 'No sessions selected';
+        render();
+      }
+      break;
+    case 'clear-selection':
+      markedPids.clear();
+      selectionAnchor = null;
+      statusMessage = 'Selection cleared';
+      render();
       break;
     case 'toggle-pane':
       if (viewMode === 'list') {
@@ -5465,9 +5564,17 @@ function showHelp() {
   output += `  ${CYAN}Tab${RESET}       Expand/collapse group (in grouped mode)\n`;
   output += `  ${CYAN}P${RESET}         Toggle pane/grid view\n\n`;
 
+  output += `${BOLD}SELECT (bulk actions):${RESET}\n`;
+  output += `  ${CYAN}Space${RESET}     Mark / unmark the current session\n`;
+  output += `  ${CYAN}Shift+↑/↓${RESET} Extend the marked range up / down\n`;
+  output += `  ${CYAN}V${RESET}         Range-select mode — then move to extend (works without Shift+arrow)\n`;
+  output += `  ${CYAN}a${RESET}         Select all / clear all visible sessions\n`;
+  output += `  ${CYAN}Shift+Click${RESET} Mark a row (best-effort; some terminals reserve Shift for selection)\n`;
+  output += `  ${CYAN}ESC${RESET}       Clear the selection\n\n`;
+
   output += `${BOLD}ACTIONS:${RESET}\n`;
-  output += `  ${CYAN}x${RESET}         Kill selected process (SIGTERM - graceful)\n`;
-  output += `  ${CYAN}X${RESET}         Force kill selected process (SIGKILL)\n`;
+  output += `  ${CYAN}x${RESET}         Kill selected (SIGTERM); kills all marked sessions if any (with confirmation)\n`;
+  output += `  ${CYAN}X${RESET}         Force kill selected (SIGKILL); kills all marked sessions if any (with confirmation)\n`;
   output += `  ${CYAN}K${RESET}         Kill ALL agent processes (with confirmation)\n`;
   output += `  ${CYAN}A${RESET}         Kill ALL stopped/dead processes (with confirmation)\n`;
   output += `  ${CYAN}o${RESET}         Open working directory in file manager\n`;
@@ -5519,6 +5626,10 @@ function parseMouseEvent(data) {
   const isRelease = match[4] === 'm';
   return {
     button: button & 3, // 0=left, 1=middle, 2=right
+    // Modifier bits live in the raw button byte (derived before the & 3 mask): shift=4, alt=8, ctrl=16, scroll=64
+    shift: (button & 4) !== 0,
+    alt: (button & 8) !== 0,
+    ctrl: (button & 16) !== 0,
     col, row, isRelease,
     isScroll: (button & 64) !== 0,
     scrollUp: (button & 64) !== 0 && (button & 1) === 0,
@@ -5620,27 +5731,36 @@ function handleMouseEvent(evt) {
   // Only left-click press (not release)
   if (evt.button !== 0 || evt.isRelease) return;
 
-  if (viewMode === 'pane') {
-    const idx = paneViewClickToIndex(evt.row, evt.col);
-    if (idx >= 0 && idx < processes.length) {
-      selectedIndex = idx;
-      const cardsPerRow = getCardsPerRow();
-      paneRow = Math.floor(idx / cardsPerRow);
-      paneCol = idx % cardsPerRow;
-      render();
+  const idx = viewMode === 'pane' ? paneViewClickToIndex(evt.row, evt.col) : listViewRowToIndex(evt.row);
+  if (idx < 0 || idx >= processes.length) return;
+
+  if (evt.shift) {
+    // Best-effort shift-click multi-select. NOTE: many terminals reserve Shift+Click for
+    // their own native text selection and never forward it here — the keyboard path
+    // (Space / Shift+arrows / V) is the guaranteed one.
+    if (selectionAnchor != null && !groupByProject) {
+      markRange(selectionAnchor, idx);
+    } else {
+      toggleMark(processes[idx].pid);
+      selectionAnchor = idx;
     }
   } else {
-    const idx = listViewRowToIndex(evt.row);
-    if (idx >= 0 && idx < processes.length) {
-      selectedIndex = idx;
-      render();
-    }
+    selectionAnchor = null;
   }
+  selectedIndex = idx;
+  if (viewMode === 'pane') {
+    const cardsPerRow = getCardsPerRow();
+    paneRow = Math.floor(idx / cardsPerRow);
+    paneCol = idx % cardsPerRow;
+  }
+  render();
 }
 
 let showingHelp = false;
 let confirmKillAll = false;
 let confirmKillStopped = false;
+let confirmKillSelected = false;
+let confirmKillSelectedForce = false;
 
 function handleInput(key) {
   // Check for mouse events first
@@ -5841,6 +5961,29 @@ function handleInput(key) {
     return;
   }
 
+  if (confirmKillSelected) {
+    if (key === 'y' || key === 'Y') {
+      const killed = killSelected(confirmKillSelectedForce);
+      statusMessage = `Killed ${killed} selected session${killed === 1 ? '' : 's'}`;
+      confirmKillSelected = false;
+      markedPids.clear();
+      selectionAnchor = null;
+      rangeMode = false;
+      setTimeout(() => {
+        allProcesses = getAllAgentProcesses(); applySortAndFilter();
+        lastRefresh = new Date();
+        if (selectedIndex >= processes.length) {
+          selectedIndex = Math.max(0, processes.length - 1);
+        }
+        render();
+      }, 500);
+    } else {
+      confirmKillSelected = false;
+      render();
+    }
+    return;
+  }
+
   if (exportMode) {
     exportMode = false;
     const proc = processes[selectedIndex];
@@ -5957,6 +6100,8 @@ function handleInput(key) {
       } else {
         if (selectedIndex > 0) { const oldIdx = selectedIndex; selectedIndex--; if (CONFIG.animations) { prevSelectedIndex = oldIdx; selectionAnimFrame = 3; scheduleAnimationFrame(); } }
       }
+      // In explicit range mode (V), plain movement extends the selection.
+      if (rangeMode) { if (selectionAnchor == null) selectionAnchor = selectedIndex; markRange(selectionAnchor, selectedIndex); }
       render();
       break;
 
@@ -5980,6 +6125,8 @@ function handleInput(key) {
       } else {
         if (selectedIndex < processes.length - 1) { const oldIdx = selectedIndex; selectedIndex++; if (CONFIG.animations) { prevSelectedIndex = oldIdx; selectionAnimFrame = 3; scheduleAnimationFrame(); } }
       }
+      // In explicit range mode (V), plain movement extends the selection.
+      if (rangeMode) { if (selectionAnchor == null) selectionAnchor = selectedIndex; markRange(selectionAnchor, selectedIndex); }
       render();
       break;
 
@@ -6006,6 +6153,74 @@ function handleInput(key) {
         }
         render();
       }
+      break;
+
+    case ' ': // Space — toggle mark on the cursor row + set the range anchor here
+      toggleMark(cursorPid());
+      selectionAnchor = selectedIndex;
+      render();
+      break;
+
+    case 'V': // toggle range-select mode (vim visual style) — covers terminals that drop Shift+arrow
+      rangeMode = !rangeMode;
+      if (rangeMode) {
+        selectionAnchor = selectedIndex;
+        const pid = cursorPid();
+        if (pid != null) markedPids.add(pid);
+        statusMessage = 'Range select ON: move to extend, V/ESC to finish';
+      } else {
+        statusMessage = 'Range select OFF';
+      }
+      render();
+      break;
+
+    case 'a': { // toggle select-all of the visible (filtered) sessions
+      const allMarked = processes.length > 0 && processes.every(p => markedPids.has(p.pid));
+      if (allMarked) {
+        for (const p of processes) markedPids.delete(p.pid);
+        statusMessage = 'Selection cleared';
+      } else {
+        for (const p of processes) markedPids.add(p.pid);
+        statusMessage = `Selected all ${processes.length} session${processes.length === 1 ? '' : 's'}`;
+      }
+      selectionAnchor = null;
+      rangeMode = false;
+      render();
+      break;
+    }
+
+    case '\x1b[1;2A': // Shift+Up — extend marked range upward
+      if (selectionAnchor == null) selectionAnchor = selectedIndex;
+      if (viewMode === 'pane') {
+        if (paneRow > 0) {
+          paneRow--;
+          const cardsPerRow = getCardsPerRow();
+          selectedIndex = paneRow * cardsPerRow + paneCol;
+          if (selectedIndex >= processes.length) { selectedIndex = processes.length - 1; paneCol = selectedIndex % cardsPerRow; }
+        }
+      } else if (selectedIndex > 0) {
+        selectedIndex--;
+      }
+      markRange(selectionAnchor, selectedIndex);
+      render();
+      break;
+
+    case '\x1b[1;2B': // Shift+Down — extend marked range downward
+      if (selectionAnchor == null) selectionAnchor = selectedIndex;
+      if (viewMode === 'pane') {
+        const cardsPerRow = getCardsPerRow();
+        const totalRows = Math.ceil(processes.length / cardsPerRow);
+        if (paneRow < totalRows - 1) {
+          paneRow++;
+          selectedIndex = paneRow * cardsPerRow + paneCol;
+          if (selectedIndex >= processes.length) { selectedIndex = processes.length - 1; paneCol = selectedIndex % cardsPerRow; }
+        }
+      } else {
+        const maxIdx = (groupByProject && groupedFlatList.length > 0) ? groupedFlatList.length - 1 : processes.length - 1;
+        if (selectedIndex < maxIdx) selectedIndex++;
+      }
+      markRange(selectionAnchor, selectedIndex);
+      render();
       break;
 
     case 'd':
@@ -6049,32 +6264,50 @@ function handleInput(key) {
       break;
 
     case 'x':
-      if (processes[selectedIndex]) {
-        const pid = processes[selectedIndex].pid;
-        killProcess(pid, false);
-        setTimeout(() => {
-          allProcesses = getAllAgentProcesses(); applySortAndFilter();
-          lastRefresh = new Date();
-          if (selectedIndex >= processes.length) {
-            selectedIndex = Math.max(0, processes.length - 1);
-          }
-          render();
-        }, 300);
+      if (markedPids.size > 0) {
+        // Bulk graceful kill of the marked set (behind a confirmation prompt)
+        confirmKillSelected = true;
+        confirmKillSelectedForce = false;
+        process.stdout.write(`\n${BG_RED}${WHITE}${BOLD} Kill ${markedPids.size} selected session${markedPids.size === 1 ? '' : 's'}? (y/N)${RESET}`);
+        break;
+      }
+      { // Single graceful kill — resolve target via cursorPid() (group-correct)
+        const pid = cursorPid();
+        if (pid != null) {
+          killProcess(pid, false);
+          setTimeout(() => {
+            allProcesses = getAllAgentProcesses(); applySortAndFilter();
+            lastRefresh = new Date();
+            if (selectedIndex >= processes.length) {
+              selectedIndex = Math.max(0, processes.length - 1);
+            }
+            render();
+          }, 300);
+        }
       }
       break;
 
     case 'X':
-      if (processes[selectedIndex]) {
-        const pid = processes[selectedIndex].pid;
-        killProcess(pid, true);
-        setTimeout(() => {
-          allProcesses = getAllAgentProcesses(); applySortAndFilter();
-          lastRefresh = new Date();
-          if (selectedIndex >= processes.length) {
-            selectedIndex = Math.max(0, processes.length - 1);
-          }
-          render();
-        }, 300);
+      if (markedPids.size > 0) {
+        // Bulk force kill of the marked set (behind a confirmation prompt)
+        confirmKillSelected = true;
+        confirmKillSelectedForce = true;
+        process.stdout.write(`\n${BG_RED}${WHITE}${BOLD} Force kill ${markedPids.size} selected session${markedPids.size === 1 ? '' : 's'}? (y/N)${RESET}`);
+        break;
+      }
+      { // Single force kill — resolve target via cursorPid() (group-correct)
+        const pid = cursorPid();
+        if (pid != null) {
+          killProcess(pid, true);
+          setTimeout(() => {
+            allProcesses = getAllAgentProcesses(); applySortAndFilter();
+            lastRefresh = new Date();
+            if (selectedIndex >= processes.length) {
+              selectedIndex = Math.max(0, processes.length - 1);
+            }
+            render();
+          }, 300);
+        }
       }
       break;
 
@@ -6181,6 +6414,15 @@ function handleInput(key) {
       break;
 
     case '\x1b': // ESC
+      if (markedPids.size > 0 || rangeMode) {
+        // Clear bulk selection first
+        markedPids.clear();
+        selectionAnchor = null;
+        rangeMode = false;
+        statusMessage = 'Selection cleared';
+        render();
+        break;
+      }
       if (searchQuery) {
         // Clear search
         searchQuery = '';
@@ -6396,6 +6638,13 @@ module.exports = {
   groupProcesses,
   shortenCwd,
   buildGroupedFlatList,
+  // Bulk selection
+  activeList,
+  cursorPid,
+  toggleMark,
+  markRange,
+  pruneMarks,
+  killSelected,
   // Plugin system
   loadPlugins,
   // History tracking
@@ -6540,6 +6789,8 @@ module.exports = {
             get groupByProject() { return groupByProject; }, set groupByProject(v) { groupByProject = v; },
             get groupedFlatList() { return groupedFlatList; }, set groupedFlatList(v) { groupedFlatList = v; },
             expandedGroups,
+            markedPids,
+            get selectionAnchor() { return selectionAnchor; }, set selectionAnchor(v) { selectionAnchor = v; },
             get prevSelectedIndex() { return prevSelectedIndex; }, set prevSelectedIndex(v) { prevSelectedIndex = v; },
             get selectionAnimFrame() { return selectionAnimFrame; }, set selectionAnimFrame(v) { selectionAnimFrame = v; },
             get animationTimer() { return animationTimer; }, set animationTimer(v) { animationTimer = v; } },
