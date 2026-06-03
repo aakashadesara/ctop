@@ -3577,6 +3577,9 @@ function renderStatsBar(columns) {
   // Grouping indicator
   if (groupByProject) line += `  ${DIM}\u2502${RESET}  ${CYAN}\u25A6 Grouped${RESET}`;
 
+  // Bulk selection indicator
+  if (markedPids.size > 0) line += `  ${DIM}\u2502${RESET}  ${BLUE}${BOLD}\u25A6 ${markedPids.size} selected${RESET}`;
+
   // Filter / search indicators (keep as-is when active)
   if (filterText) line += `  ${DIM}\u2502${RESET}  ${YELLOW}/${filterText}${RESET}${DIM} (${processes.length}/${allProcesses.length})${RESET}`;
   if (filterInput) line += `  ${DIM}\u2502${RESET}  ${BG_BLUE}${WHITE} /${filterText}\u2588 ${RESET}`;
@@ -3667,16 +3670,20 @@ function renderPaneMode() {
       for (let ci = 0; ci < rowCards.length; ci++) {
         const { proc, idx } = rowCards[ci];
         const isSelected = idx === selectedIndex;
+        const isMarked = markedPids.has(proc.pid);
         const selStart = isSelected ? `${THEME.selection}${WHITE}${BOLD}` : '';
         const selEnd = isSelected ? RESET : RESET;
+        // Marked-but-unselected cards get a colored border + ▦ marker; selected wins for color.
+        const borderStart = isSelected ? `${THEME.selection}${WHITE}${BOLD}` : (isMarked ? `${THEME.marked}${WHITE}${BOLD}` : '');
 
         let cell = '';
         if (line === 0) {
-          // Top border
-          cell = `${selStart}┌${'─'.repeat(cardWidth - 2)}┐${selEnd}`;
+          // Top border (▦ marker when the card is marked — keeps total width = cardWidth)
+          const topBar = isMarked ? `${'─'.repeat(cardWidth - 3)}▦` : '─'.repeat(cardWidth - 2);
+          cell = `${borderStart}┌${topBar}┐${selEnd}`;
         } else if (line === cardHeight - 1) {
           // Bottom border
-          cell = `${selStart}└${'─'.repeat(cardWidth - 2)}┘${selEnd}`;
+          cell = `${borderStart}└${'─'.repeat(cardWidth - 2)}┘${selEnd}`;
         } else {
           // Content lines
           let content = '';
@@ -4256,10 +4263,14 @@ function renderProcessRow(proc, isSelected, isPrevSelected, opts) {
           listWidth, fixedColsTotal, showDetailPane } = opts;
   let row = '';
 
-  // Selection indicator
+  // Selection / mark indicator. Color precedence: selected > marked > prev-selected-fade > search-match > none.
+  // A marked row always shows the ▦ glyph; marked-but-unselected gets a blue gutter chip (prefix only, kept to 2 cols).
   const hasSearchMatch = searchQuery && searchResults.has(proc.pid);
+  const isMarked = markedPids.has(proc.pid);
   if (isSelected) {
-    row += `${THEME.selection}${WHITE}${BOLD}> `;
+    row += `${THEME.selection}${WHITE}${BOLD}${isMarked ? '▦' : '>'} `;
+  } else if (isMarked) {
+    row += `${THEME.marked}${WHITE}${BOLD}▦ ${RESET}`;
   } else if (isPrevSelected) {
     const fade = selectionAnimFrame === 3 ? `${ESC}[48;5;238m` : selectionAnimFrame === 2 ? `${ESC}[48;5;237m` : `${ESC}[48;5;236m`;
     row += `${fade}  `;
