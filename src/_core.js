@@ -5574,6 +5574,10 @@ function parseMouseEvent(data) {
   const isRelease = match[4] === 'm';
   return {
     button: button & 3, // 0=left, 1=middle, 2=right
+    // Modifier bits live in the raw button byte (derived before the & 3 mask): shift=4, alt=8, ctrl=16, scroll=64
+    shift: (button & 4) !== 0,
+    alt: (button & 8) !== 0,
+    ctrl: (button & 16) !== 0,
     col, row, isRelease,
     isScroll: (button & 64) !== 0,
     scrollUp: (button & 64) !== 0 && (button & 1) === 0,
@@ -5675,22 +5679,29 @@ function handleMouseEvent(evt) {
   // Only left-click press (not release)
   if (evt.button !== 0 || evt.isRelease) return;
 
-  if (viewMode === 'pane') {
-    const idx = paneViewClickToIndex(evt.row, evt.col);
-    if (idx >= 0 && idx < processes.length) {
-      selectedIndex = idx;
-      const cardsPerRow = getCardsPerRow();
-      paneRow = Math.floor(idx / cardsPerRow);
-      paneCol = idx % cardsPerRow;
-      render();
+  const idx = viewMode === 'pane' ? paneViewClickToIndex(evt.row, evt.col) : listViewRowToIndex(evt.row);
+  if (idx < 0 || idx >= processes.length) return;
+
+  if (evt.shift) {
+    // Best-effort shift-click multi-select. NOTE: many terminals reserve Shift+Click for
+    // their own native text selection and never forward it here — the keyboard path
+    // (Space / Shift+arrows / V) is the guaranteed one.
+    if (selectionAnchor != null && !groupByProject) {
+      markRange(selectionAnchor, idx);
+    } else {
+      toggleMark(processes[idx].pid);
+      selectionAnchor = idx;
     }
   } else {
-    const idx = listViewRowToIndex(evt.row);
-    if (idx >= 0 && idx < processes.length) {
-      selectedIndex = idx;
-      render();
-    }
+    selectionAnchor = null;
   }
+  selectedIndex = idx;
+  if (viewMode === 'pane') {
+    const cardsPerRow = getCardsPerRow();
+    paneRow = Math.floor(idx / cardsPerRow);
+    paneCol = idx % cardsPerRow;
+  }
+  render();
 }
 
 let showingHelp = false;
