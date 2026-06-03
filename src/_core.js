@@ -39,31 +39,31 @@ const DEVIN_VIOLET = `${ESC}[38;5;141m`;
 // Built-in color themes
 const THEMES = {
   default: {
-    header: ORANGE, headerBg: BG_ORANGE, selection: BG_ORANGE,
+    header: ORANGE, headerBg: BG_ORANGE, selection: BG_ORANGE, marked: `${ESC}[48;5;24m`,
     active: GREEN, stopped: YELLOW, zombie: RED, sleeping: DIM,
     ctxLow: RED, ctxMed: ORANGE, ctxHigh: YELLOW, ctxOk: GREEN,
     border: DIM, accent: CYAN, cost: GREEN,
   },
   minimal: {
-    header: WHITE, headerBg: `${ESC}[48;5;236m`, selection: `${ESC}[48;5;236m`,
+    header: WHITE, headerBg: `${ESC}[48;5;236m`, selection: `${ESC}[48;5;236m`, marked: `${ESC}[48;5;240m`,
     active: GREEN, stopped: YELLOW, zombie: RED, sleeping: DIM,
     ctxLow: RED, ctxMed: YELLOW, ctxHigh: DIM, ctxOk: DIM,
     border: DIM, accent: DIM, cost: DIM,
   },
   dracula: {
-    header: `${ESC}[38;5;189m`, headerBg: `${ESC}[48;5;60m`, selection: `${ESC}[48;5;60m`,
+    header: `${ESC}[38;5;189m`, headerBg: `${ESC}[48;5;60m`, selection: `${ESC}[48;5;60m`, marked: `${ESC}[48;5;62m`,
     active: `${ESC}[38;5;80m`, stopped: `${ESC}[38;5;228m`, zombie: `${ESC}[38;5;210m`, sleeping: DIM,
     ctxLow: `${ESC}[38;5;210m`, ctxMed: `${ESC}[38;5;215m`, ctxHigh: `${ESC}[38;5;228m`, ctxOk: `${ESC}[38;5;80m`,
     border: `${ESC}[38;5;61m`, accent: `${ESC}[38;5;141m`, cost: `${ESC}[38;5;80m`,
   },
   solarized: {
-    header: `${ESC}[38;5;136m`, headerBg: `${ESC}[48;5;23m`, selection: `${ESC}[48;5;23m`,
+    header: `${ESC}[38;5;136m`, headerBg: `${ESC}[48;5;23m`, selection: `${ESC}[48;5;23m`, marked: `${ESC}[48;5;24m`,
     active: `${ESC}[38;5;64m`, stopped: `${ESC}[38;5;136m`, zombie: `${ESC}[38;5;160m`, sleeping: DIM,
     ctxLow: `${ESC}[38;5;160m`, ctxMed: `${ESC}[38;5;166m`, ctxHigh: `${ESC}[38;5;136m`, ctxOk: `${ESC}[38;5;64m`,
     border: `${ESC}[38;5;240m`, accent: `${ESC}[38;5;33m`, cost: `${ESC}[38;5;64m`,
   },
   monokai: {
-    header: `${ESC}[38;5;197m`, headerBg: `${ESC}[48;5;236m`, selection: `${ESC}[48;5;59m`,
+    header: `${ESC}[38;5;197m`, headerBg: `${ESC}[48;5;236m`, selection: `${ESC}[48;5;59m`, marked: `${ESC}[48;5;24m`,
     active: `${ESC}[38;5;148m`, stopped: `${ESC}[38;5;228m`, zombie: `${ESC}[38;5;197m`, sleeping: DIM,
     ctxLow: `${ESC}[38;5;197m`, ctxMed: `${ESC}[38;5;208m`, ctxHigh: `${ESC}[38;5;228m`, ctxOk: `${ESC}[38;5;148m`,
     border: `${ESC}[38;5;242m`, accent: `${ESC}[38;5;81m`, cost: `${ESC}[38;5;148m`,

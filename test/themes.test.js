@@ -35,7 +35,7 @@ describe('Built-in themes', () => {
 
   it('required keys list has the expected entries', () => {
     const expected = [
-      'header', 'headerBg', 'selection',
+      'header', 'headerBg', 'selection', 'marked',
       'active', 'stopped', 'zombie', 'sleeping',
       'ctxLow', 'ctxMed', 'ctxHigh', 'ctxOk',
       'border', 'accent', 'cost',
