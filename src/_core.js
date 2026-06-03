@@ -1025,7 +1025,7 @@ function renderWaveformSparkline(width) {
 function readSessionMessageActivity(proc) {
   if (!proc || !proc.cwd) return [];
 
-  const projectDirName = proc.cwd.replace(/\//g, '-');
+  const projectDirName = cwdToProjectDirName(proc.cwd);
   const projectPath = path.join(process.env.HOME || '', '.claude', 'projects', projectDirName);
 
   try { if (!fs.existsSync(projectPath)) return []; } catch (e) { return []; }
@@ -2062,11 +2062,19 @@ function searchSessionContent(projectPath, sessionFile, query) {
   return result;
 }
 
-// Convert a cwd path to the Claude project directory name.
-// On Unix: /Users/foo/project -> -Users-foo-project
-// On Windows: C:\Users\foo\project -> C-Users-foo-project
+// Convert a cwd path to the Claude Code project directory name.
+// Claude Code encodes the cwd by replacing EVERY non-alphanumeric
+// character with '-' (no collapsing of consecutive dashes). Examples:
+//   /Users/foo/project         -> -Users-foo-project
+//   /Users/foo/.superset/bar   -> -Users-foo--superset-bar   ('/.' becomes '--')
+//   /Users/foo/My Project       -> -Users-foo-My-Project
+//   C:\Users\foo\project       -> C--Users-foo-project       (':' and '\' both -> '-')
+// This MUST match Claude Code's own encoding exactly, or the lookup in
+// ~/.claude/projects/ misses and the session renders with no data
+// (empty model/branch/task/cost). Any dotted path — e.g. worktrees under
+// ~/.superset — broke under the previous '/ \ :'-only replacement.
 function cwdToProjectDirName(cwd) {
-  return cwd.replace(/[\\/]/g, '-').replace(/:/g, '');
+  return cwd.replace(/[^a-zA-Z0-9]/g, '-');
 }
 
 function executeSearch(query) {

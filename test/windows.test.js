@@ -78,16 +78,18 @@ describe('buildKillCommand', () => {
 });
 
 describe('cwdToProjectDirName', () => {
+  // Must mirror Claude Code's own encoding: cwd.replace(/[^a-zA-Z0-9]/g, '-')
+  // (every non-alphanumeric char -> '-', no dash collapsing).
   it('converts Unix path by replacing / with -', () => {
     assert.strictEqual(cwdToProjectDirName('/Users/foo/project'), '-Users-foo-project');
   });
 
-  it('converts Windows path by replacing \\ with - and removing :', () => {
-    assert.strictEqual(cwdToProjectDirName('C:\\Users\\foo\\project'), 'C-Users-foo-project');
+  it('converts Windows path by replacing \\ and : with -', () => {
+    assert.strictEqual(cwdToProjectDirName('C:\\Users\\foo\\project'), 'C--Users-foo-project');
   });
 
   it('handles mixed separators', () => {
-    assert.strictEqual(cwdToProjectDirName('C:\\Users/foo\\bar'), 'C-Users-foo-bar');
+    assert.strictEqual(cwdToProjectDirName('C:\\Users/foo\\bar'), 'C--Users-foo-bar');
   });
 
   it('handles root Unix path', () => {
@@ -95,11 +97,30 @@ describe('cwdToProjectDirName', () => {
   });
 
   it('handles Windows drive root', () => {
-    assert.strictEqual(cwdToProjectDirName('C:\\'), 'C-');
+    assert.strictEqual(cwdToProjectDirName('C:\\'), 'C--');
   });
 
   it('handles path with no separators', () => {
     assert.strictEqual(cwdToProjectDirName('myproject'), 'myproject');
+  });
+
+  // Regression: dotted paths (e.g. worktrees under ~/.superset) must encode
+  // the dot as a dash too — a leading '/.' becomes '--'. Previously the '.'
+  // was left intact, so the lookup missed and sessions showed no data.
+  it('replaces dots in dotfile path segments', () => {
+    assert.strictEqual(
+      cwdToProjectDirName('/Users/foo/.superset/worktrees/abc/branch'),
+      '-Users-foo--superset-worktrees-abc-branch'
+    );
+  });
+
+  it('replaces spaces and other punctuation', () => {
+    assert.strictEqual(cwdToProjectDirName('/Users/foo/My Project'), '-Users-foo-My-Project');
+    assert.strictEqual(cwdToProjectDirName('/a/b - c/d'), '-a-b---c-d');
+  });
+
+  it('replaces underscores', () => {
+    assert.strictEqual(cwdToProjectDirName('/Users/foo/my_project'), '-Users-foo-my-project');
   });
 });
 
