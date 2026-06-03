@@ -398,6 +398,11 @@ let viewMode = CONFIG.defaultView;
 let paneCol = 0;
 let paneRow = 0;
 
+// Bulk selection state (see Bulk Actions plan). Keyed by pid (stable while a process
+// is alive) — never by array index, since index meaning shifts across list/pane/group.
+const markedPids = new Set();   // pids marked for a bulk action
+let selectionAnchor = null;     // index (in the *active* list) where a Shift-range started; null = none
+
 // Sort & filter state
 const SORT_MODES = ['age', 'cpu', 'mem', 'context'];
 let sortMode = 'age'; // default: oldest first
@@ -452,6 +457,50 @@ function buildGroupedFlatList(procs) {
     }
   }
   return items;
+}
+
+// --- Bulk selection helpers (group-aware) ---
+// The list selectedIndex currently indexes: groupedFlatList when grouped, else processes.
+function activeList() { return groupByProject ? groupedFlatList : processes; }
+
+// pid under the cursor, group-aware. Returns null on a group header (or empty list).
+function cursorPid() {
+  if (groupByProject) {
+    const item = groupedFlatList[selectedIndex];
+    return item && item.type === 'process' ? item.proc.pid : null;
+  }
+  const p = processes[selectedIndex];
+  return p ? p.pid : null;
+}
+
+// toggle the mark for one pid (no-op when pid is null, e.g. cursor on a group header)
+function toggleMark(pid) {
+  if (pid == null) return;
+  if (markedPids.has(pid)) markedPids.delete(pid);
+  else markedPids.add(pid);
+}
+
+// mark every *process* whose index is in [min(a,b), max(a,b)] of the active list.
+// In group view this walks groupedFlatList and collects .proc.pid only for type==='process'
+// items (headers in range are skipped); otherwise it walks processes. The anchor index
+// passed in must come from the same list (selectionAnchor is kept in active-list space).
+function markRange(anchorIdx, targetIdx) {
+  if (anchorIdx == null || targetIdx == null) return;
+  const list = activeList();
+  const lo = Math.min(anchorIdx, targetIdx), hi = Math.max(anchorIdx, targetIdx);
+  for (let i = lo; i <= hi; i++) {
+    const item = list[i];
+    if (!item) continue;
+    const pid = groupByProject ? (item.type === 'process' ? item.proc.pid : null) : item.pid;
+    if (pid != null) markedPids.add(pid);
+  }
+}
+
+// drop marks for pids that no longer exist (keys off the full live set, allProcesses)
+function pruneMarks() {
+  if (markedPids.size === 0) return;
+  const live = new Set(allProcesses.map(p => p.pid));
+  for (const pid of markedPids) if (!live.has(pid)) markedPids.delete(pid);
 }
 
 // Animation state
@@ -3395,6 +3444,12 @@ function applySortAndFilter() {
   if (selectedIndex >= processes.length) {
     selectedIndex = Math.max(0, processes.length - 1);
   }
+
+  // Bulk selection: drop marks for pids that have disappeared (keys off allProcesses, the
+  // full live set, so a marked-but-filtered-out session that's still alive is kept). Reset
+  // the range anchor — it's an index, and groupedFlatList isn't rebuilt here, so it can go stale.
+  pruneMarks();
+  selectionAnchor = null;
 }
 
 function renderDashboard(columns) {
@@ -6396,6 +6451,12 @@ module.exports = {
   groupProcesses,
   shortenCwd,
   buildGroupedFlatList,
+  // Bulk selection
+  activeList,
+  cursorPid,
+  toggleMark,
+  markRange,
+  pruneMarks,
   // Plugin system
   loadPlugins,
   // History tracking
@@ -6540,6 +6601,8 @@ module.exports = {
             get groupByProject() { return groupByProject; }, set groupByProject(v) { groupByProject = v; },
             get groupedFlatList() { return groupedFlatList; }, set groupedFlatList(v) { groupedFlatList = v; },
             expandedGroups,
+            markedPids,
+            get selectionAnchor() { return selectionAnchor; }, set selectionAnchor(v) { selectionAnchor = v; },
             get prevSelectedIndex() { return prevSelectedIndex; }, set prevSelectedIndex(v) { prevSelectedIndex = v; },
             get selectionAnimFrame() { return selectionAnimFrame; }, set selectionAnimFrame(v) { selectionAnimFrame = v; },
             get animationTimer() { return animationTimer; }, set animationTimer(v) { animationTimer = v; } },
