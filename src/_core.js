@@ -4958,6 +4958,16 @@ function killAllProcesses(force = false) {
   return killed;
 }
 
+function killSelected(force = false) {
+  let killed = 0;
+  for (const pid of markedPids) {
+    if (killProcess(pid, force)) {
+      killed++;
+    }
+  }
+  return killed;
+}
+
 function cycleTheme() {
   const idx = THEME_NAMES.indexOf(currentThemeName);
   const nextIdx = (idx + 1) % THEME_NAMES.length;
@@ -5350,9 +5360,10 @@ function renderPalette() {
 
 function executeCommand(action) {
   switch (action) {
-    case 'kill':
-      if (processes[selectedIndex]) {
-        killProcess(processes[selectedIndex].pid, false);
+    case 'kill': {
+      const pid = cursorPid();
+      if (pid != null) {
+        killProcess(pid, false);
         setTimeout(() => {
           allProcesses = getAllAgentProcesses(); applySortAndFilter();
           lastRefresh = new Date();
@@ -5361,9 +5372,11 @@ function executeCommand(action) {
         }, 300);
       }
       break;
-    case 'force-kill':
-      if (processes[selectedIndex]) {
-        killProcess(processes[selectedIndex].pid, true);
+    }
+    case 'force-kill': {
+      const pid = cursorPid();
+      if (pid != null) {
+        killProcess(pid, true);
         setTimeout(() => {
           allProcesses = getAllAgentProcesses(); applySortAndFilter();
           lastRefresh = new Date();
@@ -5372,9 +5385,26 @@ function executeCommand(action) {
         }, 300);
       }
       break;
+    }
     case 'kill-all':
       confirmKillAll = true;
       process.stdout.write(`\n${BG_RED}${WHITE}${BOLD} Kill ALL ${allProcesses.length} agent processes? (y/N)${RESET}`);
+      break;
+    case 'kill-selected':
+      if (markedPids.size > 0) {
+        confirmKillSelected = true;
+        confirmKillSelectedForce = false;
+        process.stdout.write(`\n${BG_RED}${WHITE}${BOLD} Kill ${markedPids.size} selected session${markedPids.size === 1 ? '' : 's'}? (y/N)${RESET}`);
+      } else {
+        statusMessage = 'No sessions selected';
+        render();
+      }
+      break;
+    case 'clear-selection':
+      markedPids.clear();
+      selectionAnchor = null;
+      statusMessage = 'Selection cleared';
+      render();
       break;
     case 'toggle-pane':
       if (viewMode === 'list') {
@@ -5718,6 +5748,8 @@ function handleMouseEvent(evt) {
 let showingHelp = false;
 let confirmKillAll = false;
 let confirmKillStopped = false;
+let confirmKillSelected = false;
+let confirmKillSelectedForce = false;
 
 function handleInput(key) {
   // Check for mouse events first
@@ -5913,6 +5945,28 @@ function handleInput(key) {
       }, 500);
     } else {
       confirmKillStopped = false;
+      render();
+    }
+    return;
+  }
+
+  if (confirmKillSelected) {
+    if (key === 'y' || key === 'Y') {
+      const killed = killSelected(confirmKillSelectedForce);
+      statusMessage = `Killed ${killed} selected session${killed === 1 ? '' : 's'}`;
+      confirmKillSelected = false;
+      markedPids.clear();
+      selectionAnchor = null;
+      setTimeout(() => {
+        allProcesses = getAllAgentProcesses(); applySortAndFilter();
+        lastRefresh = new Date();
+        if (selectedIndex >= processes.length) {
+          selectedIndex = Math.max(0, processes.length - 1);
+        }
+        render();
+      }, 500);
+    } else {
+      confirmKillSelected = false;
       render();
     }
     return;
@@ -6197,32 +6251,50 @@ function handleInput(key) {
       break;
 
     case 'x':
-      if (processes[selectedIndex]) {
-        const pid = processes[selectedIndex].pid;
-        killProcess(pid, false);
-        setTimeout(() => {
-          allProcesses = getAllAgentProcesses(); applySortAndFilter();
-          lastRefresh = new Date();
-          if (selectedIndex >= processes.length) {
-            selectedIndex = Math.max(0, processes.length - 1);
-          }
-          render();
-        }, 300);
+      if (markedPids.size > 0) {
+        // Bulk graceful kill of the marked set (behind a confirmation prompt)
+        confirmKillSelected = true;
+        confirmKillSelectedForce = false;
+        process.stdout.write(`\n${BG_RED}${WHITE}${BOLD} Kill ${markedPids.size} selected session${markedPids.size === 1 ? '' : 's'}? (y/N)${RESET}`);
+        break;
+      }
+      { // Single graceful kill — resolve target via cursorPid() (group-correct)
+        const pid = cursorPid();
+        if (pid != null) {
+          killProcess(pid, false);
+          setTimeout(() => {
+            allProcesses = getAllAgentProcesses(); applySortAndFilter();
+            lastRefresh = new Date();
+            if (selectedIndex >= processes.length) {
+              selectedIndex = Math.max(0, processes.length - 1);
+            }
+            render();
+          }, 300);
+        }
       }
       break;
 
     case 'X':
-      if (processes[selectedIndex]) {
-        const pid = processes[selectedIndex].pid;
-        killProcess(pid, true);
-        setTimeout(() => {
-          allProcesses = getAllAgentProcesses(); applySortAndFilter();
-          lastRefresh = new Date();
-          if (selectedIndex >= processes.length) {
-            selectedIndex = Math.max(0, processes.length - 1);
-          }
-          render();
-        }, 300);
+      if (markedPids.size > 0) {
+        // Bulk force kill of the marked set (behind a confirmation prompt)
+        confirmKillSelected = true;
+        confirmKillSelectedForce = true;
+        process.stdout.write(`\n${BG_RED}${WHITE}${BOLD} Force kill ${markedPids.size} selected session${markedPids.size === 1 ? '' : 's'}? (y/N)${RESET}`);
+        break;
+      }
+      { // Single force kill — resolve target via cursorPid() (group-correct)
+        const pid = cursorPid();
+        if (pid != null) {
+          killProcess(pid, true);
+          setTimeout(() => {
+            allProcesses = getAllAgentProcesses(); applySortAndFilter();
+            lastRefresh = new Date();
+            if (selectedIndex >= processes.length) {
+              selectedIndex = Math.max(0, processes.length - 1);
+            }
+            render();
+          }, 300);
+        }
       }
       break;
 
@@ -6558,6 +6630,7 @@ module.exports = {
   toggleMark,
   markRange,
   pruneMarks,
+  killSelected,
   // Plugin system
   loadPlugins,
   // History tracking
