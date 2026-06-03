@@ -402,6 +402,7 @@ let paneRow = 0;
 // is alive) — never by array index, since index meaning shifts across list/pane/group.
 const markedPids = new Set();   // pids marked for a bulk action
 let selectionAnchor = null;     // index (in the *active* list) where a Shift-range started; null = none
+let rangeMode = false;          // explicit "visual" range mode (toggled by V): plain arrows extend the selection
 
 // Sort & filter state
 const SORT_MODES = ['age', 'cpu', 'mem', 'context'];
@@ -5967,6 +5968,7 @@ function handleInput(key) {
       confirmKillSelected = false;
       markedPids.clear();
       selectionAnchor = null;
+      rangeMode = false;
       setTimeout(() => {
         allProcesses = getAllAgentProcesses(); applySortAndFilter();
         lastRefresh = new Date();
@@ -6098,8 +6100,8 @@ function handleInput(key) {
       } else {
         if (selectedIndex > 0) { const oldIdx = selectedIndex; selectedIndex--; if (CONFIG.animations) { prevSelectedIndex = oldIdx; selectionAnimFrame = 3; scheduleAnimationFrame(); } }
       }
-      // In range mode (anchor set via V or Shift+arrow), plain movement also extends the selection.
-      if (selectionAnchor != null) markRange(selectionAnchor, selectedIndex);
+      // In explicit range mode (V), plain movement extends the selection.
+      if (rangeMode) { if (selectionAnchor == null) selectionAnchor = selectedIndex; markRange(selectionAnchor, selectedIndex); }
       render();
       break;
 
@@ -6123,8 +6125,8 @@ function handleInput(key) {
       } else {
         if (selectedIndex < processes.length - 1) { const oldIdx = selectedIndex; selectedIndex++; if (CONFIG.animations) { prevSelectedIndex = oldIdx; selectionAnimFrame = 3; scheduleAnimationFrame(); } }
       }
-      // In range mode (anchor set via V or Shift+arrow), plain movement also extends the selection.
-      if (selectionAnchor != null) markRange(selectionAnchor, selectedIndex);
+      // In explicit range mode (V), plain movement extends the selection.
+      if (rangeMode) { if (selectionAnchor == null) selectionAnchor = selectedIndex; markRange(selectionAnchor, selectedIndex); }
       render();
       break;
 
@@ -6160,14 +6162,14 @@ function handleInput(key) {
       break;
 
     case 'V': // toggle range-select mode (vim visual style) — covers terminals that drop Shift+arrow
-      if (selectionAnchor == null) {
+      rangeMode = !rangeMode;
+      if (rangeMode) {
         selectionAnchor = selectedIndex;
         const pid = cursorPid();
         if (pid != null) markedPids.add(pid);
-        statusMessage = 'Range select: move to extend, Space to mark, ESC to clear';
+        statusMessage = 'Range select ON: move to extend, V/ESC to finish';
       } else {
-        selectionAnchor = null;
-        statusMessage = 'Range select off';
+        statusMessage = 'Range select OFF';
       }
       render();
       break;
@@ -6182,6 +6184,7 @@ function handleInput(key) {
         statusMessage = `Selected all ${processes.length} session${processes.length === 1 ? '' : 's'}`;
       }
       selectionAnchor = null;
+      rangeMode = false;
       render();
       break;
     }
@@ -6411,10 +6414,11 @@ function handleInput(key) {
       break;
 
     case '\x1b': // ESC
-      if (markedPids.size > 0) {
+      if (markedPids.size > 0 || rangeMode) {
         // Clear bulk selection first
         markedPids.clear();
         selectionAnchor = null;
+        rangeMode = false;
         statusMessage = 'Selection cleared';
         render();
         break;
