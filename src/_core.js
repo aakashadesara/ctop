@@ -6012,6 +6012,8 @@ function handleInput(key) {
       } else {
         if (selectedIndex > 0) { const oldIdx = selectedIndex; selectedIndex--; if (CONFIG.animations) { prevSelectedIndex = oldIdx; selectionAnimFrame = 3; scheduleAnimationFrame(); } }
       }
+      // In range mode (anchor set via V or Shift+arrow), plain movement also extends the selection.
+      if (selectionAnchor != null) markRange(selectionAnchor, selectedIndex);
       render();
       break;
 
@@ -6035,6 +6037,8 @@ function handleInput(key) {
       } else {
         if (selectedIndex < processes.length - 1) { const oldIdx = selectedIndex; selectedIndex++; if (CONFIG.animations) { prevSelectedIndex = oldIdx; selectionAnimFrame = 3; scheduleAnimationFrame(); } }
       }
+      // In range mode (anchor set via V or Shift+arrow), plain movement also extends the selection.
+      if (selectionAnchor != null) markRange(selectionAnchor, selectedIndex);
       render();
       break;
 
@@ -6061,6 +6065,73 @@ function handleInput(key) {
         }
         render();
       }
+      break;
+
+    case ' ': // Space — toggle mark on the cursor row + set the range anchor here
+      toggleMark(cursorPid());
+      selectionAnchor = selectedIndex;
+      render();
+      break;
+
+    case 'V': // toggle range-select mode (vim visual style) — covers terminals that drop Shift+arrow
+      if (selectionAnchor == null) {
+        selectionAnchor = selectedIndex;
+        const pid = cursorPid();
+        if (pid != null) markedPids.add(pid);
+        statusMessage = 'Range select: move to extend, Space to mark, ESC to clear';
+      } else {
+        selectionAnchor = null;
+        statusMessage = 'Range select off';
+      }
+      render();
+      break;
+
+    case 'a': { // toggle select-all of the visible (filtered) sessions
+      const allMarked = processes.length > 0 && processes.every(p => markedPids.has(p.pid));
+      if (allMarked) {
+        for (const p of processes) markedPids.delete(p.pid);
+        statusMessage = 'Selection cleared';
+      } else {
+        for (const p of processes) markedPids.add(p.pid);
+        statusMessage = `Selected all ${processes.length} session${processes.length === 1 ? '' : 's'}`;
+      }
+      selectionAnchor = null;
+      render();
+      break;
+    }
+
+    case '\x1b[1;2A': // Shift+Up — extend marked range upward
+      if (selectionAnchor == null) selectionAnchor = selectedIndex;
+      if (viewMode === 'pane') {
+        if (paneRow > 0) {
+          paneRow--;
+          const cardsPerRow = getCardsPerRow();
+          selectedIndex = paneRow * cardsPerRow + paneCol;
+          if (selectedIndex >= processes.length) { selectedIndex = processes.length - 1; paneCol = selectedIndex % cardsPerRow; }
+        }
+      } else if (selectedIndex > 0) {
+        selectedIndex--;
+      }
+      markRange(selectionAnchor, selectedIndex);
+      render();
+      break;
+
+    case '\x1b[1;2B': // Shift+Down — extend marked range downward
+      if (selectionAnchor == null) selectionAnchor = selectedIndex;
+      if (viewMode === 'pane') {
+        const cardsPerRow = getCardsPerRow();
+        const totalRows = Math.ceil(processes.length / cardsPerRow);
+        if (paneRow < totalRows - 1) {
+          paneRow++;
+          selectedIndex = paneRow * cardsPerRow + paneCol;
+          if (selectedIndex >= processes.length) { selectedIndex = processes.length - 1; paneCol = selectedIndex % cardsPerRow; }
+        }
+      } else {
+        const maxIdx = (groupByProject && groupedFlatList.length > 0) ? groupedFlatList.length - 1 : processes.length - 1;
+        if (selectedIndex < maxIdx) selectedIndex++;
+      }
+      markRange(selectionAnchor, selectedIndex);
+      render();
       break;
 
     case 'd':
@@ -6236,6 +6307,14 @@ function handleInput(key) {
       break;
 
     case '\x1b': // ESC
+      if (markedPids.size > 0) {
+        // Clear bulk selection first
+        markedPids.clear();
+        selectionAnchor = null;
+        statusMessage = 'Selection cleared';
+        render();
+        break;
+      }
       if (searchQuery) {
         // Clear search
         searchQuery = '';
