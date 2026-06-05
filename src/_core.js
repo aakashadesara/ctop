@@ -417,6 +417,8 @@ let showTimeline = false; // toggled by 'W' key
 let timelineScrollOffset = 0; // scroll offset for event list in timeline view
 let timelineCache = null; // cached timeline data for current process
 let showHeatmap = false; // toggled by 'C' key
+let heatmapWeeks = 4;             // visible window in weeks; cycled 4/8/12 with 'w'
+let heatmapGridMetric = 'tokens'; // grid color metric: 'tokens'|'cost'|'sessions'; cycled with t/c/s
 let exportMode = false; // true when awaiting export format key
 
 // Process grouping state
@@ -817,6 +819,7 @@ function formatHourLabel(hoursAgo) {
 }
 
 function formatCompactTokens(n) {
+  if (n >= 1_000_000_000) return `${(n / 1_000_000_000).toFixed(1)}B`;
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `${Math.round(n / 1_000)}k`;
   return String(n);
@@ -5154,6 +5157,216 @@ function getHeatmapColorLevel(value, thresholds) {
   return 4;
 }
 
+// ── Model breakdown helpers (used by the heatmap view) ──────────────────────
+
+// Pad a (possibly ANSI-colored) string to a visible width.
+function padVisual(str, width) {
+  const d = width - visualWidth(str);
+  return d > 0 ? str + ' '.repeat(d) : str;
+}
+
+// Compact cost: $29.3k / $76 / $5.93 / <$0.01
+function formatCostCompact(c) {
+  if (c == null) return '--';
+  if (c >= 1000) return `$${(c / 1000).toFixed(1)}k`;
+  if (c >= 10) return `$${Math.round(c)}`;
+  if (c >= 0.01) return `$${c.toFixed(2)}`;
+  if (c > 0) return '<$0.01';
+  return '$0';
+}
+
+// Human label for a raw model id: claude-opus-4-8 → "Opus 4.8", strips date/provider.
+function prettyModelName(model) {
+  if (!model) return 'unknown';
+  let m = String(model);
+  if (m.includes('/')) m = m.split('/').pop();   // drop provider prefix (ollama/qwen3)
+  m = m.replace(/-\d{8}$/, '');                   // strip date suffix (…-20251001)
+  const cm = m.match(/^claude-(opus|sonnet|haiku)-(\d+)-(\d+)$/i);
+  if (cm) return cm[1][0].toUpperCase() + cm[1].slice(1).toLowerCase() + ` ${cm[2]}.${cm[3]}`;
+  return m;
+}
+
+// Coarse provider/family bucket for color assignment.
+function modelFamily(model) {
+  const m = String(model || '').toLowerCase();
+  if (m.includes('opus')) return 'opus';
+  if (m.includes('sonnet')) return 'sonnet';
+  if (m.includes('haiku')) return 'haiku';
+  if (m.includes('gpt') || m.includes('codex') || m.startsWith('o3') || m.startsWith('o4')) return 'gpt';
+  if (m.includes('kimi') || m.includes('moonshot')) return 'kimi';
+  if (m.includes('gemini')) return 'gemini';
+  if (m.includes('qwen') || m.includes('llama') || m.includes('ollama') || m.includes('deepseek') || m.includes('mistral')) return 'local';
+  return null;
+}
+
+function _hashStr(s) { let h = 0; for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0; return h; }
+
+// 256-color codes. Opus families get version-shaded purples (newer = brighter);
+// other known providers get a fixed hue; unknowns hash into a distinct palette.
+const MODEL_FAMILY_COLORS = { sonnet: 75, haiku: 114, gpt: 80, kimi: 208, gemini: 178, local: 245 };
+const OPUS_SHADES = [183, 141, 99, 135]; // index 0 = brightest/newest
+const MODEL_HASH_PALETTE = [170, 209, 80, 178, 141, 215, 111, 156, 219, 117];
+function getModelColorCode(model) {
+  const fam = modelFamily(model);
+  if (fam === 'opus') {
+    const mm = String(model).match(/(\d+)[._-](\d+)/);
+    const minor = mm ? parseInt(mm[2], 10) : null;
+    if (minor != null) return OPUS_SHADES[Math.max(0, Math.min(OPUS_SHADES.length - 1, 8 - minor))];
+    return OPUS_SHADES[_hashStr(String(model)) % OPUS_SHADES.length];
+  }
+  if (fam) return MODEL_FAMILY_COLORS[fam];
+  return MODEL_HASH_PALETTE[_hashStr(String(model || '')) % MODEL_HASH_PALETTE.length];
+}
+function modelColor(model) { return `${ESC}[38;5;${getModelColorCode(model)}m`; }
+
+// Sub-cell-resolution horizontal bar (eighth-blocks); never empty for a nonzero fraction.
+const BAR_EIGHTHS = ['▏', '▎', '▍', '▌', '▋', '▊', '▉', '█'];
+function makeBar(frac, width) {
+  if (!(width > 0)) return '';
+  let f = frac; if (f < 0) f = 0; if (f > 1) f = 1;
+  const filled = f * width;
+  let full = Math.floor(filled); if (full > width) full = width;
+  let bar = '█'.repeat(full);
+  const rem = filled - full;
+  if (full < width && rem > 0) {
+    const idx = Math.round(rem * 8);
+    if (idx >= 8) bar += '█';
+    else if (idx > 0) bar += BAR_EIGHTHS[idx - 1];
+  }
+  if (bar === '' && f > 0) bar = '▏';
+  return bar;
+}
+
+// Aggregate a flat list of per-turn usage records into per-model totals + cost.
+// Each turn: { model, inputTokens, outputTokens, cacheCreateTokens, cacheReadTokens }
+function aggregateModelUsage(turns) {
+  const byModel = new Map();
+  for (const t of turns || []) {
+    if (!t || !t.model) continue;
+    let m = byModel.get(t.model);
+    if (!m) { m = { model: t.model, turns: 0, inputTokens: 0, outputTokens: 0, cacheCreateTokens: 0, cacheReadTokens: 0 }; byModel.set(t.model, m); }
+    m.turns += 1;
+    m.inputTokens += t.inputTokens || 0;
+    m.outputTokens += t.outputTokens || 0;
+    m.cacheCreateTokens += t.cacheCreateTokens || 0;
+    m.cacheReadTokens += t.cacheReadTokens || 0;
+  }
+  const models = [];
+  for (const m of byModel.values()) {
+    m.totalTokens = m.inputTokens + m.outputTokens + m.cacheCreateTokens + m.cacheReadTokens;
+    m.cost = calculateCost(m) || 0; // m carries model + *Tokens, which is what calculateCost reads
+    models.push(m);
+  }
+  models.sort((a, b) => b.totalTokens - a.totalTokens);
+  return models;
+}
+
+// Full per-turn scan of Claude session JSONL files within [sinceMs, now].
+function scanModelUsageWindow(sinceMs) {
+  const claudeDir = path.join(os.homedir(), '.claude', 'projects');
+  const turns = [];
+  const sessions = new Set();
+  let filesScanned = 0;
+  const mtimeFloor = sinceMs - 2 * 24 * 60 * 60 * 1000; // small slack for clock/timezone skew
+  const scanFile = (file) => {
+    let raw; try { raw = fs.readFileSync(file, 'utf8'); } catch { return; }
+    filesScanned++;
+    for (const line of raw.split('\n')) {
+      if (line.indexOf('"usage"') === -1) continue; // fast reject non-assistant lines
+      let obj; try { obj = JSON.parse(line); } catch { continue; }
+      const msg = obj.message;
+      if (!msg || msg.role !== 'assistant' || !msg.usage) continue;
+      const ts = Date.parse(obj.timestamp || '');
+      if (!ts || ts < sinceMs) continue;
+      const model = msg.model;
+      if (!model || model === '<synthetic>') continue;
+      const u = msg.usage;
+      const rec = {
+        model,
+        inputTokens: u.input_tokens || 0,
+        outputTokens: u.output_tokens || 0,
+        cacheCreateTokens: u.cache_creation_input_tokens || 0,
+        cacheReadTokens: u.cache_read_input_tokens || 0,
+      };
+      turns.push(rec);
+      if (obj.sessionId) sessions.add(obj.sessionId);
+    }
+  };
+  const walk = (dir) => {
+    let ents; try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const e of ents) {
+      const full = path.join(dir, e.name);
+      if (e.isDirectory()) walk(full);
+      else if (e.name.endsWith('.jsonl')) {
+        let st; try { st = fs.statSync(full); } catch { continue; }
+        if (st.mtimeMs < mtimeFloor) continue;
+        scanFile(full);
+      }
+    }
+  };
+  try { if (fs.existsSync(claudeDir)) walk(claudeDir); } catch {}
+  const models = aggregateModelUsage(turns);
+  return {
+    models,
+    grandTokens: models.reduce((s, m) => s + m.totalTokens, 0),
+    grandCost: models.reduce((s, m) => s + m.cost, 0),
+    sessions: sessions.size,
+    filesScanned, turnCount: turns.length,
+  };
+}
+
+let modelUsageCache = null, modelUsageCacheKey = '', modelUsageCacheTime = 0;
+function getModelUsage(weeks) {
+  const key = String(weeks);
+  if (modelUsageCache && modelUsageCacheKey === key && Date.now() - modelUsageCacheTime < 60000) return modelUsageCache;
+  const sinceMs = Date.now() - weeks * 7 * 24 * 60 * 60 * 1000;
+  modelUsageCache = scanModelUsageWindow(sinceMs);
+  modelUsageCacheKey = key;
+  modelUsageCacheTime = Date.now();
+  return modelUsageCache;
+}
+
+// Render a ranked, color-coded bar chart (one row per model) as an array of lines.
+function renderBarPanel(models, metricKey, title, panelW) {
+  const lines = [];
+  const nameW = 10, valueW = 12;
+  const barW = Math.max(6, panelW - nameW - valueW - 2);
+  const sorted = [...models].sort((a, b) => (b[metricKey] || 0) - (a[metricKey] || 0));
+  const total = sorted.reduce((s, m) => s + (m[metricKey] || 0), 0);
+  const maxVal = sorted.length ? (sorted[0][metricKey] || 0) : 0;
+  const totalStr = metricKey === 'cost' ? formatCostCompact(total) : formatCompactTokens(total);
+  lines.push(padVisual(`${BOLD}${WHITE}${title}${RESET}`, panelW - visualWidth(totalStr)) + `${DIM}${totalStr}${RESET}`);
+  if (!sorted.length) { lines.push(`${DIM}(no model usage in window)${RESET}`); return lines; }
+  for (const m of sorted.slice(0, 6)) {
+    const v = m[metricKey] || 0;
+    const frac = maxVal > 0 ? v / maxVal : 0;
+    const pct = total > 0 ? (v / total) * 100 : 0;
+    const name = padVisual(visualTruncate(prettyModelName(m.model), nameW), nameW);
+    const bar = makeBar(frac, barW);
+    const barField = `${modelColor(m.model)}${bar}${RESET}` + ' '.repeat(Math.max(0, barW - visualWidth(bar)));
+    const valStr = metricKey === 'cost' ? formatCostCompact(v) : formatCompactTokens(v);
+    const pctStr = pct >= 1 ? `${Math.round(pct)}%` : pct > 0 ? '<1%' : '0%';
+    const trailing = `${valStr} ${pctStr}`;
+    const trailField = ' '.repeat(Math.max(0, valueW - visualWidth(trailing))) + trailing;
+    lines.push(`${DIM}${name}${RESET} ${barField} ${DIM}${trailField}${RESET}`);
+  }
+  return lines;
+}
+
+// Join two arrays of (ANSI-colored) lines into side-by-side columns.
+function composeColumns(leftLines, rightLines, gap) {
+  const leftW = leftLines.reduce((mx, l) => Math.max(mx, visualWidth(l)), 0);
+  const pad = ' '.repeat(gap);
+  const n = Math.max(leftLines.length, rightLines.length);
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    const l = leftLines[i] || '';
+    const r = rightLines[i] || '';
+    out.push(padVisual(l, leftW) + (r ? pad + r : ''));
+  }
+  return out;
+}
+
 function renderHeatmap(columns, rows) {
   const history = loadHistory();
   const dayMap = aggregateHeatmapData(history, 'tokens');
@@ -5164,31 +5377,29 @@ function renderHeatmap(columns, rows) {
   output += renderHeader(columns);
   output += '\n';
 
-  // Determine how many weeks to show based on available data
+  // Window size is fixed (cycled with 'w'); only shrink it if the terminal is too narrow.
   const now = new Date();
   const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const maxWeeksForScreen = Math.max(4, Math.floor((columns - 8) / 2)); // 8 chars for day labels
+  const WEEKS = Math.min(maxWeeksForScreen, heatmapWeeks);
 
-  // Find earliest date in data
-  let earliestDate = today;
-  for (const key of dayMap.keys()) {
-    const d = new Date(key);
-    if (d < earliestDate) earliestDate = d;
-  }
-  // Calculate weeks needed, minimum 12, cap at what fits on screen (each week = 2 chars)
-  const daysSinceEarliest = Math.ceil((today - earliestDate) / (24 * 60 * 60 * 1000));
-  const maxWeeksForScreen = Math.floor((columns - 8) / 2); // 8 chars for day labels + spacing
-  const dataWeeks = Math.ceil(daysSinceEarliest / 7) + 1;
-  const WEEKS = Math.min(maxWeeksForScreen, Math.max(12, dataWeeks));
+  // Grid coloring follows the selected metric (t/c/s).
+  const gridMap = heatmapGridMetric === 'cost' ? costMap : heatmapGridMetric === 'sessions' ? sessionMap : dayMap;
+  const metricLabel = heatmapGridMetric === 'cost' ? 'cost' : heatmapGridMetric === 'sessions' ? 'sessions' : 'tokens';
 
   output += `${BOLD}${WHITE}  Usage Heatmap \u2014 Last ${WEEKS} Weeks${RESET}${CLR_LINE}\n`;
   output += `${DIM}${'─'.repeat(columns)}${RESET}${CLR_LINE}\n`;
 
-  // Build the grid: WEEKS columns, 7 day-of-week rows
+  // Build the grid: WEEKS columns x 7 day-of-week rows
+  const NL = String.fromCharCode(10);
+  output += '  ' + DIM + 'keys' + RESET + ' ' + CYAN + 't' + RESET + DIM + 'okens' + RESET
+    + ' ' + CYAN + 'c' + RESET + DIM + 'ost' + RESET + ' ' + CYAN + 's' + RESET + DIM + 'essions' + RESET
+    + '   ' + CYAN + 'w' + RESET + DIM + ' window ' + heatmapWeeks + 'w' + RESET
+    + '   ' + DIM + '· any key: back' + RESET + CLR_LINE + NL;
   const todayDow = today.getDay(); // 0=Sun, 1=Mon, ...
   const mondayOffset = todayDow === 0 ? 6 : todayDow - 1; // days since last Monday
   const startDate = new Date(today.getTime() - (mondayOffset + (WEEKS - 1) * 7) * 24 * 60 * 60 * 1000);
 
-  // Build grid[week][day] = value
   const grid = [];
   const dates = [];
   const allValues = [];
@@ -5198,24 +5409,17 @@ function renderHeatmap(columns, rows) {
     for (let d = 0; d < 7; d++) {
       const cellDate = new Date(startDate.getTime() + (w * 7 + d) * 24 * 60 * 60 * 1000);
       const key = cellDate.toISOString().slice(0, 10);
-      const val = dayMap.get(key) || 0;
-      if (cellDate <= today) {
-        weekCol.push(val);
-        allValues.push(val);
-      } else {
-        weekCol.push(-1); // future date
-      }
+      const val = gridMap.get(key) || 0;
+      if (cellDate <= today) { weekCol.push(val); allValues.push(val); }
+      else { weekCol.push(-1); } // future date
       weekDates.push(cellDate);
     }
     grid.push(weekCol);
     dates.push(weekDates);
   }
 
-  // Compute percentile thresholds for color levels (GitHub-style)
   const thresholds = computeHeatmapThresholds(allValues);
-
-  // Color definitions for levels
-  const HEATMAP_CHARS = ['\u2591', '\u2592', '\u2593', '\u2588', '\u2588'];
+  const HEATMAP_CHARS = ['░', '▒', '▓', '█', '█'];
   const HEATMAP_COLORS = [
     DIM,                           // level 0: dim (no/minimal)
     `${ESC}[38;5;22m`,             // level 1: dark green
@@ -5224,91 +5428,61 @@ function renderHeatmap(columns, rows) {
     `${BOLD}${CYAN}`,              // level 4: cyan bold
   ];
 
-  // Day labels (left side)
   const dayLabels = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
   const dayLabelShow = [true, false, true, false, true, false, true]; // Mon, Wed, Fri, Sun
-
-  // Month labels (top)
   const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-  let monthRow = '      '; // padding for day labels
+
+  // Heatmap rendered as an array of lines so the model panels can sit beside it.
+  const gridLines = [];
+  let monthRow = '    '; // 4-wide day-label gutter
   let lastMonth = -1;
   for (let w = 0; w < WEEKS; w++) {
-    const firstDayOfWeek = dates[w][0];
-    const month = firstDayOfWeek.getMonth();
-    if (month !== lastMonth) {
-      monthRow += MONTHS[month].padEnd(2);
-      lastMonth = month;
-    } else {
-      monthRow += '  ';
-    }
+    const month = dates[w][0].getMonth();
+    if (month !== lastMonth) { monthRow += MONTHS[month].padEnd(2); lastMonth = month; }
+    else { monthRow += '  '; }
   }
-  output += `${DIM}${monthRow}${RESET}${CLR_LINE}\n`;
-
-  // Render grid rows (one per day of week)
+  gridLines.push(`${DIM}${monthRow}${RESET}`);
   for (let d = 0; d < 7; d++) {
-    let row = '  ';
-    if (dayLabelShow[d]) {
-      row += `${DIM}${dayLabels[d]}${RESET} `;
-    } else {
-      row += '    ';
-    }
-
+    let row = dayLabelShow[d] ? `${DIM}${dayLabels[d]}${RESET} ` : '    ';
     for (let w = 0; w < WEEKS; w++) {
       const val = grid[w][d];
-      if (val === -1) {
-        row += ' '; // future date
-      } else {
-        const level = getHeatmapColorLevel(val, thresholds);
-        row += `${HEATMAP_COLORS[level]}${HEATMAP_CHARS[level]}${RESET} `;
-      }
+      if (val === -1) { row += '  '; }
+      else { const level = getHeatmapColorLevel(val, thresholds); row += `${HEATMAP_COLORS[level]}${HEATMAP_CHARS[level]}${RESET} `; }
     }
-    output += `${row}${CLR_LINE}\n`;
+    gridLines.push(row);
   }
+  gridLines.push('');
+  let legend = `${DIM}Less${RESET} `;
+  for (let i = 0; i < 5; i++) { legend += `${HEATMAP_COLORS[i]}${HEATMAP_CHARS[i]}${RESET} `; }
+  legend += `${DIM}More${RESET}`;
+  gridLines.push(legend);
 
-  output += `${CLR_LINE}\n`;
+  // Per-model usage + cost-driver bar charts (accurate windowed per-turn scan).
+  const usage = getModelUsage(WEEKS);
+  const leftW = gridLines.reduce((mx, l) => Math.max(mx, visualWidth(l)), 0);
+  const gap = 3;
+  const sideBySide = (columns - leftW - gap) >= 34;
+  const panelW = sideBySide ? Math.min(46, columns - leftW - gap) : Math.min(52, Math.max(24, columns - 4));
+  const byModelLines = renderBarPanel(usage.models, 'totalTokens', 'By Model · tokens', panelW);
+  const costLines = renderBarPanel(usage.models, 'cost', 'Cost Drivers · est.', panelW);
+  const rightLines = [...byModelLines, '', ...costLines];
+  const bodyLines = sideBySide ? composeColumns(gridLines, rightLines, gap) : [...gridLines, '', ...rightLines];
+  for (const l of bodyLines) { output += '  ' + l + RESET + CLR_LINE + NL; }
 
-  // Legend
-  output += `  ${DIM}Less${RESET} `;
-  for (let i = 0; i < 5; i++) {
-    output += `${HEATMAP_COLORS[i]}${HEATMAP_CHARS[i]}${RESET} `;
-  }
-  output += `${DIM}More${RESET}${CLR_LINE}\n`;
-  output += `${CLR_LINE}\n`;
+  // Windowed totals footer — same scan as the panels, so the figures reconcile.
+  output += CLR_LINE + NL;
+  output += '  ' + BOLD + WHITE + 'Last ' + WEEKS + ' weeks' + RESET
+    + '   ' + DIM + 'tokens ' + RESET + GREEN + formatCompactTokens(usage.grandTokens) + RESET
+    + '   ' + DIM + 'est. cost ' + RESET + YELLOW + formatCostCompact(usage.grandCost) + RESET + ' ' + DIM + '(list price)' + RESET
+    + '   ' + DIM + 'sessions ' + RESET + CYAN + usage.sessions + RESET
+    + '   ' + DIM + 'turns ' + RESET + CYAN + formatCompactTokens(usage.turnCount) + RESET
+    + '   ' + DIM + 'grid: ' + metricLabel + RESET + CLR_LINE + NL;
 
-  // Stats
-  let totalTokens = 0;
-  let totalCost = 0;
-  let totalSessions = 0;
-  let busiestDay = '';
-  let busiestValue = 0;
-  let daysWithData = 0;
-
-  for (const [dateKey, val] of dayMap) {
-    totalTokens += val;
-    if (val > busiestValue) {
-      busiestValue = val;
-      busiestDay = dateKey;
-    }
-    if (val > 0) daysWithData++;
-  }
-  for (const [, val] of costMap) totalCost += val;
-  for (const [, val] of sessionMap) totalSessions += val;
-
-  const avgDaily = daysWithData > 0 ? Math.round(totalTokens / daysWithData) : 0;
-
-  output += `  ${BOLD}${WHITE}Stats:${RESET}${CLR_LINE}\n`;
-  output += `    ${DIM}Total tokens:${RESET}  ${GREEN}${formatCompactTokens(totalTokens)}${RESET}${CLR_LINE}\n`;
-  output += `    ${DIM}Total cost:${RESET}    ${YELLOW}$${totalCost.toFixed(2)}${RESET}${CLR_LINE}\n`;
-  output += `    ${DIM}Total sessions:${RESET}${CYAN} ${totalSessions}${RESET}${CLR_LINE}\n`;
-  if (busiestDay) {
-    output += `    ${DIM}Busiest day:${RESET}   ${WHITE}${busiestDay}${RESET} ${DIM}(${formatCompactTokens(busiestValue)} tokens)${RESET}${CLR_LINE}\n`;
-  }
-  output += `    ${DIM}Avg daily:${RESET}     ${WHITE}${formatCompactTokens(avgDaily)} tokens${RESET}${CLR_LINE}\n`;
-
-  output += `\n${DIM}  Press any key to return...${RESET}`;
+  output += NL + DIM + '  Press any key to return...' + RESET;
 
   process.stdout.write(output);
 }
+
 
 function renderPalette() {
   const { columns, rows } = process.stdout;
@@ -5923,6 +6097,17 @@ function handleInput(key) {
   }
 
   if (showHeatmap) {
+    const hc = process.stdout.columns || 80, hr = process.stdout.rows || 40;
+    if (key === 't' || key === 'c' || key === 's') {
+      heatmapGridMetric = key === 't' ? 'tokens' : key === 'c' ? 'cost' : 'sessions';
+      renderHeatmap(hc, hr);
+      return;
+    }
+    if (key === 'w' || key === 'W') {
+      heatmapWeeks = heatmapWeeks === 4 ? 8 : heatmapWeeks === 8 ? 12 : 4;
+      renderHeatmap(hc, hr);
+      return;
+    }
     showHeatmap = false;
     render();
     return;
@@ -6671,6 +6856,18 @@ module.exports = {
   getHeatmapColorLevel,
   computeHeatmapThresholds,
   renderHeatmap,
+  // Heatmap: per-model usage & cost breakdown
+  aggregateModelUsage,
+  scanModelUsageWindow,
+  getModelUsage,
+  modelFamily,
+  getModelColorCode,
+  modelColor,
+  prettyModelName,
+  makeBar,
+  formatCostCompact,
+  renderBarPanel,
+  composeColumns,
   // Notification helpers
   sendNotification,
   formatDuration,
