@@ -1,0 +1,533 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ctop Clickable Shortcuts Plan</title>
+<style>
+  :root {
+    --bg: #0b1016;
+    --panel: #141a21;
+    --panel-2: #1b232c;
+    --ink: #eef4f8;
+    --muted: #9aa8b5;
+    --faint: #667481;
+    --line: #2d3844;
+    --cyan: #62d8e8;
+    --green: #86e07f;
+    --amber: #f0b35a;
+    --red: #f26d6d;
+    --blue: #6aa8ff;
+    --violet: #b894ff;
+    --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    --mono: "SF Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; min-height: 100%; background: var(--bg); color: var(--ink); font-family: var(--font); }
+  body { line-height: 1.55; font-size: 15px; }
+  main { width: min(1160px, calc(100vw - 36px)); margin: 0 auto; padding: 34px 0 72px; }
+  header { margin-bottom: 24px; }
+  h1 { margin: 0 0 8px; font-size: clamp(28px, 5vw, 46px); letter-spacing: 0; line-height: 1.04; }
+  h2 { margin: 34px 0 12px; font-size: 22px; letter-spacing: 0; }
+  h3 { margin: 24px 0 8px; font-size: 16px; letter-spacing: 0; }
+  p { color: #cbd5df; margin: 0 0 12px; }
+  code, .mono { font-family: var(--mono); }
+  code { color: var(--green); background: #10171f; border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px; }
+  a { color: var(--cyan); }
+  .lede { color: var(--muted); font-size: 17px; max-width: 780px; }
+  .meta { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+  .pill { border: 1px solid var(--line); color: var(--muted); background: #10171f; border-radius: 999px; padding: 4px 10px; font-family: var(--mono); font-size: 12px; }
+  .grid { display: grid; gap: 14px; }
+  .grid.cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .grid.cols-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  @media (max-width: 860px) {
+    .grid.cols-2, .grid.cols-3 { grid-template-columns: 1fr; }
+  }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 18px;
+  }
+  .card h3:first-child { margin-top: 0; }
+  .callout {
+    background: linear-gradient(135deg, #132a29, #141a21 68%);
+    border: 1px solid #26606a;
+    border-left: 4px solid var(--cyan);
+    border-radius: 8px;
+    padding: 18px;
+    margin: 22px 0;
+  }
+  .callout strong { color: white; }
+  .terminal {
+    border: 1px solid #344352;
+    background: #071017;
+    border-radius: 8px;
+    overflow: hidden;
+    box-shadow: 0 18px 45px rgba(0,0,0,.28);
+  }
+  .term-head { height: 34px; display: flex; align-items: center; gap: 8px; padding: 0 12px; background: #121922; border-bottom: 1px solid #2b3744; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--red); }
+  .dot:nth-child(2) { background: var(--amber); }
+  .dot:nth-child(3) { background: var(--green); }
+  .term-title { color: var(--faint); font-family: var(--mono); font-size: 12px; margin-left: 6px; }
+  .term-body { font-family: var(--mono); font-size: 13px; padding: 14px; min-height: 330px; display: flex; flex-direction: column; gap: 10px; }
+  .screen-line { white-space: nowrap; overflow: hidden; color: #a9b8c6; }
+  .screen-line .hot { color: var(--cyan); }
+  .screen-line .dead { color: var(--red); }
+  .table { display: grid; gap: 5px; }
+  .row { display: grid; grid-template-columns: 44px 92px 72px 96px 1fr 72px; gap: 10px; min-width: 560px; }
+  .row.head { color: var(--cyan); border-bottom: 1px solid #24313d; padding-bottom: 6px; }
+  .row.sel { color: white; background: #24384b; padding: 3px 4px; margin-left: -4px; border-radius: 4px; }
+  .row .ok { color: var(--green); }
+  .row .warn { color: var(--amber); }
+  .row .bad { color: var(--red); }
+  .spacer { flex: 1; min-height: 28px; }
+  .footer-rule { height: 1px; background: #344352; }
+  .shortcut-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: nowrap;
+    overflow: hidden;
+    white-space: nowrap;
+  }
+  .label { color: white; font-weight: 700; margin-right: 2px; }
+  .shortcut {
+    border: 0;
+    border-radius: 4px;
+    background: transparent;
+    color: #cbd5df;
+    font: inherit;
+    padding: 2px 3px;
+    cursor: pointer;
+    min-width: 0;
+  }
+  .shortcut .key { color: var(--cyan); font-weight: 700; }
+  .shortcut.danger .key { color: var(--red); }
+  .shortcut:hover { background: #20303f; color: white; }
+  .shortcut:focus-visible { outline: 2px solid var(--cyan); outline-offset: 1px; }
+  .mock-controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 12px 0 0; }
+  .mock-controls button {
+    border: 1px solid var(--line);
+    background: var(--panel-2);
+    color: var(--ink);
+    border-radius: 6px;
+    padding: 7px 10px;
+    cursor: pointer;
+  }
+  .mock-controls button.active { border-color: var(--cyan); color: var(--cyan); }
+  .mock-status { margin-top: 10px; color: var(--green); font-family: var(--mono); min-height: 22px; }
+  .confirm {
+    display: none;
+    align-items: center;
+    gap: 8px;
+    padding: 9px 10px;
+    border: 1px solid #6a2f36;
+    background: #2a1116;
+    color: white;
+    border-radius: 6px;
+  }
+  .confirm.show { display: flex; }
+  .confirm button {
+    font-family: var(--mono);
+    border: 1px solid #82414a;
+    background: #3b161d;
+    color: white;
+    border-radius: 4px;
+    padding: 2px 8px;
+    cursor: pointer;
+  }
+  .confirm button.yes { border-color: var(--red); color: #ffd8d8; }
+  table { width: 100%; border-collapse: collapse; overflow: hidden; border-radius: 8px; border: 1px solid var(--line); }
+  th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { background: #10171f; color: white; font-size: 13px; }
+  td { color: #cbd5df; }
+  tr:last-child td { border-bottom: 0; }
+  .tag { display: inline-block; border-radius: 999px; padding: 2px 8px; font-family: var(--mono); font-size: 12px; border: 1px solid var(--line); color: var(--muted); background: #10171f; }
+  .tag.must { color: var(--cyan); border-color: #27626e; }
+  .tag.danger { color: var(--red); border-color: #6e3036; }
+  .tag.low { color: var(--faint); }
+  .diagram {
+    background: #09131b;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 14px;
+    color: #cbd5df;
+    overflow-x: auto;
+    font-family: var(--mono);
+    font-size: 13px;
+    line-height: 1.6;
+  }
+  ol, ul { padding-left: 22px; color: #cbd5df; }
+  li { margin: 6px 0; }
+  .source-list { font-size: 13px; color: var(--muted); }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Clickable Footer Shortcuts Plan</h1>
+    <p class="lede">Plan for making the bottom shortcut bar clickable, adding the missing visible <code>A</code> purge shortcut, making confirmation <code>y</code>/<code>n</code> clickable, and hiding lower-priority shortcuts on narrow terminals.</p>
+    <div class="meta">
+      <span class="pill">ctop TUI</span>
+      <span class="pill">src/_core.js</span>
+      <span class="pill">review artifact</span>
+      <span class="pill">2026-06-06</span>
+    </div>
+  </header>
+
+  <section class="callout">
+    <p><strong>Recommendation:</strong> implement a single shortcut descriptor list and use it for footer rendering, click hitbox registration, command-palette entries, and tests where practical. Footer clicks should dispatch the same keys that keyboard input already handles, so click behavior stays identical to existing shortcuts.</p>
+  </section>
+
+  <section>
+    <h2>Interactive Review Mock</h2>
+    <p>This browser mock is not the TUI implementation. It demonstrates the proposed priority behavior and confirmation click states.</p>
+    <div class="terminal" id="terminal">
+      <div class="term-head"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="term-title">ctop - clickable footer prototype</span></div>
+      <div class="term-body">
+        <div class="screen-line"><span class="hot">CTOP</span> AI Agent Terminal Operations Panel</div>
+        <div class="screen-line">2 active  |  1 stopped  |  sort age  |  ctx ok  |  notif on</div>
+        <div class="table">
+          <div class="row head"><span>PID</span><span>STATUS</span><span>CTX</span><span>STARTED</span><span>TITLE</span><span>CPU%</span></div>
+          <div class="row sel"><span>8412</span><span class="ok">ACTIVE</span><span>82%</span><span>4m ago</span><span>feature-clickable-footer</span><span>2.4</span></div>
+          <div class="row"><span>8270</span><span class="ok">ACTIVE</span><span>61%</span><span>19m ago</span><span>docs-polish</span><span>1.8</span></div>
+          <div class="row"><span>7921</span><span class="bad">STOPPED</span><span>--</span><span>2h ago</span><span>old-session</span><span>0.0</span></div>
+        </div>
+        <div class="spacer"></div>
+        <div class="confirm" id="confirmBox">
+          <span id="confirmText">Kill ALL stopped/dead processes?</span>
+          <button class="yes" data-confirm="y">y</button>
+          <button data-confirm="n">n</button>
+        </div>
+        <div class="footer-rule"></div>
+        <div class="shortcut-bar" id="shortcutBar">
+          <span class="label">KEYS:</span>
+        </div>
+      </div>
+    </div>
+    <div class="mock-controls">
+      <button data-width="wide" class="active">wide</button>
+      <button data-width="medium">medium</button>
+      <button data-width="narrow">narrow</button>
+      <button data-width="tiny">tiny</button>
+    </div>
+    <div class="mock-status" id="mockStatus">Click a shortcut in the mock footer.</div>
+  </section>
+
+  <section>
+    <h2>Current State</h2>
+    <div class="grid cols-2">
+      <div class="card">
+        <h3>What already exists</h3>
+        <ul>
+          <li>Mouse tracking is enabled and routed through <code>parseMouseEvent</code> then <code>handleMouseEvent</code>.</li>
+          <li>Rows can already be clicked and scroll events already navigate the list.</li>
+          <li>The keyboard path already supports <code>A</code> for killing stopped/dead processes with confirmation.</li>
+          <li>The help screen already lists <code>A</code>; the footer does not.</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>Gaps to close</h3>
+        <ul>
+          <li>The footer is rendered as static text with no recorded hitboxes.</li>
+          <li>Confirmation prompts are written directly to stdout, so their <code>y</code>/<code>N</code> locations are not clickable.</li>
+          <li>Footer content is a long hardcoded line and can truncate unpredictably on narrow terminals.</li>
+          <li>Shortcut labels are duplicated between the footer, command palette, help, and keyboard switch.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Architecture</h2>
+    <div class="diagram">
+Current:
+
+renderNow()
+  -> hardcoded footer string
+
+mouse event
+  -> handleMouseEvent()
+  -> row hit test only
+
+keyboard event
+  -> handleInput(key)
+  -> switch(key)
+
+Target:
+
+SHORTCUTS metadata
+  -> renderFooterShortcuts(columns)
+       -> visible shortcut text
+       -> footerHitboxes
+  -> command palette metadata
+  -> tests
+
+mouse event
+  -> handleMouseEvent()
+       -> confirmation hitbox?
+       -> footer hitbox?
+       -> row hit test fallback
+  -> handleInput(shortcut.key)
+    </div>
+
+    <h3>New helper responsibilities</h3>
+    <table>
+      <thead><tr><th>Helper</th><th>Purpose</th><th>Notes</th></tr></thead>
+      <tbody>
+        <tr><td><code>SHORTCUTS</code></td><td>Canonical footer shortcut metadata.</td><td>Key, label, command key, priority, danger flag, visibility predicate.</td></tr>
+        <tr><td><code>renderFooterShortcuts(columns)</code></td><td>Builds the footer line and records clickable ranges.</td><td>Always keeps <code>?</code>. Adds <code>A</code>. Hides by priority as width shrinks.</td></tr>
+        <tr><td><code>findFooterShortcutAt(row, col)</code></td><td>Maps a mouse click to a shortcut key.</td><td>Uses measured visual columns, not string length with ANSI escapes.</td></tr>
+        <tr><td><code>renderConfirmPrompt(type)</code></td><td>Renders confirmation prompts and records <code>y</code>/<code>n</code> hitboxes.</td><td>Can still accept keyboard <code>y</code> and any other key as cancel.</td></tr>
+        <tr><td><code>findConfirmChoiceAt(row, col)</code></td><td>Maps prompt click to <code>y</code> or <code>n</code>.</td><td>Runs before footer and row hit testing.</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Shortcut Priority</h2>
+    <p>Priority should be explicit. Lower numbers stay visible longer. The renderer should add shortcuts in priority order, reserve room for <code>KEYS:</code> and <code>?</code>, then stop once the next item would exceed terminal width.</p>
+    <table>
+      <thead><tr><th>Priority</th><th>Shortcut</th><th>Reason</th><th>Visibility</th></tr></thead>
+      <tbody>
+        <tr><td><span class="tag must">0</span></td><td><code>?</code> Help</td><td>Escape hatch requested to always remain visible.</td><td>Always shown, even on tiny width.</td></tr>
+        <tr><td><span class="tag must">1</span></td><td><code>jk</code> Nav, <code>x</code> Kill, <code>X</code> Force</td><td>Core operational controls.</td><td>Shown first after mandatory help.</td></tr>
+        <tr><td><span class="tag danger">2</span></td><td><code>A</code> Purge, <code>K</code> Kill All</td><td>Danger actions need discoverability, but remain confirmed.</td><td>Shown before convenience navigation.</td></tr>
+        <tr><td><span class="tag">3</span></td><td><code>/</code> Filter, <code>F</code> Search, <code>s</code> Sort, <code>r</code> Refresh</td><td>Frequent list operations.</td><td>Shown on normal widths.</td></tr>
+        <tr><td><span class="tag">4</span></td><td><code>o</code> Open, <code>G</code> Group, <code>L</code> Log, <code>W</code> Timeline, <code>E</code> Export</td><td>Useful but not needed every moment.</td><td>Hidden earlier on medium widths.</td></tr>
+        <tr><td><span class="tag low">5</span></td><td><code>T</code> Theme, <code>d</code> Dash, <code>H</code> History, <code>C</code> Heatmap, <code>n</code> Notif, <code>P</code> Pane, <code>q</code> Quit</td><td>Lower urgency or already discoverable through help.</td><td>First to hide on narrow widths.</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Implementation Plan</h2>
+    <ol>
+      <li><strong>Introduce footer shortcut metadata.</strong> Add a <code>FOOTER_SHORTCUTS</code> array near the command metadata in <code>src/_core.js</code>. Include <code>A Purge</code> and optionally <code>K All</code> so all destructive footer shortcuts are visible when width allows.</li>
+      <li><strong>Render footer from metadata.</strong> Replace the hardcoded footer lines in <code>renderNow()</code> with <code>renderFooterShortcuts(columns, rows)</code>. The helper returns ANSI-rendered text and updates a module-level <code>footerHitboxes</code> array.</li>
+      <li><strong>Measure click ranges in terminal columns.</strong> Track the start and end column for each shortcut token while building the plain footer text. Make the whole label clickable, not only the key character, so <code>x Kill</code> and <code>F Search</code> feel easy to hit.</li>
+      <li><strong>Dispatch footer clicks through keyboard handling.</strong> In <code>handleMouseEvent</code>, before row hit testing, check whether the click is on the footer row. If so, call <code>handleInput(hit.key)</code> and return.</li>
+      <li><strong>Move confirmation prompts into render state.</strong> Replace direct <code>process.stdout.write(... (y/N))</code> confirmation output with a small confirmation state object, for example <code>confirmPrompt = { type, message }</code>. Render it inside <code>renderNow()</code> or through a focused prompt render helper that records <code>confirmHitboxes</code>.</li>
+      <li><strong>Make <code>y</code> and <code>n</code> clickable.</strong> Let confirmation click hitboxes dispatch <code>handleInput('y')</code> or <code>handleInput('n')</code>. Keep current keyboard behavior where <code>y</code>/<code>Y</code> confirms and other keys cancel.</li>
+      <li><strong>Export small pure helpers for tests.</strong> Export the footer selection and hitbox helpers, or expose them through existing test internals. Avoid making tests depend on full-screen rendering side effects.</li>
+      <li><strong>Update docs.</strong> Add <code>A</code> to README keyboard shortcuts if it should be user-facing there too. The help text already includes it.</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>Detailed Design</h2>
+    <div class="grid cols-2">
+      <div class="card">
+        <h3>Footer descriptor shape</h3>
+        <div class="diagram">{
+  key: "A",
+  label: "Purge",
+  priority: 2,
+  danger: true,
+  always: false,
+  enabledWhen: () => true
+}</div>
+      </div>
+      <div class="card">
+        <h3>Hitbox shape</h3>
+        <div class="diagram">{
+  row: process.stdout.rows,
+  colStart: 31,
+  colEnd: 39,
+  key: "A",
+  kind: "footer-shortcut"
+}</div>
+      </div>
+    </div>
+
+    <h3>Width behavior</h3>
+    <p>The algorithm should not rely on breakpoint-specific hardcoded strings. It should greedily fit items by priority after reserving space for the mandatory help item. This keeps behavior stable across terminal widths and label edits.</p>
+    <div class="diagram">renderFooterShortcuts(columns):
+  mandatory = [? Help]
+  candidates = shortcuts excluding mandatory, sorted by priority then order
+  visible = []
+
+  for candidate in candidates:
+    if fits("KEYS:" + visible + candidate + mandatory):
+      visible.push(candidate)
+
+  return render("KEYS:" + visible + mandatory)</div>
+
+    <h3>Confirmation behavior</h3>
+    <p>The current flags can remain, but direct prompt writes should become renderable state. This avoids stale prompts and gives mouse handling a stable row/column model.</p>
+    <div class="diagram">beginConfirmation("purge-stopped"):
+  confirmKillStopped = true
+  confirmPrompt = {
+    message: "Kill ALL 3 stopped/dead processes?",
+    yesKey: "y",
+    noKey: "n"
+  }
+  render()</div>
+  </section>
+
+  <section>
+    <h2>Files To Modify</h2>
+    <table>
+      <thead><tr><th>File</th><th>Change</th><th>Reason</th></tr></thead>
+      <tbody>
+        <tr><td><code>src/_core.js</code></td><td>Modify</td><td>Add shortcut metadata, footer renderer, hitbox lookup, confirmation prompt rendering, and mouse dispatch.</td></tr>
+        <tr><td><code>src/input.js</code></td><td>Maybe modify</td><td>Only if new pure helpers should be re-exported from the input facade.</td></tr>
+        <tr><td><code>test/mouse.test.js</code></td><td>Modify</td><td>Add footer hitbox mapping, priority hiding, and confirmation click tests.</td></tr>
+        <tr><td><code>test/status-bar.test.js</code> or new <code>test/footer-shortcuts.test.js</code></td><td>Modify or add</td><td>Keep render and width-fit tests focused.</td></tr>
+        <tr><td><code>README.md</code></td><td>Modify</td><td>Add <code>A</code> purge stopped/dead sessions to the public shortcut table.</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Validation Plan</h2>
+    <div class="grid cols-3">
+      <div class="card">
+        <h3>Unit tests</h3>
+        <ul>
+          <li><code>?</code> appears at all widths that can render any footer.</li>
+          <li><code>A Purge</code> appears at normal width and maps to key <code>A</code>.</li>
+          <li>Lower-priority items disappear before higher-priority items.</li>
+          <li>Hitbox lookup ignores ANSI escape lengths.</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>Mouse tests</h3>
+        <ul>
+          <li>Clicking footer <code>r Refresh</code> dispatches <code>r</code>.</li>
+          <li>Clicking footer <code>A Purge</code> enters stopped/dead confirmation when stopped processes exist.</li>
+          <li>Footer clicks do not select list rows.</li>
+          <li>Mouse release events still do nothing.</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>Confirmation tests</h3>
+        <ul>
+          <li>Clicking <code>y</code> executes the same path as pressing <code>y</code>.</li>
+          <li>Clicking <code>n</code> cancels the prompt.</li>
+          <li>Keyboard confirmation still works for <code>K</code>, <code>A</code>, and bulk <code>x</code>/<code>X</code>.</li>
+          <li>Prompt hitboxes clear after resolution.</li>
+        </ul>
+      </div>
+    </div>
+    <p>Final command: <code>npm test</code>. Manual smoke check: run <code>npm start</code>, click footer shortcuts in a terminal with mouse reporting, resize to narrow widths, and confirm <code>?</code> remains visible.</p>
+  </section>
+
+  <section>
+    <h2>Risks And Decisions</h2>
+    <table>
+      <thead><tr><th>Risk</th><th>Decision</th></tr></thead>
+      <tbody>
+        <tr><td>Directly calling <code>handleInput</code> from mouse dispatch can recurse if mouse sequences are passed through.</td><td>Only dispatch plain shortcut keys from hitboxes, never raw mouse escape sequences.</td></tr>
+        <tr><td>Terminal column width differs from JavaScript string length with ANSI codes.</td><td>Track hitboxes from plain labels while rendering ANSI separately.</td></tr>
+        <tr><td>Destructive actions become easier to trigger by click.</td><td>Keep confirmation prompts for <code>K</code>, <code>A</code>, and bulk kill paths. Make <code>n</code> clickable and keep non-yes keys as cancel.</td></tr>
+        <tr><td>Hidden shortcuts could reduce discoverability on narrow terminals.</td><td>Always keep <code>?</code> visible and route users to the full help screen.</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Source Notes</h2>
+    <p class="source-list">Observed in the current code: command palette metadata at <code>src/_core.js:614</code>, static footer rendering at <code>src/_core.js:4810</code>, row-only mouse click fallback at <code>src/_core.js:5739</code>, confirmation handling at <code>src/_core.js:5931</code>, and existing <code>A</code> keyboard handling at <code>src/_core.js:6327</code>.</p>
+  </section>
+</main>
+
+<script>
+  const shortcuts = [
+    { key: "jk", label: "Nav", p: 1 },
+    { key: "x", label: "Kill", p: 1, danger: true },
+    { key: "X", label: "Force", p: 1, danger: true },
+    { key: "A", label: "Purge", p: 2, danger: true, confirm: true },
+    { key: "K", label: "All", p: 2, danger: true, confirm: true },
+    { key: "s", label: "Sort", p: 3 },
+    { key: "/", label: "Filter", p: 3 },
+    { key: "F", label: "Search", p: 3 },
+    { key: "r", label: "Refresh", p: 3 },
+    { key: "o", label: "Open", p: 4 },
+    { key: "G", label: "Group", p: 4 },
+    { key: "L", label: "Log", p: 4 },
+    { key: "W", label: "Timeline", p: 4 },
+    { key: "E", label: "Export", p: 4 },
+    { key: "T", label: "Theme", p: 5 },
+    { key: "d", label: "Dash", p: 5 },
+    { key: "H", label: "History", p: 5 },
+    { key: "C", label: "Heatmap", p: 5 },
+    { key: "n", label: "Notif", p: 5 },
+    { key: "P", label: "Pane", p: 5 },
+    { key: "q", label: "Quit", p: 5 },
+    { key: "?", label: "Help", p: 0, always: true }
+  ];
+
+  const widthBudgets = { wide: 136, medium: 92, narrow: 58, tiny: 22 };
+  let mode = "wide";
+  const bar = document.getElementById("shortcutBar");
+  const status = document.getElementById("mockStatus");
+  const confirmBox = document.getElementById("confirmBox");
+  const confirmText = document.getElementById("confirmText");
+
+  function tokenText(s) {
+    return `${s.key} ${s.label}`;
+  }
+
+  function fitShortcuts(budget) {
+    const help = shortcuts.find(s => s.always);
+    const candidates = shortcuts.filter(s => !s.always).sort((a, b) => a.p - b.p);
+    const visible = [];
+    const prefixLen = 6;
+    const tokenLen = item => tokenText(item).length + 2;
+    const totalLen = items => prefixLen + items.reduce((sum, item) => sum + tokenLen(item), 0) + tokenLen(help);
+
+    for (const item of candidates) {
+      if (totalLen([...visible, item]) <= budget) visible.push(item);
+    }
+    return [...visible, help];
+  }
+
+  function renderMock() {
+    bar.innerHTML = '<span class="label">KEYS:</span>';
+    const visible = fitShortcuts(widthBudgets[mode]);
+    for (const item of visible) {
+      const btn = document.createElement("button");
+      btn.className = `shortcut${item.danger ? " danger" : ""}`;
+      btn.innerHTML = `<span class="key">${item.key}</span> ${item.label}`;
+      btn.addEventListener("click", () => {
+        if (item.confirm) {
+          confirmText.textContent = item.key === "A"
+            ? "Kill ALL 1 stopped/dead process?"
+            : "Kill ALL 3 agent processes?";
+          confirmBox.classList.add("show");
+          status.textContent = `confirmation opened for ${item.key} ${item.label}`;
+        } else {
+          confirmBox.classList.remove("show");
+          status.textContent = `dispatched keyboard shortcut: ${item.key}`;
+        }
+      });
+      bar.appendChild(btn);
+    }
+  }
+
+  document.querySelectorAll(".mock-controls button").forEach(button => {
+    button.addEventListener("click", () => {
+      document.querySelectorAll(".mock-controls button").forEach(b => b.classList.remove("active"));
+      button.classList.add("active");
+      mode = button.dataset.width;
+      confirmBox.classList.remove("show");
+      status.textContent = `width mode: ${mode}`;
+      renderMock();
+    });
+  });
+
+  document.querySelectorAll("[data-confirm]").forEach(button => {
+    button.addEventListener("click", () => {
+      const choice = button.dataset.confirm;
+      confirmBox.classList.remove("show");
+      status.textContent = choice === "y" ? "confirmation dispatched: y" : "confirmation dispatched: n";
+    });
+  });
+
+  renderMock();
+</script>
+</body>
+</html>

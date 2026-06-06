@@ -444,6 +444,10 @@ function groupProcesses(procs) {
 
 function shortenCwd(cwd) {
   if (!cwd) return 'unknown';
+  const home = os.homedir();
+  if (home && cwd === home) return '~';
+  if (home && cwd.startsWith(home + path.sep)) return '~' + cwd.slice(home.length);
+  if (path.isAbsolute(cwd)) return cwd;
   const parts = cwd.split('/').filter(Boolean);
   if (parts.length >= 2) return parts.slice(-2).join('/');
   return parts.join('/') || cwd;
@@ -617,6 +621,7 @@ const COMMANDS = [
   { name: 'Kill selected process', shortcut: 'x', action: 'kill' },
   { name: 'Force kill selected process', shortcut: 'X', action: 'force-kill' },
   { name: 'Kill all processes', shortcut: 'K', action: 'kill-all' },
+  { name: 'Kill all stopped/dead processes', shortcut: 'A', action: 'kill-stopped' },
   { name: 'Kill marked sessions (bulk)', shortcut: 'x', action: 'kill-selected' },
   { name: 'Clear marked selection', shortcut: 'Esc', action: 'clear-selection' },
   { name: 'Toggle pane view', shortcut: 'P', action: 'toggle-pane' },
@@ -644,6 +649,134 @@ const COMMANDS = [
 let showPalette = false;
 let paletteQuery = '';
 let paletteSelected = 0;
+
+const FOOTER_SHORTCUTS = [
+  { key: 'j', displayKey: 'hjkl', label: 'Nav', priority: 1 },
+  { key: 'x', displayKey: 'x', label: 'Kill', priority: 1, danger: true },
+  { key: 'X', displayKey: 'X', label: 'Force', priority: 1, danger: true },
+  { key: 'A', displayKey: 'A', label: 'Purge', priority: 2, danger: true },
+  { key: 'K', displayKey: 'K', label: 'All', priority: 2, danger: true },
+  { key: 's', displayKey: 's', label: 'Sort', priority: 3 },
+  { key: '/', displayKey: '/', label: 'Filter', priority: 3 },
+  { key: 'F', displayKey: 'F', label: 'Search', priority: 3 },
+  { key: 'r', displayKey: 'r', label: 'Refresh', priority: 3 },
+  { key: 'o', displayKey: 'o', label: 'Open', priority: 4 },
+  { key: 'G', displayKey: 'G', label: 'Group', priority: 4 },
+  { key: 'L', displayKey: 'L', label: 'Log', priority: 4 },
+  { key: 'W', displayKey: 'W', label: 'Timeline', priority: 4 },
+  { key: 'E', displayKey: 'E', label: 'Export', priority: 4 },
+  { key: 'T', displayKey: 'T', label: 'Theme', priority: 5 },
+  { key: 'd', displayKey: 'd', label: 'Dash', priority: 5 },
+  { key: 'H', displayKey: 'H', label: 'History', priority: 5 },
+  { key: 'C', displayKey: 'C', label: 'Heatmap', priority: 5 },
+  { key: 'n', displayKey: 'n', label: 'Notif', priority: 5 },
+  { key: 'P', displayKey: 'P', label: 'Pane', priority: 5 },
+  { key: 'q', displayKey: 'q', label: 'Quit', priority: 5 },
+  { key: '?', displayKey: '?', label: 'Help', priority: 0, always: true },
+];
+
+let footerHitboxes = [];
+let confirmHitboxes = [];
+let confirmMessage = '';
+
+function footerShortcutText(shortcut) {
+  return `${shortcut.displayKey} ${shortcut.label}`;
+}
+
+function chooseFooterShortcuts(columns) {
+  const always = FOOTER_SHORTCUTS.filter(s => s.always);
+  const candidates = FOOTER_SHORTCUTS
+    .filter(s => !s.always)
+    .sort((a, b) => a.priority - b.priority);
+  const prefixWidth = visualWidth(' KEYS: ');
+  const sepWidth = visualWidth('  ');
+  const widthFor = (items) => {
+    let width = prefixWidth;
+    for (let i = 0; i < items.length; i++) {
+      if (i > 0) width += sepWidth;
+      width += visualWidth(footerShortcutText(items[i]));
+    }
+    return width;
+  };
+  const visible = [];
+  for (const shortcut of candidates) {
+    const next = [...visible, shortcut, ...always];
+    if (widthFor(next) <= columns) visible.push(shortcut);
+  }
+  return [...visible, ...always];
+}
+
+function renderFooterShortcuts(columns, row) {
+  footerHitboxes = [];
+  const visible = chooseFooterShortcuts(columns);
+  let col = 1;
+  let output = `${ESC}[${row};1H${BOLD} KEYS:${RESET} `;
+  col += visualWidth(' KEYS: ');
+  visible.forEach((shortcut, idx) => {
+    if (idx > 0) {
+      output += '  ';
+      col += 2;
+    }
+    const plain = footerShortcutText(shortcut);
+    const tokenWidth = visualWidth(plain);
+    footerHitboxes.push({
+      row,
+      colStart: col,
+      colEnd: col + tokenWidth - 1,
+      key: shortcut.key,
+      shortcut,
+    });
+    const keyColor = shortcut.danger ? RED : CYAN;
+    output += `${keyColor}${shortcut.displayKey}${RESET} ${shortcut.label}`;
+    col += tokenWidth;
+  });
+  return output + CLR_LINE;
+}
+
+function findFooterShortcutAt(row, col) {
+  return footerHitboxes.find(hit => hit.row === row && col >= hit.colStart && col <= hit.colEnd) || null;
+}
+
+function beginConfirmation(message) {
+  confirmMessage = message;
+  render();
+}
+
+function clearConfirmationPrompt() {
+  confirmMessage = '';
+  confirmHitboxes = [];
+}
+
+function renderConfirmPrompt(columns, row) {
+  confirmHitboxes = [];
+  if (!confirmMessage) return '';
+
+  const prefix = ' ';
+  const yesText = '[y]';
+  const noText = '[n]';
+  const gap = '  ';
+  const fixedWidth = visualWidth(prefix) + visualWidth(gap) + visualWidth(yesText) + visualWidth(gap) + visualWidth(noText);
+  const messageWidth = Math.max(1, columns - fixedWidth);
+  const message = visualTruncate(confirmMessage, messageWidth);
+  let col = 1;
+  let output = `${ESC}[${row};1H${BG_RED}${WHITE}${BOLD}${prefix}${message}${RESET}`;
+  col += visualWidth(prefix) + visualWidth(message);
+
+  output += `${BG_RED}${WHITE}${BOLD}${gap}${yesText}${RESET}`;
+  col += visualWidth(gap);
+  confirmHitboxes.push({ row, colStart: col, colEnd: col + visualWidth(yesText) - 1, key: 'y' });
+  col += visualWidth(yesText);
+
+  output += `${BG_RED}${WHITE}${gap}${noText}${RESET}`;
+  col += visualWidth(gap);
+  confirmHitboxes.push({ row, colStart: col, colEnd: col + visualWidth(noText) - 1, key: 'n' });
+
+  return output + CLR_LINE;
+}
+
+function findConfirmChoiceAt(row, col) {
+  return confirmHitboxes.find(hit => hit.row === row && col >= hit.colStart && col <= hit.colEnd) || null;
+}
 
 function fuzzyMatch(query, text) {
   const q = query.toLowerCase();
@@ -2886,7 +3019,7 @@ const sessionLogCache = new Map(); // filePath -> { mtimeMs, size, entries }
 const LOG_TAIL_BYTES = 4 * 1024 * 1024; // 4MB — read enough to capture full session log
 
 function readSessionLog(proc, maxLines) {
-  if (maxLines === undefined) maxLines = 0; // 0 = no limit
+  if (maxLines === undefined) maxLines = 50;
   if (proc && proc.agentType === 'opencode') return readOpenCodeSessionLog(proc, maxLines);
   if (proc && proc.agentType === 'devin') return readDevinSessionLog(proc, maxLines);
   // Find the session JSONL file for this process (same logic as assignSessionsToProcesses)
@@ -3810,17 +3943,16 @@ function renderPaneMode() {
     output += renderLogPane(logStartRow, columns, paneLogHeight, processes[selectedIndex]);
   }
 
+  if (confirmMessage && rows >= 3) {
+    output += renderConfirmPrompt(columns, rows - 2);
+  } else {
+    confirmHitboxes = [];
+  }
+
   // Footer pinned to bottom
   output += `${ESC}[${rows - 1};1H`; // move cursor to second-to-last row
   output += `${DIM}${'─'.repeat(columns)}${RESET}${CLR_LINE}`;
-  output += `${ESC}[${rows};1H`; // move cursor to last row
-  output += `${BOLD} KEYS:${RESET} `;
-  output += `${CYAN}hjkl${RESET} Nav  `;
-  output += `${RED}x${RESET} Kill  ${RED}X${RESET} Force  `;
-  output += `${CYAN}o${RESET} Open  `;
-  output += `${CYAN}s${RESET} Sort  ${CYAN}/${RESET} Filter  ${CYAN}F${RESET} Search  `;
-  output += `${CYAN}L${RESET} Log  ${CYAN}W${RESET} Timeline  ${CYAN}E${RESET} Export  `;
-  output += `${CYAN}T${RESET} Theme  ${CYAN}d${RESET} Dash  ${CYAN}H${RESET} History  ${CYAN}C${RESET} Heatmap  ${CYAN}n${RESET} Notif  ${CYAN}P${RESET} List  ${CYAN}r${RESET} Refresh  ${CYAN}q${RESET} Quit  ${CYAN}?${RESET} Help${CLR_LINE}`;
+  output += renderFooterShortcuts(columns, rows);
 
   process.stdout.write(output);
 }
@@ -4810,18 +4942,16 @@ function renderNow() {
     output += renderLogPane(logStartRow, columns, logPaneHeight, selectedProc);
   }
 
+  if (confirmMessage && rows >= 3) {
+    output += renderConfirmPrompt(columns, rows - 2);
+  } else {
+    confirmHitboxes = [];
+  }
+
   // Footer pinned to bottom
   output += `${ESC}[${rows - 1};1H`;
   output += `${DIM}${'─'.repeat(columns)}${RESET}${CLR_LINE}`;
-  output += `${ESC}[${rows};1H`;
-  output += `${BOLD} KEYS:${RESET} `;
-  output += `${CYAN}jk${RESET} Nav  `;
-  output += `${RED}x${RESET} Kill  ${RED}X${RESET} Force  `;
-  output += `${CYAN}o${RESET} Open  `;
-  output += `${CYAN}s${RESET} Sort  ${CYAN}/${RESET} Filter  ${CYAN}F${RESET} Search  `;
-  output += `${CYAN}G${RESET} Group  `;
-  output += `${CYAN}L${RESET} Log  ${CYAN}W${RESET} Timeline  ${CYAN}E${RESET} Export  `;
-  output += `${CYAN}T${RESET} Theme  ${CYAN}d${RESET} Dash  ${CYAN}H${RESET} History  ${CYAN}C${RESET} Heatmap  ${CYAN}n${RESET} Notif  ${CYAN}P${RESET} Pane  ${CYAN}r${RESET} Refresh  ${CYAN}q${RESET} Quit  ${CYAN}?${RESET} Help${CLR_LINE}`;
+  output += renderFooterShortcuts(columns, rows);
 
   process.stdout.write(output);
 }
@@ -5573,13 +5703,24 @@ function executeCommand(action) {
     }
     case 'kill-all':
       confirmKillAll = true;
-      process.stdout.write(`\n${BG_RED}${WHITE}${BOLD} Kill ALL ${allProcesses.length} agent processes? (y/N)${RESET}`);
+      beginConfirmation(`Kill ALL ${allProcesses.length} agent processes?`);
       break;
+    case 'kill-stopped': {
+      const stoppedCount = allProcesses.filter(p => !p.isActive).length;
+      if (stoppedCount > 0) {
+        confirmKillStopped = true;
+        beginConfirmation(`Kill ALL ${stoppedCount} stopped/dead processes?`);
+      } else {
+        statusMessage = 'No stopped processes to kill';
+        render();
+      }
+      break;
+    }
     case 'kill-selected':
       if (markedPids.size > 0) {
         confirmKillSelected = true;
         confirmKillSelectedForce = false;
-        process.stdout.write(`\n${BG_RED}${WHITE}${BOLD} Kill ${markedPids.size} selected session${markedPids.size === 1 ? '' : 's'}? (y/N)${RESET}`);
+        beginConfirmation(`Kill ${markedPids.size} selected session${markedPids.size === 1 ? '' : 's'}?`);
       } else {
         statusMessage = 'No sessions selected';
         render();
@@ -5913,6 +6054,18 @@ function handleMouseEvent(evt) {
   // Only left-click press (not release)
   if (evt.button !== 0 || evt.isRelease) return;
 
+  const confirmHit = findConfirmChoiceAt(evt.row, evt.col);
+  if (confirmHit) {
+    handleInput(confirmHit.key);
+    return;
+  }
+
+  const footerHit = findFooterShortcutAt(evt.row, evt.col);
+  if (footerHit) {
+    handleInput(footerHit.key);
+    return;
+  }
+
   const idx = viewMode === 'pane' ? paneViewClickToIndex(evt.row, evt.col) : listViewRowToIndex(evt.row);
   if (idx < 0 || idx >= processes.length) return;
 
@@ -6118,6 +6271,7 @@ function handleInput(key) {
       const killed = killAllProcesses();
       statusMessage = `Killed ${killed} processes`;
       confirmKillAll = false;
+      clearConfirmationPrompt();
       setTimeout(() => {
         allProcesses = getAllAgentProcesses(); applySortAndFilter();
         lastRefresh = new Date();
@@ -6125,6 +6279,7 @@ function handleInput(key) {
       }, 500);
     } else {
       confirmKillAll = false;
+      clearConfirmationPrompt();
       render();
     }
     return;
@@ -6139,6 +6294,7 @@ function handleInput(key) {
       }
       statusMessage = `Killed ${killed} stopped processes`;
       confirmKillStopped = false;
+      clearConfirmationPrompt();
       setTimeout(() => {
         allProcesses = getAllAgentProcesses(); applySortAndFilter();
         lastRefresh = new Date();
@@ -6149,6 +6305,7 @@ function handleInput(key) {
       }, 500);
     } else {
       confirmKillStopped = false;
+      clearConfirmationPrompt();
       render();
     }
     return;
@@ -6159,6 +6316,7 @@ function handleInput(key) {
       const killed = killSelected(confirmKillSelectedForce);
       statusMessage = `Killed ${killed} selected session${killed === 1 ? '' : 's'}`;
       confirmKillSelected = false;
+      clearConfirmationPrompt();
       markedPids.clear();
       selectionAnchor = null;
       rangeMode = false;
@@ -6172,6 +6330,7 @@ function handleInput(key) {
       }, 500);
     } else {
       confirmKillSelected = false;
+      clearConfirmationPrompt();
       render();
     }
     return;
@@ -6461,7 +6620,7 @@ function handleInput(key) {
         // Bulk graceful kill of the marked set (behind a confirmation prompt)
         confirmKillSelected = true;
         confirmKillSelectedForce = false;
-        process.stdout.write(`\n${BG_RED}${WHITE}${BOLD} Kill ${markedPids.size} selected session${markedPids.size === 1 ? '' : 's'}? (y/N)${RESET}`);
+        beginConfirmation(`Kill ${markedPids.size} selected session${markedPids.size === 1 ? '' : 's'}?`);
         break;
       }
       { // Single graceful kill — resolve target via cursorPid() (group-correct)
@@ -6485,7 +6644,7 @@ function handleInput(key) {
         // Bulk force kill of the marked set (behind a confirmation prompt)
         confirmKillSelected = true;
         confirmKillSelectedForce = true;
-        process.stdout.write(`\n${BG_RED}${WHITE}${BOLD} Force kill ${markedPids.size} selected session${markedPids.size === 1 ? '' : 's'}? (y/N)${RESET}`);
+        beginConfirmation(`Force kill ${markedPids.size} selected session${markedPids.size === 1 ? '' : 's'}?`);
         break;
       }
       { // Single force kill — resolve target via cursorPid() (group-correct)
@@ -6506,14 +6665,14 @@ function handleInput(key) {
 
     case 'K':
       confirmKillAll = true;
-      process.stdout.write(`\n${BG_RED}${WHITE}${BOLD} Kill ALL ${allProcesses.length} agent processes? (y/N)${RESET}`);
+      beginConfirmation(`Kill ALL ${allProcesses.length} agent processes?`);
       break;
 
     case 'A': {
       const stoppedCount = allProcesses.filter(p => !p.isActive).length;
       if (stoppedCount > 0) {
         confirmKillStopped = true;
-        process.stdout.write(`\n${BG_RED}${WHITE}${BOLD} Kill ALL ${stoppedCount} stopped/dead processes? (y/N) ${RESET}`);
+        beginConfirmation(`Kill ALL ${stoppedCount} stopped/dead processes?`);
       } else {
         statusMessage = 'No stopped processes to kill';
         render();
@@ -6759,7 +6918,7 @@ async function main() {
   let refreshing = false;
   setInterval(() => {
     if (refreshing) return;
-    if (!showingHelp && !showHistory && !showTimeline && !showHeatmap && !confirmKillAll && !confirmKillStopped && !filterInput && !searchMode && !showPalette) {
+    if (!showingHelp && !showHistory && !showTimeline && !showHeatmap && !confirmKillAll && !confirmKillStopped && !confirmKillSelected && !filterInput && !searchMode && !showPalette) {
       refreshing = true;
       try {
         // Remember selected PID so cursor follows the same process across refreshes
@@ -6953,6 +7112,13 @@ module.exports = {
   fuzzyScore,
   filterCommands,
   executeCommand,
+  // Clickable footer shortcuts
+  FOOTER_SHORTCUTS,
+  chooseFooterShortcuts,
+  renderFooterShortcuts,
+  findFooterShortcutAt,
+  renderConfirmPrompt,
+  findConfirmChoiceAt,
   // Animations
   getAnimatedCtxPct,
   scheduleAnimationFrame,
@@ -6991,6 +7157,9 @@ module.exports = {
             get showPalette() { return showPalette; }, set showPalette(v) { showPalette = v; },
             get paletteQuery() { return paletteQuery; }, set paletteQuery(v) { paletteQuery = v; },
             get paletteSelected() { return paletteSelected; }, set paletteSelected(v) { paletteSelected = v; },
+            get confirmMessage() { return confirmMessage; }, set confirmMessage(v) { confirmMessage = v; },
+            get confirmHitboxes() { return confirmHitboxes; }, set confirmHitboxes(v) { confirmHitboxes = v; },
+            get footerHitboxes() { return footerHitboxes; }, set footerHitboxes(v) { footerHitboxes = v; },
             get groupByProject() { return groupByProject; }, set groupByProject(v) { groupByProject = v; },
             get groupedFlatList() { return groupedFlatList; }, set groupedFlatList(v) { groupedFlatList = v; },
             expandedGroups,

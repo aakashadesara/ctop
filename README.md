@@ -73,6 +73,7 @@ Then run `ctop`. If no agents are running, you'll see an empty state — start a
 | `T` | Cycle color theme |
 | `x` / `X` | Kill (SIGTERM / SIGKILL) — bulk if rows are marked |
 | `K` | Kill ALL agents |
+| `A` | Kill ALL stopped/dead agents |
 | `o` / `e` / `t` | Open dir in Finder / editor / terminal |
 | `n` | Toggle notifications |
 | `?` | Help |
