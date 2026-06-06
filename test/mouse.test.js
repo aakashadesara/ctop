@@ -1,6 +1,15 @@
 const { describe, it, beforeEach } = require('node:test');
 const assert = require('node:assert/strict');
-const { parseMouseEvent, listViewRowToIndex, _state } = require('../claude-manager');
+const {
+  parseMouseEvent,
+  listViewRowToIndex,
+  chooseFooterShortcuts,
+  renderFooterShortcuts,
+  findFooterShortcutAt,
+  renderConfirmPrompt,
+  findConfirmChoiceAt,
+  _state,
+} = require('../claude-manager');
 
 describe('parseMouseEvent', () => {
   it('parses left click press', () => {
@@ -100,5 +109,72 @@ describe('listViewRowToIndex', () => {
     assert.equal(listViewRowToIndex(10), 0);
     // Row 8 is now in the header area
     assert.equal(listViewRowToIndex(8), -1);
+  });
+});
+
+describe('clickable footer shortcuts', () => {
+  beforeEach(() => {
+    _state.footerHitboxes = [];
+    _state.confirmHitboxes = [];
+    _state.confirmMessage = '';
+  });
+
+  it('always keeps help visible even at tiny widths', () => {
+    const visible = chooseFooterShortcuts(12).map(s => s.key);
+    assert.ok(visible.includes('?'));
+  });
+
+  it('includes purge stopped/dead shortcut at normal widths', () => {
+    const visible = chooseFooterShortcuts(120).map(s => s.key);
+    assert.ok(visible.includes('A'));
+  });
+
+  it('drops low-priority shortcuts before high-priority shortcuts on narrow widths', () => {
+    const visible = chooseFooterShortcuts(60).map(s => s.key);
+    assert.ok(visible.includes('?'));
+    assert.ok(visible.includes('x'));
+    assert.ok(visible.includes('A'));
+    assert.equal(visible.includes('T'), false);
+  });
+
+  it('maps a footer token hitbox to the dispatched key', () => {
+    renderFooterShortcuts(120, 24);
+    const hitbox = _state.footerHitboxes.find(hit => hit.key === 'A');
+    assert.ok(hitbox);
+
+    const hit = findFooterShortcutAt(24, hitbox.colStart);
+    assert.ok(hit);
+    assert.equal(hit.key, 'A');
+  });
+
+  it('does not map clicks outside footer hitboxes', () => {
+    renderFooterShortcuts(120, 24);
+    assert.equal(findFooterShortcutAt(23, 1), null);
+  });
+});
+
+describe('clickable confirmation prompt', () => {
+  beforeEach(() => {
+    _state.confirmHitboxes = [];
+    _state.confirmMessage = '';
+  });
+
+  it('maps yes and no prompt buttons to confirmation keys', () => {
+    _state.confirmMessage = 'Kill ALL 2 stopped/dead processes?';
+    renderConfirmPrompt(80, 22);
+
+    const yes = _state.confirmHitboxes.find(hit => hit.key === 'y');
+    const no = _state.confirmHitboxes.find(hit => hit.key === 'n');
+    assert.ok(yes);
+    assert.ok(no);
+
+    assert.equal(findConfirmChoiceAt(22, yes.colStart).key, 'y');
+    assert.equal(findConfirmChoiceAt(22, no.colStart).key, 'n');
+  });
+
+  it('does not map clicks outside the prompt buttons', () => {
+    _state.confirmMessage = 'Kill ALL 2 stopped/dead processes?';
+    renderConfirmPrompt(80, 22);
+    assert.equal(findConfirmChoiceAt(22, 1), null);
   });
 });
