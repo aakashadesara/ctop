@@ -526,12 +526,20 @@ function pruneMarks() {
   for (const pid of markedPids) if (!live.has(pid)) markedPids.delete(pid);
 }
 
-// the *process* under the cursor, group-aware (mirrors cursorPid but returns the
-// proc object). Returns null on a group header or empty list.
+// The *process* the cursor is actually highlighting. In grouped mode the renderer
+// highlights the selectedIndex-th *process item* (it skips group-header rows when
+// counting — see renderNow), so resolve the same way here. That keeps the `p` key
+// and the Pin footer button acting on the row the user sees highlighted. (cursorPid
+// is intentionally left as-is to preserve existing kill/mark behavior.)
 function cursorProc() {
   if (groupByProject) {
-    const item = groupedFlatList[selectedIndex];
-    return item && item.type === 'process' ? item.proc : null;
+    let n = 0;
+    for (const item of groupedFlatList) {
+      if (item.type !== 'process') continue;
+      if (n === selectedIndex) return item.proc;
+      n++;
+    }
+    return null;
   }
   return processes[selectedIndex] || null;
 }

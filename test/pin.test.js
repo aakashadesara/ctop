@@ -15,6 +15,7 @@ const {
   togglePin,
   partitionPinned,
   togglePinAndReflow,
+  cursorProc,
   buildGroupedFlatList,
   applySortAndFilter,
   loadPins,
@@ -206,6 +207,33 @@ describe('togglePinAndReflow', () => {
     applySortAndFilter();
     togglePinAndReflow(null);
     assert.equal(_state.pinnedKeys.size, 0);
+  });
+});
+
+describe('cursorProc — matches the grouped renderer highlight', () => {
+  it('returns processes[selectedIndex] in the flat list', () => {
+    _state.groupByProject = false;
+    _state.processes = [makeProc('10'), makeProc('11'), makeProc('12')];
+    _state.selectedIndex = 2;
+    assert.equal(cursorProc().pid, '12');
+  });
+
+  it('resolves the Nth process item (skipping group headers) in grouped mode', () => {
+    // groupedFlatList: [group /a, proc 1, proc 2, group /b, proc 3]
+    const a = makeProc('1', { cwd: '/a' }), b = makeProc('2', { cwd: '/a' }), c = makeProc('3', { cwd: '/b' });
+    _state.groupByProject = true;
+    _state.groupedFlatList = buildGroupedFlatList([a, b, c]);
+    // selectedIndex is a process ordinal (what the renderer highlights), NOT a flat index.
+    _state.selectedIndex = 0; assert.equal(cursorProc().pid, '1');
+    _state.selectedIndex = 1; assert.equal(cursorProc().pid, '2');
+    _state.selectedIndex = 2; assert.equal(cursorProc().pid, '3');
+  });
+
+  it('returns null when the ordinal is out of range', () => {
+    _state.groupByProject = true;
+    _state.groupedFlatList = buildGroupedFlatList([makeProc('1')]);
+    _state.selectedIndex = 9;
+    assert.equal(cursorProc(), null);
   });
 });
 
