@@ -3939,7 +3939,6 @@ function renderPaneMode() {
   if (showLogPane && processes[selectedIndex]) {
     logLines = readSessionLog(processes[selectedIndex]);
     const logStartRow = rows - paneLogHeight - 1;
-    logScrollOffset = Math.max(0, logLines.length - (paneLogHeight - 1));
     output += renderLogPane(logStartRow, columns, paneLogHeight, processes[selectedIndex]);
   }
 
@@ -4341,6 +4340,29 @@ function renderDetailPane(proc, startRow, paneCol, paneWidth, availRows) {
   return output;
 }
 
+// Word-wrap `text` into at most `maxLines` lines of `width` visual columns
+// each, breaking on spaces where possible and hard-breaking words longer than
+// a line. If the text overflows `maxLines`, the final line is ellipsized.
+function wrapText(text, width, maxLines) {
+  if (width < 1) width = 1;
+  const lines = [];
+  let rest = String(text).trim();
+  while (rest.length > 0 && lines.length < maxLines) {
+    if (visualWidth(rest) <= width) { lines.push(rest); break; }
+    if (lines.length === maxLines - 1) {
+      // No room left to wrap — ellipsize the remainder onto this last line.
+      lines.push(visualTruncate(rest, width - 1) + '…');
+      break;
+    }
+    const fit = visualTruncate(rest, width); // widest prefix that fits
+    const sp = fit.lastIndexOf(' ');
+    const cut = sp > 0 ? sp : (fit.length || 1); // break at last space, else hard-break
+    lines.push(rest.slice(0, cut));
+    rest = rest.slice(cut).replace(/^ +/, '');
+  }
+  return lines;
+}
+
 function renderLogPane(startRow, paneWidth, paneHeight, proc) {
   if (!proc || paneHeight < 3) return '';
   let output = '';
@@ -4366,36 +4388,44 @@ function renderLogPane(startRow, paneWidth, paneHeight, proc) {
   const contentRows = paneHeight - 1; // 1 for header
   if (contentRows <= 0) return output;
 
-  // Determine visible slice with scroll offset
-  const totalLines = logLines.length;
-  const maxScroll = Math.max(0, totalLines - contentRows);
-  if (logScrollOffset > maxScroll) logScrollOffset = maxScroll;
-  if (logScrollOffset < 0) logScrollOffset = 0;
+  // Expand messages into display rows. Each message wraps across up to
+  // MAX_MSG_LINES lines (ellipsizing if it still overflows): a colored dot +
+  // timestamp lead the first line, and continuation lines are indented to keep
+  // the wrapped text in a clean column. A blank spacer line separates messages
+  // so the log breathes vertically. Each row is a ready-to-print ANSI string,
+  // or `null` for a blank line.
+  const MAX_MSG_LINES = 3;
+  const displayRows = [];
+  for (let i = 0; i < logLines.length; i++) {
+    if (i > 0) displayRows.push(null); // blank spacer between messages
+    const entry = logLines[i];
+    // Dot + text colored by role (cyan = user, green = assistant).
+    const color = entry.role === 'user' ? CYAN : GREEN;
+    const tsPrefix = entry.timestamp ? `${DIM}${entry.timestamp}${RESET} ` : '';
+    const tsPrefixLen = entry.timestamp ? entry.timestamp.length + 1 : 0;
+    // Left gutter width: leading space + dot (2 cols) + timestamp.
+    const headLen = 3 + tsPrefixLen;
+    const textWidth = Math.max(8, paneWidth - headLen - 1); // -1 right margin
+    const wrapped = wrapText(entry.text, textWidth, MAX_MSG_LINES);
+    for (let li = 0; li < wrapped.length; li++) {
+      const left = li === 0
+        ? ` ${color}●${RESET} ${tsPrefix}`       // dot + timestamp on the first line
+        : ' '.repeat(headLen);                    // continuation lines align under the text
+      displayRows.push(`${left}${color}${wrapped[li]}${RESET}`);
+    }
+  }
 
+  // Pin to the bottom: always show the most recent rows (no interactive scroll).
+  const totalRows = displayRows.length;
+  logScrollOffset = Math.max(0, totalRows - contentRows);
   const visStart = logScrollOffset;
-  const visEnd = Math.min(totalLines, visStart + contentRows);
 
   for (let row = 0; row < contentRows; row++) {
-    const lineIdx = visStart + row;
+    const idx = visStart + row;
     const r = startRow + 1 + row;
     output += `${ESC}[${r};1H`;
-
-    if (lineIdx < totalLines) {
-      const entry = logLines[lineIdx];
-      const color = entry.role === 'user' ? CYAN : GREEN;
-      // Show timestamp on the left if available
-      const tsPrefix = entry.timestamp ? `${DIM}${entry.timestamp}${RESET} ` : '';
-      const tsPrefixLen = entry.timestamp ? entry.timestamp.length + 1 : 0;
-      // Truncate line to terminal width accounting for timestamp
-      let displayText = entry.text;
-      const maxTextLen = paneWidth - 2 - tsPrefixLen;
-      if (visualWidth(displayText) > maxTextLen) {
-        displayText = visualTruncate(displayText, maxTextLen - 1) + '…';
-      }
-      output += ` ${tsPrefix}${color}${displayText}${RESET}${CLR_LINE}`;
-    } else {
-      output += `${CLR_LINE}`;
-    }
+    const line = idx < totalRows ? displayRows[idx] : null;
+    output += line !== null ? `${line}${CLR_LINE}` : `${CLR_LINE}`;
   }
 
   return output;
@@ -4936,9 +4966,7 @@ function renderNow() {
   if (showLogPane && selectedProc) {
     // Refresh log content for selected process
     logLines = readSessionLog(selectedProc);
-    // Auto-scroll to bottom
     const logStartRow = rows - logPaneHeight - 1; // -1 for footer separator
-    logScrollOffset = Math.max(0, logLines.length - (logPaneHeight - 1));
     output += renderLogPane(logStartRow, columns, logPaneHeight, selectedProc);
   }
 
