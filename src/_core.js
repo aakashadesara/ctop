@@ -454,8 +454,24 @@ function shortenCwd(cwd) {
 }
 
 function buildGroupedFlatList(procs) {
-  const groups = groupProcesses(procs);
+  // Pinned sessions form their own "★ Pinned" pseudo-group at the very top and are
+  // pulled out of their normal project groups (so a pid never appears twice — bulk
+  // range-select and cursor resolution both assume each pid occurs once).
+  const { pinned, rest } = partitionPinned(procs);
   const items = [];
+  if (pinned.length > 0) {
+    const pinnedGroup = {
+      cwd: PINNED_GROUP_CWD,
+      isPinned: true,
+      procs: pinned,
+      totalCost: pinned.reduce((s, p) => s + (p.cost || 0), 0),
+      totalTokens: pinned.reduce((s, p) => s + (p.inputTokens || 0) + (p.outputTokens || 0), 0),
+      activeCount: pinned.filter(p => p.isActive).length,
+    };
+    items.push({ type: 'group', group: pinnedGroup });
+    for (const proc of pinned) items.push({ type: 'process', proc, group: pinnedGroup });
+  }
+  const groups = groupProcesses(rest);
   for (const group of groups) {
     items.push({ type: 'group', group });
     // Always show sessions under each group (section-style, not collapsible)
@@ -508,6 +524,87 @@ function pruneMarks() {
   if (markedPids.size === 0) return;
   const live = new Set(allProcesses.map(p => p.pid));
   for (const pid of markedPids) if (!live.has(pid)) markedPids.delete(pid);
+}
+
+// the *process* under the cursor, group-aware (mirrors cursorPid but returns the
+// proc object). Returns null on a group header or empty list.
+function cursorProc() {
+  if (groupByProject) {
+    const item = groupedFlatList[selectedIndex];
+    return item && item.type === 'process' ? item.proc : null;
+  }
+  return processes[selectedIndex] || null;
+}
+
+// --- Session pinning ---------------------------------------------------------
+// Pinned sessions float to the top of every view (list, group, pane) beneath a
+// yellow "★ Pinned" section. Pins are keyed by a *stable* session identity —
+// never by pid, which the OS recycles — so a pin survives refreshes, the session
+// process restarting, and ctop itself restarting. Persisted to ~/.ctop/pins.json.
+const PINS_FILE = path.join(os.homedir(), '.ctop', 'pins.json');
+const pinnedKeys = new Set(); // stable session keys currently pinned
+const PINNED_GROUP_CWD = '__pinned__'; // sentinel cwd marking the Pinned pseudo-group
+
+// Resolved at call time so $CTOP_PINS_FILE can relocate the store (tests point it
+// at a tmp file to avoid touching the real ~/.ctop/pins.json).
+function pinsFilePath() {
+  return process.env.CTOP_PINS_FILE || PINS_FILE;
+}
+
+// Stable identity for a session: prefer the agent's own session id, then
+// cwd+slug, falling back to pid (only stable within a single run).
+function pinKey(proc) {
+  if (!proc) return null;
+  const agent = proc.agentType || '?';
+  if (proc.sessionId) return `${agent}:sid:${proc.sessionId}`;
+  if (proc.cwd) return `${agent}:cwd:${proc.cwd}:${proc.slug || proc.sessionTitle || ''}`;
+  return `${agent}:pid:${proc.pid}`;
+}
+
+function isPinned(proc) {
+  if (!proc || pinnedKeys.size === 0) return false;
+  return pinnedKeys.has(pinKey(proc));
+}
+
+// Toggle the pin for one process (no-op when proc is null, e.g. a group header).
+// Returns the new state (true = now pinned) and persists immediately.
+function togglePin(proc) {
+  if (!proc) return false;
+  const key = pinKey(proc);
+  let nowPinned;
+  if (pinnedKeys.has(key)) { pinnedKeys.delete(key); nowPinned = false; }
+  else { pinnedKeys.add(key); nowPinned = true; }
+  savePins();
+  return nowPinned;
+}
+
+// Stable partition: pinned first (relative order preserved), then everything else.
+// A no-op (empty pinned bucket) when nothing is pinned, so callers stay cheap.
+function partitionPinned(list) {
+  if (pinnedKeys.size === 0) return { pinned: [], rest: list };
+  const pinned = [], rest = [];
+  for (const p of list) (isPinned(p) ? pinned : rest).push(p);
+  return { pinned, rest };
+}
+
+function loadPins() {
+  try {
+    const raw = JSON.parse(fs.readFileSync(pinsFilePath(), 'utf8'));
+    // Accept either a bare array (legacy) or { version, keys: [...] }.
+    const keys = Array.isArray(raw) ? raw : (raw && Array.isArray(raw.keys) ? raw.keys : []);
+    pinnedKeys.clear();
+    for (const k of keys) if (typeof k === 'string') pinnedKeys.add(k);
+  } catch { /* no pins file yet, or unreadable — start empty */ }
+  return pinnedKeys;
+}
+
+function savePins() {
+  try {
+    const target = pinsFilePath();
+    const dir = path.dirname(target);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(target, JSON.stringify({ version: 1, keys: [...pinnedKeys] }, null, 0));
+  } catch { /* best-effort, like history */ }
 }
 
 // Animation state
@@ -3586,6 +3683,12 @@ function applySortAndFilter() {
   }
 
   if (sortReverse) result.reverse();
+
+  // Pinned sessions float to the top of every view, regardless of sort/filter.
+  // Done last so it overrides the sort order but still respects the active filter
+  // (filtered-out pins were already dropped above).
+  const { pinned, rest } = partitionPinned(result);
+  if (pinned.length > 0) result = [...pinned, ...rest];
 
   processes = result;
   if (selectedIndex >= processes.length) {
@@ -6924,6 +7027,9 @@ async function main() {
     await playBootAnimation(columns, rows);
   }
 
+  // Restore pinned sessions before the first sort so pins stick from frame one.
+  loadPins();
+
   // Initial load
   allProcesses = getAllAgentProcesses(); applySortAndFilter();
   updateProcessHistory(allProcesses);
@@ -7021,10 +7127,21 @@ module.exports = {
   // Bulk selection
   activeList,
   cursorPid,
+  cursorProc,
   toggleMark,
   markRange,
   pruneMarks,
   killSelected,
+  // Session pinning
+  pinKey,
+  isPinned,
+  togglePin,
+  partitionPinned,
+  loadPins,
+  savePins,
+  pinsFilePath,
+  PINS_FILE,
+  PINNED_GROUP_CWD,
   // Plugin system
   loadPlugins,
   // History tracking
@@ -7192,6 +7309,7 @@ module.exports = {
             get groupedFlatList() { return groupedFlatList; }, set groupedFlatList(v) { groupedFlatList = v; },
             expandedGroups,
             markedPids,
+            pinnedKeys,
             get selectionAnchor() { return selectionAnchor; }, set selectionAnchor(v) { selectionAnchor = v; },
             get prevSelectedIndex() { return prevSelectedIndex; }, set prevSelectedIndex(v) { prevSelectedIndex = v; },
             get selectionAnimFrame() { return selectionAnimFrame; }, set selectionAnimFrame(v) { selectionAnimFrame = v; },
