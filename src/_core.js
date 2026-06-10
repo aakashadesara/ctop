@@ -3150,6 +3150,32 @@ function parseLogEntry(data) {
   return { role, text: text.replace(/\n/g, ' ').trim(), timestamp: data.timestamp || null };
 }
 
+// Render a run of consecutive tool calls as one compact line, e.g.
+// "Executed 8 tools: [Bash -> Read -> Grep ... -> Edit -> Write]". At most 5 tool
+// names are shown; longer runs keep the first 3 and last 2, eliding the middle
+// with "...".
+function formatToolRun(names) {
+  const chain = names.length <= 5
+    ? names.join(' -> ')
+    : `${names.slice(0, 3).join(' -> ')} ... -> ${names.slice(-2).join(' -> ')}`;
+  return `Executed ${names.length} ${names.length === 1 ? 'tool' : 'tools'}: [${chain}]`;
+}
+
+// Collapse each maximal run of consecutive tool-call entries into a single
+// compact summary row, leaving user/assistant message entries untouched.
+function collapseToolRuns(entries) {
+  const out = [];
+  let i = 0;
+  while (i < entries.length) {
+    if (entries[i].role !== 'tool') { out.push(entries[i]); i++; continue; }
+    const names = [];
+    const startTs = entries[i].timestamp;
+    while (i < entries.length && entries[i].role === 'tool') { names.push(entries[i].name); i++; }
+    out.push({ role: 'tool', text: formatToolRun(names), timestamp: startTs });
+  }
+  return out;
+}
+
 const sessionLogCache = new Map(); // filePath -> { mtimeMs, size, entries }
 const LOG_TAIL_BYTES = 4 * 1024 * 1024; // 4MB — read enough to capture full session log
 
@@ -3211,15 +3237,27 @@ function readSessionLog(proc, maxLines) {
       try {
         const data = JSON.parse(line);
         const entry = parseLogEntry(data);
+        // Shared timestamp string for every entry this line produces (the
+        // assistant's text and any tool calls share the message's timestamp).
+        let timeStr = '';
+        if (data.timestamp) {
+          try {
+            timeStr = new Date(data.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+          } catch (e) { timeStr = ''; }
+        }
         if (entry) {
           const prefix = entry.role === 'user' ? 'USER' : 'ASSISTANT';
-          let timeStr = '';
-          if (entry.timestamp) {
-            try {
-              timeStr = new Date(entry.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
-            } catch (e) { timeStr = ''; }
-          }
           entries.push({ role: entry.role, text: `${prefix}: ${entry.text}`, timestamp: timeStr });
+        }
+        // Collect this turn's tool calls (assistant tool_use blocks) as their own
+        // entries, in issue order, right after the assistant's text. collapseToolRuns
+        // (below) then merges each consecutive run into one compact yellow row.
+        if (data.message && data.message.role === 'assistant' && Array.isArray(data.message.content)) {
+          for (const block of data.message.content) {
+            if (block && block.type === 'tool_use') {
+              entries.push({ role: 'tool', name: block.name || 'tool', timestamp: timeStr });
+            }
+          }
         }
       } catch (e) {}
     }
@@ -3227,8 +3265,9 @@ function readSessionLog(proc, maxLines) {
     return [];
   }
 
-  sessionLogCache.set(filePath, { mtimeMs: st.mtimeMs, size: st.size, entries });
-  return maxLines > 0 ? entries.slice(-maxLines) : entries;
+  const collapsed = collapseToolRuns(entries);
+  sessionLogCache.set(filePath, { mtimeMs: st.mtimeMs, size: st.size, entries: collapsed });
+  return maxLines > 0 ? collapsed.slice(-maxLines) : collapsed;
 }
 
 function parseSessionTimeline(filePath) {
@@ -4555,8 +4594,8 @@ function renderLogPane(startRow, paneWidth, paneHeight, proc) {
   for (let i = 0; i < logLines.length; i++) {
     if (i > 0) displayRows.push(null); // blank spacer between messages
     const entry = logLines[i];
-    // Dot + text colored by role (cyan = user, green = assistant).
-    const color = entry.role === 'user' ? CYAN : GREEN;
+    // Dot + text colored by role (cyan = user, green = assistant, yellow = tool call).
+    const color = entry.role === 'user' ? CYAN : entry.role === 'tool' ? YELLOW : GREEN;
     const tsPrefix = entry.timestamp ? `${DIM}${entry.timestamp}${RESET} ` : '';
     const tsPrefixLen = entry.timestamp ? entry.timestamp.length + 1 : 0;
     // Left gutter width: leading space + dot (2 cols) + timestamp.
@@ -7369,6 +7408,7 @@ module.exports = {
   tokenHistory,
   // Log tailing
   parseLogEntry,
+  formatToolRun,
   readSessionLog,
   getSessionFilesForProject,
   // Sub-agents (Claude sidechain detection)
