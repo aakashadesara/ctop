@@ -5048,7 +5048,9 @@ function renderNow() {
     }
 
     const isPrevSelected = CONFIG.animations && selectionAnimFrame > 0 && i === prevSelectedIndex;
-    rowHitboxes.push({ row: lineRow, proc, pinColEnd: 2 });
+    // selIdx lets a body-click select this exact row (precise, unlike the header-agnostic
+    // listViewRowToIndex); pinColEnd marks the gutter columns that toggle the pin.
+    rowHitboxes.push({ row: lineRow, proc, pinColEnd: 2, selIdx: i });
     output += renderProcessRow(proc, isSelected, isPrevSelected, {
       ctxBarMode, isNarrow, showCostCol, costColW, pluginCols,
       showSparklines, sparkColW, gitColW,
@@ -6268,15 +6270,31 @@ function handleMouseEvent(evt) {
     return;
   }
 
-  // Pin click: a plain left-click in a list row's gutter (the star column) toggles
-  // that row's pin. Maps the click straight to its proc, so it's correct in grouped
-  // mode too. Shift-click is reserved for marking, so skip it here.
-  if (!evt.shift) {
-    const pinHit = rowHitboxes.find(h => h.row === evt.row && evt.col >= 1 && evt.col <= h.pinColEnd);
-    if (pinHit) {
-      togglePinAndReflow(pinHit.proc);
-      render();
-      return;
+  // List-view clicks resolve against precise per-row hitboxes built during render.
+  if (viewMode !== 'pane') {
+    const rh = rowHitboxes.find(h => h.row === evt.row);
+    if (rh) {
+      // Gutter star (cols 1..pinColEnd) → toggle the pin. Uses the proc directly, so
+      // it's correct in grouped mode too. Shift-click stays reserved for marking.
+      if (!evt.shift && evt.col >= 1 && evt.col <= rh.pinColEnd) {
+        togglePinAndReflow(rh.proc);
+        render();
+        return;
+      }
+      // Body click → select this exact row. Only in the flat list, where selectedIndex
+      // indexes `processes`; grouped mode uses a different index space and falls through
+      // to the legacy path below.
+      if (!groupByProject) {
+        if (evt.shift) {
+          if (selectionAnchor != null) markRange(selectionAnchor, rh.selIdx);
+          else { toggleMark(rh.proc.pid); selectionAnchor = rh.selIdx; }
+        } else {
+          selectionAnchor = null;
+        }
+        selectedIndex = rh.selIdx;
+        render();
+        return;
+      }
     }
   }
 
