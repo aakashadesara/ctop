@@ -537,6 +537,16 @@ function getAnimatedCtxPct(pid, targetPct) {
   return Math.round(state.current);
 }
 
+// Full-screen overlays (timeline / heatmap / history / help / command palette) own the
+// whole frame and several repaint with a CLEAR. The periodic re-render timers below
+// (selection/context animation and the activity spinner) must NOT call render() while one
+// is open: render() draws the main list/pane view, which repaints over the heatmap/palette
+// and makes the CLEAR-based views (timeline/history/help) flicker. The auto-refresh loop
+// already pauses for these; the timers need the same guard.
+function fullScreenOverlayActive() {
+  return showingHelp || showHistory || showTimeline || showHeatmap || showPalette;
+}
+
 function scheduleAnimationFrame() {
   if (animationTimer) return; // already scheduled
   animationTimer = setTimeout(() => {
@@ -557,7 +567,7 @@ function scheduleAnimationFrame() {
       selectionAnimFrame--;
       needsMore = true;
     }
-    render(); // re-render with updated animation state
+    if (!fullScreenOverlayActive()) render(); // re-render with updated animation state (but never over an overlay)
     if (needsMore) scheduleAnimationFrame();
   }, ANIM_FRAME_MS);
 }
@@ -605,7 +615,7 @@ function ensureSpinnerTimer() {
       spinnerTimer = null;
       return;
     }
-    render();
+    if (!fullScreenOverlayActive()) render(); // don't repaint the list over a full-screen overlay
   }, SPINNER_INTERVAL_MS);
 }
 
@@ -6993,6 +7003,7 @@ module.exports = {
   getSessionData,
   searchSessionContent,
   applySortAndFilter,
+  fullScreenOverlayActive,
   getCardsPerRow,
   openDirectory,
   renderBrailleBar,
@@ -7183,6 +7194,7 @@ module.exports = {
             get THEME() { return THEME; }, set THEME(v) { THEME = v; },
             get plugins() { return plugins; }, set plugins(v) { plugins = v; },
             get showPalette() { return showPalette; }, set showPalette(v) { showPalette = v; },
+            get showingHelp() { return showingHelp; }, set showingHelp(v) { showingHelp = v; },
             get paletteQuery() { return paletteQuery; }, set paletteQuery(v) { paletteQuery = v; },
             get paletteSelected() { return paletteSelected; }, set paletteSelected(v) { paletteSelected = v; },
             get confirmMessage() { return confirmMessage; }, set confirmMessage(v) { confirmMessage = v; },
