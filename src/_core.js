@@ -3939,7 +3939,6 @@ function renderPaneMode() {
   if (showLogPane && processes[selectedIndex]) {
     logLines = readSessionLog(processes[selectedIndex]);
     const logStartRow = rows - paneLogHeight - 1;
-    logScrollOffset = Math.max(0, logLines.length - (paneLogHeight - 1));
     output += renderLogPane(logStartRow, columns, paneLogHeight, processes[selectedIndex]);
   }
 
@@ -4366,33 +4365,41 @@ function renderLogPane(startRow, paneWidth, paneHeight, proc) {
   const contentRows = paneHeight - 1; // 1 for header
   if (contentRows <= 0) return output;
 
-  // Determine visible slice with scroll offset
-  const totalLines = logLines.length;
-  const maxScroll = Math.max(0, totalLines - contentRows);
-  if (logScrollOffset > maxScroll) logScrollOffset = maxScroll;
-  if (logScrollOffset < 0) logScrollOffset = 0;
+  // Expand messages into display rows, inserting a blank spacer line between
+  // each message so the log breathes vertically instead of packing one dense
+  // line per message. A `null` entry renders as a blank row.
+  const displayRows = [];
+  for (let i = 0; i < logLines.length; i++) {
+    if (i > 0) displayRows.push(null); // blank spacer between messages
+    displayRows.push(logLines[i]);
+  }
 
+  // Pin to the bottom: always show the most recent rows (no interactive scroll).
+  const totalRows = displayRows.length;
+  logScrollOffset = Math.max(0, totalRows - contentRows);
   const visStart = logScrollOffset;
-  const visEnd = Math.min(totalLines, visStart + contentRows);
 
   for (let row = 0; row < contentRows; row++) {
-    const lineIdx = visStart + row;
+    const idx = visStart + row;
     const r = startRow + 1 + row;
     output += `${ESC}[${r};1H`;
 
-    if (lineIdx < totalLines) {
-      const entry = logLines[lineIdx];
+    const entry = idx < totalRows ? displayRows[idx] : null;
+    if (entry) {
       const color = entry.role === 'user' ? CYAN : GREEN;
+      // Colored dot on the left edge marks the start of each message so new
+      // entries are easy to scan (cyan = user, green = assistant). 2 cols wide.
+      const dot = `${color}●${RESET} `;
       // Show timestamp on the left if available
       const tsPrefix = entry.timestamp ? `${DIM}${entry.timestamp}${RESET} ` : '';
       const tsPrefixLen = entry.timestamp ? entry.timestamp.length + 1 : 0;
-      // Truncate line to terminal width accounting for timestamp
+      // Truncate line to terminal width accounting for the leading space, dot, and timestamp
       let displayText = entry.text;
-      const maxTextLen = paneWidth - 2 - tsPrefixLen;
+      const maxTextLen = paneWidth - 4 - tsPrefixLen;
       if (visualWidth(displayText) > maxTextLen) {
         displayText = visualTruncate(displayText, maxTextLen - 1) + '…';
       }
-      output += ` ${tsPrefix}${color}${displayText}${RESET}${CLR_LINE}`;
+      output += ` ${dot}${tsPrefix}${color}${displayText}${RESET}${CLR_LINE}`;
     } else {
       output += `${CLR_LINE}`;
     }
@@ -4936,9 +4943,7 @@ function renderNow() {
   if (showLogPane && selectedProc) {
     // Refresh log content for selected process
     logLines = readSessionLog(selectedProc);
-    // Auto-scroll to bottom
     const logStartRow = rows - logPaneHeight - 1; // -1 for footer separator
-    logScrollOffset = Math.max(0, logLines.length - (logPaneHeight - 1));
     output += renderLogPane(logStartRow, columns, logPaneHeight, selectedProc);
   }
 
