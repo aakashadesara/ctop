@@ -60,6 +60,7 @@ Then run `ctop`. If no agents are running, you'll see an empty state — start a
 | `h`/`l` or `←`/`→` | Navigate (pane mode) |
 | `g` / `G` | Jump to first / last |
 | `P` | Toggle list / pane view |
+| `p` | Pin / unpin session (sticks it to the top) |
 | `Space` | Mark / unmark session (multi-select) |
 | `Shift+↑`/`↓` or `V` | Extend / start a marked range |
 | `a` | Select all visible / clear |
@@ -80,7 +81,16 @@ Then run `ctop`. If no agents are running, you'll see an empty state — start a
 | `Esc` | Clear selection (or filter / search) |
 | `q` | Quit |
 
-Mouse: click to select, scroll to navigate, `Shift`+click to mark (best-effort).
+Mouse: click to select, scroll to navigate, click the `★` gutter to pin/unpin, `Shift`+click to mark (best-effort).
+
+### Pinned sessions
+
+Keep the sessions you care about in view. Press `p` (or click the `★` in a row's
+gutter, or the `Pin` footer button) to pin the session under the cursor — it jumps
+to a yellow **★ Pinned** section at the top and stays there regardless of sort or
+filter. Pinning works in list, group, and pane views. Pins are keyed by session
+identity (not pid), so they survive refreshes, the session restarting, and quitting
+ctop — persisted to `~/.ctop/pins.json`. Press `p` again to unpin.
 
 ### Bulk actions
 

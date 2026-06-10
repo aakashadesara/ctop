@@ -454,8 +454,24 @@ function shortenCwd(cwd) {
 }
 
 function buildGroupedFlatList(procs) {
-  const groups = groupProcesses(procs);
+  // Pinned sessions form their own "★ Pinned" pseudo-group at the very top and are
+  // pulled out of their normal project groups (so a pid never appears twice — bulk
+  // range-select and cursor resolution both assume each pid occurs once).
+  const { pinned, rest } = partitionPinned(procs);
   const items = [];
+  if (pinned.length > 0) {
+    const pinnedGroup = {
+      cwd: PINNED_GROUP_CWD,
+      isPinned: true,
+      procs: pinned,
+      totalCost: pinned.reduce((s, p) => s + (p.cost || 0), 0),
+      totalTokens: pinned.reduce((s, p) => s + (p.inputTokens || 0) + (p.outputTokens || 0), 0),
+      activeCount: pinned.filter(p => p.isActive).length,
+    };
+    items.push({ type: 'group', group: pinnedGroup });
+    for (const proc of pinned) items.push({ type: 'process', proc, group: pinnedGroup });
+  }
+  const groups = groupProcesses(rest);
   for (const group of groups) {
     items.push({ type: 'group', group });
     // Always show sessions under each group (section-style, not collapsible)
@@ -508,6 +524,109 @@ function pruneMarks() {
   if (markedPids.size === 0) return;
   const live = new Set(allProcesses.map(p => p.pid));
   for (const pid of markedPids) if (!live.has(pid)) markedPids.delete(pid);
+}
+
+// The *process* the cursor is actually highlighting. In grouped mode the renderer
+// highlights the selectedIndex-th *process item* (it skips group-header rows when
+// counting — see renderNow), so resolve the same way here. That keeps the `p` key
+// and the Pin footer button acting on the row the user sees highlighted. (cursorPid
+// is intentionally left as-is to preserve existing kill/mark behavior.)
+function cursorProc() {
+  if (groupByProject) {
+    let n = 0;
+    for (const item of groupedFlatList) {
+      if (item.type !== 'process') continue;
+      if (n === selectedIndex) return item.proc;
+      n++;
+    }
+    return null;
+  }
+  return processes[selectedIndex] || null;
+}
+
+// --- Session pinning ---------------------------------------------------------
+// Pinned sessions float to the top of every view (list, group, pane) beneath a
+// yellow "★ Pinned" section. Pins are keyed by a *stable* session identity —
+// never by pid, which the OS recycles — so a pin survives refreshes, the session
+// process restarting, and ctop itself restarting. Persisted to ~/.ctop/pins.json.
+const PINS_FILE = path.join(os.homedir(), '.ctop', 'pins.json');
+const pinnedKeys = new Set(); // stable session keys currently pinned
+const PINNED_GROUP_CWD = '__pinned__'; // sentinel cwd marking the Pinned pseudo-group
+
+// Resolved at call time so $CTOP_PINS_FILE can relocate the store (tests point it
+// at a tmp file to avoid touching the real ~/.ctop/pins.json).
+function pinsFilePath() {
+  return process.env.CTOP_PINS_FILE || PINS_FILE;
+}
+
+// Stable identity for a session: prefer the agent's own session id, then
+// cwd+slug, falling back to pid (only stable within a single run).
+function pinKey(proc) {
+  if (!proc) return null;
+  const agent = proc.agentType || '?';
+  if (proc.sessionId) return `${agent}:sid:${proc.sessionId}`;
+  if (proc.cwd) return `${agent}:cwd:${proc.cwd}:${proc.slug || proc.sessionTitle || ''}`;
+  return `${agent}:pid:${proc.pid}`;
+}
+
+function isPinned(proc) {
+  if (!proc || pinnedKeys.size === 0) return false;
+  return pinnedKeys.has(pinKey(proc));
+}
+
+// Toggle the pin for one process (no-op when proc is null, e.g. a group header).
+// Returns the new state (true = now pinned) and persists immediately.
+function togglePin(proc) {
+  if (!proc) return false;
+  const key = pinKey(proc);
+  let nowPinned;
+  if (pinnedKeys.has(key)) { pinnedKeys.delete(key); nowPinned = false; }
+  else { pinnedKeys.add(key); nowPinned = true; }
+  savePins();
+  return nowPinned;
+}
+
+// Stable partition: pinned first (relative order preserved), then everything else.
+// A no-op (empty pinned bucket) when nothing is pinned, so callers stay cheap.
+function partitionPinned(list) {
+  if (pinnedKeys.size === 0) return { pinned: [], rest: list };
+  const pinned = [], rest = [];
+  for (const p of list) (isPinned(p) ? pinned : rest).push(p);
+  return { pinned, rest };
+}
+
+function loadPins() {
+  try {
+    const raw = JSON.parse(fs.readFileSync(pinsFilePath(), 'utf8'));
+    // Accept either a bare array (legacy) or { version, keys: [...] }.
+    const keys = Array.isArray(raw) ? raw : (raw && Array.isArray(raw.keys) ? raw.keys : []);
+    pinnedKeys.clear();
+    for (const k of keys) if (typeof k === 'string') pinnedKeys.add(k);
+  } catch { /* no pins file yet, or unreadable — start empty */ }
+  return pinnedKeys;
+}
+
+function savePins() {
+  try {
+    const target = pinsFilePath();
+    const dir = path.dirname(target);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(target, JSON.stringify({ version: 1, keys: [...pinnedKeys] }, null, 0));
+  } catch { /* best-effort, like history */ }
+}
+
+// Toggle the pin for a process, re-sort so it sticks to the top immediately, and
+// keep the cursor on that session (non-grouped). Shared by the `p` key, the footer
+// "Pin" button, and the gutter click. No-op on a group header (null proc).
+function togglePinAndReflow(proc) {
+  if (!proc) return;
+  const nowPinned = togglePin(proc);
+  applySortAndFilter();
+  if (!groupByProject) {
+    const ni = processes.findIndex(p => p.pid === proc.pid);
+    if (ni >= 0) selectedIndex = ni;
+  }
+  statusMessage = nowPinned ? 'Pinned session' : 'Unpinned session';
 }
 
 // Animation state
@@ -635,6 +754,7 @@ const COMMANDS = [
   { name: 'Kill marked sessions (bulk)', shortcut: 'x', action: 'kill-selected' },
   { name: 'Clear marked selection', shortcut: 'Esc', action: 'clear-selection' },
   { name: 'Toggle pane view', shortcut: 'P', action: 'toggle-pane' },
+  { name: 'Pin / unpin selected session', shortcut: 'p', action: 'toggle-pin' },
   { name: 'Group by project directory', shortcut: 'G', action: 'toggle-group' },
   { name: 'Toggle dashboard', shortcut: 'd', action: 'toggle-dashboard' },
   { name: 'Toggle log pane', shortcut: 'L', action: 'toggle-log' },
@@ -666,6 +786,7 @@ const FOOTER_SHORTCUTS = [
   { key: 'X', displayKey: 'X', label: 'Force', priority: 1, danger: true },
   { key: 'A', displayKey: 'A', label: 'Purge', priority: 2, danger: true },
   { key: 'K', displayKey: 'K', label: 'All', priority: 2, danger: true },
+  { key: 'p', displayKey: 'p', label: 'Pin', priority: 2 },
   { key: 's', displayKey: 's', label: 'Sort', priority: 3 },
   { key: '/', displayKey: '/', label: 'Filter', priority: 3 },
   { key: 'F', displayKey: 'F', label: 'Search', priority: 3 },
@@ -687,6 +808,10 @@ const FOOTER_SHORTCUTS = [
 
 let footerHitboxes = [];
 let confirmHitboxes = [];
+// Per-row click targets for the list views, rebuilt every render: { row, proc, pinColEnd }.
+// A click in the gutter (cols 1..pinColEnd) toggles that row's pin. Maps row→proc
+// directly, so it's correct in grouped mode too (independent of selectedIndex).
+let rowHitboxes = [];
 let confirmMessage = '';
 
 function footerShortcutText(shortcut) {
@@ -3597,6 +3722,12 @@ function applySortAndFilter() {
 
   if (sortReverse) result.reverse();
 
+  // Pinned sessions float to the top of every view, regardless of sort/filter.
+  // Done last so it overrides the sort order but still respects the active filter
+  // (filtered-out pins were already dropped above).
+  const { pinned, rest } = partitionPinned(result);
+  if (pinned.length > 0) result = [...pinned, ...rest];
+
   processes = result;
   if (selectedIndex >= processes.length) {
     selectedIndex = Math.max(0, processes.length - 1);
@@ -3777,6 +3908,7 @@ function renderPaneMode() {
   }
 
   let output = HOME + HIDE_CURSOR;
+  rowHitboxes = []; // pane has no per-row pin gutter; clear stale list-view targets
 
   // Header
   output += renderHeader(columns);
@@ -3794,9 +3926,19 @@ function renderPaneMode() {
 
   output += `${DIM}${'─'.repeat(columns)}${RESET}${CLR_LINE}\n`;
 
+  // Pinned cards float to the front (applySortAndFilter), shown beneath a yellow
+  // "★ Pinned" banner and rendered with a yellow ★ border so the section reads clearly.
+  const hasPinned = processes.length > 0 && isPinned(processes[0]);
+  if (hasPinned) {
+    const pinnedCount = processes.filter(p => isPinned(p)).length;
+    const label = ' ★ Pinned ';
+    const summary = `(${pinnedCount})`;
+    output += `${DIM}──${RESET}${BOLD}${YELLOW}${label}${RESET}${DIM}${summary}${'─'.repeat(Math.max(0, columns - visualWidth(label) - summary.length - 3))}${RESET}${CLR_LINE}\n`;
+  }
+
   // Calculate grid
   const totalRows = Math.ceil(processes.length / cardsPerRow);
-  const headerLines = 6 + (showDashboard ? 2 : 0); // header box (3) + stats + dashboard (2) + separator + status
+  const headerLines = 6 + (showDashboard ? 2 : 0) + (hasPinned ? 1 : 0); // header box (3) + stats + dashboard (2) + separator + status + pinned banner
   const footerLines = 2; // separator + keys (pinned to bottom)
   const paneLogHeight = showLogPane ? Math.max(5, Math.floor(rows * 0.4)) : 0;
   const availableSpace = rows - headerLines - footerLines - paneLogHeight;
@@ -3828,15 +3970,19 @@ function renderPaneMode() {
         const { proc, idx } = rowCards[ci];
         const isSelected = idx === selectedIndex;
         const isMarked = markedPids.has(proc.pid);
+        const isCardPinned = isPinned(proc);
         const selStart = isSelected ? `${THEME.selection}${WHITE}${BOLD}` : '';
         const selEnd = isSelected ? RESET : RESET;
-        // Marked-but-unselected cards get a colored border + ▦ marker; selected wins for color.
-        const borderStart = isSelected ? `${THEME.selection}${WHITE}${BOLD}` : (isMarked ? `${THEME.marked}${WHITE}${BOLD}` : '');
+        // Border color precedence: selected > marked > pinned (yellow) > none. The top
+        // border carries a ▦ (marked) or ★ (pinned) corner marker, kept to cardWidth.
+        const borderStart = isSelected ? `${THEME.selection}${WHITE}${BOLD}`
+          : (isMarked ? `${THEME.marked}${WHITE}${BOLD}` : (isCardPinned ? `${YELLOW}${BOLD}` : ''));
 
         let cell = '';
         if (line === 0) {
-          // Top border (▦ marker when the card is marked — keeps total width = cardWidth)
-          const topBar = isMarked ? `${'─'.repeat(cardWidth - 3)}▦` : '─'.repeat(cardWidth - 2);
+          // Top border (▦ marked / ★ pinned corner marker — keeps total width = cardWidth)
+          const corner = isMarked ? '▦' : (isCardPinned ? '★' : '');
+          const topBar = corner ? `${'─'.repeat(cardWidth - 3)}${corner}` : '─'.repeat(cardWidth - 2);
           cell = `${borderStart}┌${topBar}┐${selEnd}`;
         } else if (line === cardHeight - 1) {
           // Bottom border
@@ -4451,19 +4597,24 @@ function renderProcessRow(proc, isSelected, isPrevSelected, opts) {
 
   // Selection / mark indicator. Color precedence: selected > marked > prev-selected-fade > search-match > none.
   // A marked row always shows the ▦ glyph; marked-but-unselected gets a blue gutter chip (prefix only, kept to 2 cols).
+  // Gutter is two visual columns: [state glyph][pin star]. The pin star is ★ (yellow)
+  // when pinned, and a dim ☆ click-to-pin hint on the current row; clicking it toggles the pin.
   const hasSearchMatch = searchQuery && searchResults.has(proc.pid);
   const isMarked = markedPids.has(proc.pid);
+  const pinned = isPinned(proc);
+  const pinStar = pinned ? `${YELLOW}★${RESET}` : ' '; // for non-highlighted rows
   if (isSelected) {
-    row += `${THEME.selection}${WHITE}${BOLD}${isMarked ? '▦' : '>'} `;
+    // Selection highlight runs to end-of-row, so keep the star inside it (no RESET).
+    row += `${THEME.selection}${WHITE}${BOLD}${isMarked ? '▦' : '>'}${pinned ? '★' : '☆'}`;
   } else if (isMarked) {
-    row += `${THEME.marked}${WHITE}${BOLD}▦ ${RESET}`;
+    row += `${THEME.marked}${WHITE}${BOLD}▦${RESET}${pinStar}`;
   } else if (isPrevSelected) {
     const fade = selectionAnimFrame === 3 ? `${ESC}[48;5;238m` : selectionAnimFrame === 2 ? `${ESC}[48;5;237m` : `${ESC}[48;5;236m`;
-    row += `${fade}  `;
+    row += `${fade} ${pinned ? '★' : ' '}`;
   } else if (hasSearchMatch) {
-    row += `${THEME.active}* ${RESET}`;
+    row += `${THEME.active}*${RESET}${pinStar}`;
   } else {
-    row += '  ';
+    row += ` ${pinStar}`;
   }
 
   // PID
@@ -4732,7 +4883,8 @@ function renderNow() {
 
   if (showDashboard) { output += renderDashboard(columns); }
 
-  // Status message if any
+  // Status message if any (captured before clearing — shifts list rows down by 1)
+  const statusShown = !!statusMessage;
   if (statusMessage) {
     output += `${YELLOW} ${statusMessage}${RESET}${CLR_LINE}\n`;
     statusMessage = '';
@@ -4778,6 +4930,10 @@ function renderNow() {
   // Header: 3 (header box) + 1 (stats) + 1 (separator) + 1 (col headers) + 1 (separator) = 7
   // Footer: 2 (separator + keys, pinned to bottom)
   // Reserve 1 extra for selected item detail line
+  // Absolute terminal row of the first list line (header math + optional status line).
+  // Process rows push pin click targets relative to this as they render.
+  const contentStartRow = 8 + (showDashboard ? 2 : 0) + (statusShown ? 1 : 0);
+  rowHitboxes = [];
   const logPaneHeight = showLogPane ? Math.max(5, Math.floor(rows * 0.4)) : 0;
   const maxVisible = rows - 10 - (showDashboard ? 2 : 0) - logPaneHeight;
 
@@ -4802,6 +4958,7 @@ function renderNow() {
     for (let j = 0; j < gStartIdx; j++) {
       if (groupedFlatList[j].type === 'process') procIndex++;
     }
+    let lineRow = contentStartRow; // absolute row of the next emitted line (pin targets)
 
     for (let i = gStartIdx; i < gEndIdx; i++) {
       const item = groupedFlatList[i];
@@ -4811,14 +4968,18 @@ function renderNow() {
         // Add vertical space before each group (except the first visible one)
         if (i > gStartIdx) {
           output += `${CLR_LINE}\n`;
+          lineRow++;
         }
-        const label = ` ${shortenCwd(g.cwd)} `;
+        // The Pinned pseudo-group gets a yellow "★ Pinned" header; project groups use the accent color.
+        const label = g.isPinned ? ' ★ Pinned ' : ` ${shortenCwd(g.cwd)} `;
+        const headerColor = g.isPinned ? YELLOW : THEME.accent;
         const sessionWord = g.procs.length === 1 ? 'session' : 'sessions';
         const costStr = formatCost(g.totalCost > 0 ? g.totalCost : null);
         const summary = `(${g.procs.length} ${sessionWord}, ${costStr})`;
         // Section-style header like the agent type sections
-        const sectionLine = `${DIM}──${RESET}${BOLD}${THEME.accent}${label}${RESET}${DIM}${summary}${'─'.repeat(Math.max(0, listWidth - label.length - summary.length - 3))}${RESET}`;
+        const sectionLine = `${DIM}──${RESET}${BOLD}${headerColor}${label}${RESET}${DIM}${summary}${'─'.repeat(Math.max(0, listWidth - visualWidth(label) - summary.length - 3))}${RESET}`;
         output += `${sectionLine}${CLR_LINE}\n`;
+        lineRow++;
         continue; // group headers are not selectable
       } else {
         // Process row within group — uses same column layout as non-grouped view
@@ -4826,11 +4987,13 @@ function renderNow() {
         const isSelected = procIndex === selectedIndex;
         procIndex++;
 
+        rowHitboxes.push({ row: lineRow, proc, pinColEnd: 2 });
         output += renderProcessRow(proc, isSelected, false, {
           ctxBarMode, isNarrow, showCostCol, costColW, pluginCols,
           showSparklines, sparkColW, gitColW,
           listWidth, fixedColsTotal, showDetailPane,
         });
+        lineRow++;
 
         if (proc.subagents && proc.subagents.length) {
           const rowOpts = { ctxBarMode, isNarrow, showCostCol, costColW, pluginCols,
@@ -4838,6 +5001,7 @@ function renderNow() {
           for (const sub of proc.subagents) {
             output += renderSubagentRow(sub, rowOpts);
           }
+          lineRow += proc.subagents.length;
         }
       }
     }
@@ -4849,12 +5013,15 @@ function renderNow() {
   } else {
   // Non-grouped (normal) process list — with agent type sections
 
-  // Sort by agent type first (claude, codex, opencode, devin), preserving existing sort within each type
-  const claudeProcs = processes.filter(p => p.agentType === 'claude');
-  const codexProcs = processes.filter(p => p.agentType === 'codex');
-  const opencodeProcs = processes.filter(p => p.agentType === 'opencode');
-  const devinProcs = processes.filter(p => p.agentType === 'devin');
-  const sectionedProcesses = [...claudeProcs, ...codexProcs, ...opencodeProcs, ...devinProcs];
+  // Pinned sessions float to the very top under a yellow "★ Pinned" section and are
+  // pulled out of their agent-type sections (so they appear once). The rest keep the
+  // existing agent-type sectioning.
+  const { pinned: pinnedProcs, rest: unpinnedProcs } = partitionPinned(processes);
+  const claudeProcs = unpinnedProcs.filter(p => p.agentType === 'claude');
+  const codexProcs = unpinnedProcs.filter(p => p.agentType === 'codex');
+  const opencodeProcs = unpinnedProcs.filter(p => p.agentType === 'opencode');
+  const devinProcs = unpinnedProcs.filter(p => p.agentType === 'devin');
+  const sectionedProcesses = [...pinnedProcs, ...claudeProcs, ...codexProcs, ...opencodeProcs, ...devinProcs];
   // Remap selectedIndex to the sectioned ordering
   if (processes.length > 0 && sectionedProcesses.length > 0) {
     const selectedPid = processes[selectedIndex]?.pid;
@@ -4872,16 +5039,19 @@ function renderNow() {
 
   // Track which section we're in to emit headers
   let currentSection = null;
+  // Absolute terminal row of the next line to be emitted (for pin click targets).
+  let lineRow = contentStartRow;
 
   for (let i = startIdx; i < endIdx; i++) {
     const proc = processes[i];
     const isSelected = i === selectedIndex;
 
-    // Section header when agent type changes
-    const section = proc.agentType;
+    // Section header when entering the pinned section or a new agent type
+    const section = isPinned(proc) ? 'pinned' : proc.agentType;
     if (section !== currentSection) {
       currentSection = section;
       const sectionConfig = {
+        pinned: { label: ' ★ Pinned ', color: YELLOW, count: pinnedProcs.length },
         claude: { label: ' Claude Code ', color: ORANGE, count: claudeProcs.length },
         codex: { label: ' Codex CLI ', color: BLUE, count: codexProcs.length },
         opencode: { label: ' OpenCode ', color: OPENCODE_GREEN, count: opencodeProcs.length },
@@ -4889,17 +5059,22 @@ function renderNow() {
       };
       const cfg = sectionConfig[section] || sectionConfig.claude;
       if (cfg.count > 0) {
-        const sectionLine = `${DIM}──${RESET}${BOLD}${cfg.color}${cfg.label}${RESET}${DIM}(${cfg.count})${'─'.repeat(Math.max(0, listWidth - cfg.label.length - String(cfg.count).length - 5))}${RESET}`;
+        const sectionLine = `${DIM}──${RESET}${BOLD}${cfg.color}${cfg.label}${RESET}${DIM}(${cfg.count})${'─'.repeat(Math.max(0, listWidth - visualWidth(cfg.label) - String(cfg.count).length - 5))}${RESET}`;
         output += `${sectionLine}${CLR_LINE}\n`;
+        lineRow++;
       }
     }
 
     const isPrevSelected = CONFIG.animations && selectionAnimFrame > 0 && i === prevSelectedIndex;
+    // selIdx lets a body-click select this exact row (precise, unlike the header-agnostic
+    // listViewRowToIndex); pinColEnd marks the gutter columns that toggle the pin.
+    rowHitboxes.push({ row: lineRow, proc, pinColEnd: 2, selIdx: i });
     output += renderProcessRow(proc, isSelected, isPrevSelected, {
       ctxBarMode, isNarrow, showCostCol, costColW, pluginCols,
       showSparklines, sparkColW, gitColW,
       listWidth, fixedColsTotal, showDetailPane,
     });
+    lineRow++;
 
     // Indented sub-agent (sidechain) rows under Claude parents
     if (proc.subagents && proc.subagents.length) {
@@ -4908,6 +5083,7 @@ function renderNow() {
       for (const sub of proc.subagents) {
         output += renderSubagentRow(sub, rowOpts);
       }
+      lineRow += proc.subagents.length;
     }
 
     // Show model + stopReason on detail line for selected item (only when no detail pane)
@@ -4916,6 +5092,7 @@ function renderNow() {
       if (proc.model) detail += ` ${CYAN}${proc.model}${RESET}`;
       if (proc.stopReason) detail += `  ${DIM}stop: ${proc.stopReason}${RESET}`;
       output += `${detail}${CLR_LINE}\n`;
+      lineRow++;
     }
   }
 
@@ -5781,6 +5958,10 @@ function executeCommand(action) {
       }
       render();
       break;
+    case 'toggle-pin':
+      togglePinAndReflow(cursorProc());
+      render();
+      break;
     case 'toggle-group':
       if (viewMode === 'list') {
         groupByProject = !groupByProject;
@@ -5923,7 +6104,8 @@ function showHelp() {
   output += `  ${CYAN}g${RESET}         Jump to first process\n`;
   output += `  ${CYAN}G${RESET}         Toggle group by project directory\n`;
   output += `  ${CYAN}Tab${RESET}       Expand/collapse group (in grouped mode)\n`;
-  output += `  ${CYAN}P${RESET}         Toggle pane/grid view\n\n`;
+  output += `  ${CYAN}P${RESET}         Toggle pane/grid view\n`;
+  output += `  ${CYAN}p${RESET}         Pin / unpin the selected session (sticks it to the top under ${YELLOW}★ Pinned${RESET}; click the ★ gutter too)\n\n`;
 
   output += `${BOLD}SELECT (bulk actions):${RESET}\n`;
   output += `  ${CYAN}Space${RESET}     Mark / unmark the current session\n`;
@@ -6018,8 +6200,10 @@ function paneViewClickToIndex(row, col) {
   const cardGapY = 1;
   const cardsPerRow = getCardsPerRow();
 
-  // Header: 3 (header box) + 1 (stats) + 1 (separator) = 5, plus optional dashboard/status
-  const headerLines = 5 + (showDashboard ? 2 : 0);
+  // Header: 3 (header box) + 1 (stats) + 1 (separator) = 5, plus optional dashboard/status,
+  // plus the "★ Pinned" banner line when any session is pinned (same +1 the renderer adds).
+  const hasPinned = processes.length > 0 && isPinned(processes[0]);
+  const headerLines = 5 + (showDashboard ? 2 : 0) + (hasPinned ? 1 : 0);
   const contentRow = row - headerLines - 1; // 0-based row within card grid (1-based row correction)
   if (contentRow < 0) return -1;
 
@@ -6102,6 +6286,34 @@ function handleMouseEvent(evt) {
   if (footerHit) {
     handleInput(footerHit.key);
     return;
+  }
+
+  // List-view clicks resolve against precise per-row hitboxes built during render.
+  if (viewMode !== 'pane') {
+    const rh = rowHitboxes.find(h => h.row === evt.row);
+    if (rh) {
+      // Gutter star (cols 1..pinColEnd) → toggle the pin. Uses the proc directly, so
+      // it's correct in grouped mode too. Shift-click stays reserved for marking.
+      if (!evt.shift && evt.col >= 1 && evt.col <= rh.pinColEnd) {
+        togglePinAndReflow(rh.proc);
+        render();
+        return;
+      }
+      // Body click → select this exact row. Only in the flat list, where selectedIndex
+      // indexes `processes`; grouped mode uses a different index space and falls through
+      // to the legacy path below.
+      if (!groupByProject) {
+        if (evt.shift) {
+          if (selectionAnchor != null) markRange(selectionAnchor, rh.selIdx);
+          else { toggleMark(rh.proc.pid); selectionAnchor = rh.selIdx; }
+        } else {
+          selectionAnchor = null;
+        }
+        selectedIndex = rh.selIdx;
+        render();
+        return;
+      }
+    }
   }
 
   const idx = viewMode === 'pane' ? paneViewClickToIndex(evt.row, evt.col) : listViewRowToIndex(evt.row);
@@ -6419,6 +6631,11 @@ function handleInput(key) {
       } else {
         viewMode = 'list';
       }
+      render();
+      break;
+
+    case 'p': // pin / unpin the session under the cursor (sticks it to the top)
+      togglePinAndReflow(cursorProc());
       render();
       break;
 
@@ -6934,6 +7151,9 @@ async function main() {
     await playBootAnimation(columns, rows);
   }
 
+  // Restore pinned sessions before the first sort so pins stick from frame one.
+  loadPins();
+
   // Initial load
   allProcesses = getAllAgentProcesses(); applySortAndFilter();
   updateProcessHistory(allProcesses);
@@ -7008,6 +7228,9 @@ module.exports = {
   openDirectory,
   renderBrailleBar,
   renderContextBarBraille,
+  renderProcessRow,
+  renderNow,
+  renderPaneMode,
   BRAILLE_FILLS,
   parseMouseEvent,
   listViewRowToIndex,
@@ -7032,10 +7255,22 @@ module.exports = {
   // Bulk selection
   activeList,
   cursorPid,
+  cursorProc,
   toggleMark,
   markRange,
   pruneMarks,
   killSelected,
+  // Session pinning
+  pinKey,
+  isPinned,
+  togglePin,
+  partitionPinned,
+  togglePinAndReflow,
+  loadPins,
+  savePins,
+  pinsFilePath,
+  PINS_FILE,
+  PINNED_GROUP_CWD,
   // Plugin system
   loadPlugins,
   // History tracking
@@ -7200,10 +7435,12 @@ module.exports = {
             get confirmMessage() { return confirmMessage; }, set confirmMessage(v) { confirmMessage = v; },
             get confirmHitboxes() { return confirmHitboxes; }, set confirmHitboxes(v) { confirmHitboxes = v; },
             get footerHitboxes() { return footerHitboxes; }, set footerHitboxes(v) { footerHitboxes = v; },
+            get rowHitboxes() { return rowHitboxes; }, set rowHitboxes(v) { rowHitboxes = v; },
             get groupByProject() { return groupByProject; }, set groupByProject(v) { groupByProject = v; },
             get groupedFlatList() { return groupedFlatList; }, set groupedFlatList(v) { groupedFlatList = v; },
             expandedGroups,
             markedPids,
+            pinnedKeys,
             get selectionAnchor() { return selectionAnchor; }, set selectionAnchor(v) { selectionAnchor = v; },
             get prevSelectedIndex() { return prevSelectedIndex; }, set prevSelectedIndex(v) { prevSelectedIndex = v; },
             get selectionAnimFrame() { return selectionAnimFrame; }, set selectionAnimFrame(v) { selectionAnimFrame = v; },
