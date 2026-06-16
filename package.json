@@ -1,6 +1,6 @@
 {
   "name": "ctop-claude",
-  "version": "2.0.3",
+  "version": "2.0.4",
   "description": "Terminal UI for monitoring and managing AI coding agent sessions (Claude Code + Codex CLI + OpenCode)",
   "main": "src/main.js",
   "bin": {
