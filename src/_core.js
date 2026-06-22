@@ -2720,6 +2720,7 @@ function assignCodexSessionsToProcesses(procs) {
       const idx = parsedSessions.indexOf(match);
       matched.add(idx);
       if (match.title) proc.title = match.title;
+      proc.codexSessionPath = match._path;
       for (const key of ['contextPct', 'model', 'gitBranch', 'sessionId', 'version', 'inputTokens', 'cacheCreateTokens', 'cacheReadTokens', 'outputTokens']) {
         if (match[key] !== null && match[key] !== undefined) proc[key] = match[key];
       }
@@ -2732,6 +2733,7 @@ function assignCodexSessionsToProcesses(procs) {
   for (let i = 0; i < unmatched.length && i < remainingSessions.length; i++) {
     const data = remainingSessions[i];
     if (data.title) unmatched[i].title = data.title;
+    unmatched[i].codexSessionPath = data._path;
     for (const key of ['contextPct', 'model', 'gitBranch', 'sessionId', 'version', 'inputTokens', 'cacheCreateTokens', 'cacheReadTokens', 'outputTokens', 'rateLimits']) {
       if (data[key] !== null && data[key] !== undefined) unmatched[i][key] = data[key];
     }
@@ -3124,6 +3126,139 @@ function readDevinSessionLog(proc, maxLines) {
   return maxLines > 0 ? entries.slice(-maxLines) : entries;
 }
 
+// --- Codex CLI session log (JSONL conversation transcript) ---
+
+const codexLogCache = new Map(); // filePath -> { mtimeMs, size, entries }
+
+// Extract conversation text from a single codex rollout JSONL line.
+// Codex records each turn as a `response_item` whose payload is a `message`:
+// user input arrives as `input_text` blocks, assistant text as `output_text`
+// blocks. The matching `event_msg` user_message/agent_message lines are skipped
+// so each turn is counted once. Injected context (environment_context,
+// user_instructions — text wrapped in <...>) and developer/system roles are
+// dropped. Returns { role: 'user'|'assistant', text } or null for other lines.
+function parseCodexLogEntry(data) {
+  if (!data) return null;
+  const payload = data.payload || data;
+  if (payload.type !== 'message') return null;
+  const role = payload.role;
+  if (role !== 'user' && role !== 'assistant') return null;
+
+  let text = '';
+  const content = payload.content;
+  if (typeof content === 'string') {
+    text = content;
+  } else if (Array.isArray(content)) {
+    text = content
+      .filter(c => c && (c.type === 'input_text' || c.type === 'output_text' || c.type === 'text'))
+      .map(c => c.text || '')
+      .join(' ');
+  }
+  if (!text || !text.trim()) return null;
+  // Skip injected context blocks (they wrap the whole message in an XML-ish tag).
+  if (role === 'user' && text.trim().startsWith('<')) return null;
+
+  text = stripAnsi(text).replace(/[\x00-\x1f\x7f]/g, ' ').replace(/\s+/g, ' ').trim();
+  if (!text) return null;
+  return { role, text };
+}
+
+// Locate the rollout JSONL file backing a codex process. Prefers the exact path
+// resolved during assignCodexSessionsToProcesses (kept in sync with the metadata
+// shown in the UI); otherwise searches ~/.codex/sessions/YYYY/MM/DD for the file
+// whose name carries this session's id, then falls back to the most-recent
+// session matching the process cwd.
+function findCodexSessionFile(proc) {
+  if (proc && proc.codexSessionPath) {
+    try { if (fs.existsSync(proc.codexSessionPath)) return proc.codexSessionPath; } catch {}
+  }
+  const sessionsDir = path.join(os.homedir(), '.codex', 'sessions');
+  try { if (!fs.existsSync(sessionsDir)) return null; } catch { return null; }
+
+  const candidates = [];
+  try {
+    const years = fs.readdirSync(sessionsDir).filter(f => /^\d{4}$/.test(f)).sort().reverse();
+    for (const year of years) {
+      const months = fs.readdirSync(path.join(sessionsDir, year)).filter(f => /^\d{2}$/.test(f)).sort().reverse();
+      for (const month of months) {
+        const days = fs.readdirSync(path.join(sessionsDir, year, month)).filter(f => /^\d{2}$/.test(f)).sort().reverse();
+        for (const day of days) {
+          const dayDir = path.join(sessionsDir, year, month, day);
+          for (const f of fs.readdirSync(dayDir)) {
+            if (!f.endsWith('.jsonl')) continue;
+            // Fast path: codex embeds the session id in the rollout filename.
+            if (proc && proc.sessionId && f.includes(proc.sessionId)) return path.join(dayDir, f);
+            candidates.push(path.join(dayDir, f));
+          }
+        }
+      }
+      // Without a session id we only need the newest sessions, which live in the
+      // most recent year — stop descending once that year has yielded candidates.
+      if (candidates.length && !(proc && proc.sessionId)) break;
+    }
+  } catch {}
+  if (!candidates.length) return null;
+
+  // No id hit: pick the most recent session whose cwd matches the process.
+  if (proc && proc.cwd) {
+    const byMtime = candidates
+      .map(p => { try { return { path: p, mtime: fs.statSync(p).mtimeMs }; } catch { return { path: p, mtime: 0 }; } })
+      .sort((a, b) => b.mtime - a.mtime);
+    for (const c of byMtime) {
+      if (getCodexSessionData(c.path).cwd === proc.cwd) return c.path;
+    }
+  }
+  return null;
+}
+
+function readCodexSessionLog(proc, maxLines) {
+  if (maxLines === undefined) maxLines = 50;
+  const filePath = findCodexSessionFile(proc);
+  if (!filePath) return [];
+
+  let st;
+  try { st = fs.statSync(filePath); } catch { return []; }
+
+  const hit = codexLogCache.get(filePath);
+  if (hit && hit.mtimeMs === st.mtimeMs && hit.size === st.size) {
+    return maxLines > 0 ? hit.entries.slice(-maxLines) : hit.entries;
+  }
+
+  const entries = [];
+  try {
+    const fd = fs.openSync(filePath, 'r');
+    const readSize = Math.min(LOG_TAIL_BYTES, st.size);
+    const offset = st.size - readSize;
+    let lines;
+    try {
+      const buf = Buffer.alloc(readSize);
+      fs.readSync(fd, buf, 0, readSize, offset);
+      lines = buf.toString('utf8').split('\n');
+    } finally {
+      fs.closeSync(fd);
+    }
+    // A non-zero offset can split the first line mid-JSON — drop that fragment.
+    const start = offset > 0 ? 1 : 0;
+    for (let i = start; i < lines.length; i++) {
+      const line = lines[i];
+      if (!line.trim()) continue;
+      let data;
+      try { data = JSON.parse(line); } catch { continue; }
+      const entry = parseCodexLogEntry(data);
+      if (!entry) continue;
+      let timeStr = '';
+      if (data.timestamp) {
+        try { timeStr = new Date(data.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }); } catch {}
+      }
+      const prefix = entry.role === 'user' ? 'USER' : 'ASSISTANT';
+      entries.push({ role: entry.role, text: `${prefix}: ${entry.text}`, timestamp: timeStr });
+    }
+  } catch { return []; }
+
+  codexLogCache.set(filePath, { mtimeMs: st.mtimeMs, size: st.size, entries });
+  return maxLines > 0 ? entries.slice(-maxLines) : entries;
+}
+
 function parseLogEntry(data) {
   // Extract human-readable conversation text from a JSONL entry.
   // Returns { role: 'user'|'assistant', text: string, timestamp: string|null } or null if not a conversation line.
@@ -3183,6 +3318,7 @@ function readSessionLog(proc, maxLines) {
   if (maxLines === undefined) maxLines = 50;
   if (proc && proc.agentType === 'opencode') return readOpenCodeSessionLog(proc, maxLines);
   if (proc && proc.agentType === 'devin') return readDevinSessionLog(proc, maxLines);
+  if (proc && proc.agentType === 'codex') return readCodexSessionLog(proc, maxLines);
   // Find the session JSONL file for this process (same logic as assignSessionsToProcesses)
   if (!proc || !proc.cwd) return [];
 
@@ -7350,6 +7486,8 @@ module.exports = {
   getAllAgentProcesses,
   getCodexSessionData,
   assignCodexSessionsToProcesses,
+  readCodexSessionLog,
+  parseCodexLogEntry,
   // OpenCode support
   getOpenCodeProcesses,
   assignOpenCodeSessionsToProcesses,
