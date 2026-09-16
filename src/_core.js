@@ -4762,12 +4762,25 @@ function renderLogPane(startRow, paneWidth, paneHeight, proc) {
   return output;
 }
 
+const TITLE_COL_HEADER = 'TITLE';
+const TITLE_COL_DEFAULT_WIDTH = 22;
+const TITLE_COL_MIN_WIDTH = TITLE_COL_HEADER.length + 1;
+
+function getTitleColumnWidth(procs) {
+  const hasMeaningfulValue = procs.some((proc) => {
+    const value = proc.sessionTitle || proc.slug;
+    return value != null && !/^-+$/.test(String(value).trim());
+  });
+  return hasMeaningfulValue ? TITLE_COL_DEFAULT_WIDTH : TITLE_COL_MIN_WIDTH;
+}
+
 // Renders a single process row with all columns aligned to the header.
 // Returns the ANSI string for the row (including trailing CLR_LINE + newline).
 function renderProcessRow(proc, isSelected, isPrevSelected, opts) {
   const { ctxBarMode, isNarrow, showCostCol, costColW, pluginCols,
           showSparklines, sparkColW, gitColW,
-          listWidth, fixedColsTotal, showDetailPane } = opts;
+          listWidth, fixedColsTotal, showDetailPane,
+          titleColW = TITLE_COL_DEFAULT_WIDTH } = opts;
   let row = '';
 
   // Selection / mark indicator. Color precedence: selected > marked > prev-selected-fade > search-match > none.
@@ -4845,7 +4858,7 @@ function renderProcessRow(proc, isSelected, isPrevSelected, opts) {
     row += `${isSelected ? '' : THEME.stopped}${visualPadEnd(visualTruncate(branchStr, 31), 32)}${isSelected ? '' : RESET}`;
     // Title (sessionTitle from /rename or AI-generated, falling back to slug)
     const titleColStr = proc.sessionTitle || proc.slug || '--';
-    row += `${isSelected ? '' : THEME.border}${visualPadEnd(visualTruncate(titleColStr, 21), 22)}${isSelected ? '' : RESET}`;
+    row += `${isSelected ? '' : THEME.border}${visualPadEnd(visualTruncate(titleColStr, titleColW - 1), titleColW)}${isSelected ? '' : RESET}`;
   }
 
   // Model
@@ -4943,7 +4956,8 @@ function renderProcessRow(proc, isSelected, isPrevSelected, opts) {
 function renderSubagentRow(sub, opts) {
   const { ctxBarMode, isNarrow, showCostCol, costColW, pluginCols,
           showSparklines, sparkColW, gitColW,
-          listWidth, fixedColsTotal } = opts;
+          listWidth, fixedColsTotal,
+          titleColW = TITLE_COL_DEFAULT_WIDTH } = opts;
   const ctxColW = ctxBarMode ? 16 : 6;
   let row = '';
 
@@ -4968,10 +4982,11 @@ function renderSubagentRow(sub, opts) {
   row += `${DIM}${ageStr.padEnd(12)}${RESET}`;
 
   if (!isNarrow) {
-    // BRANCH + TITLE area combined for the description (32 + 22 = 54)
-    const descMax = 32 + 22 - 1;
+    // BRANCH + TITLE area combined for the description
+    const combinedWidth = 32 + titleColW;
+    const descMax = combinedWidth - 1;
     const descStr = sub.description || '(sub-agent)';
-    row += `${DIM}${visualPadEnd(visualTruncate(descStr, descMax), 54)}${RESET}`;
+    row += `${DIM}${visualPadEnd(visualTruncate(descStr, descMax), combinedWidth)}${RESET}`;
   }
 
   // MODEL (14)
@@ -5076,6 +5091,7 @@ function renderNow() {
   const sparkColW = 10; // 8 chars sparkline + 2 padding
   const gitColW = 10; // GIT column width (replaces MEM-HIST)
   const showSparklines = columns >= 180;
+  const titleColW = getTitleColumnWidth(processes);
   // Plugin columns — extra width from loaded plugins
   const pluginCols = plugins.filter(p => p.column);
   const pluginColsWidth = pluginCols.reduce((sum, p) => sum + (p.column.width || 10), 0);
@@ -5083,14 +5099,14 @@ function renderNow() {
   // In wide mode: full columns with BRANCH, TITLE, DIRECTORY, and optionally COST + sparklines
   const fixedColsTotal = isNarrow
     ? 8 + 11 + ctxColW + 12 + 14 + 7 + 7 + 2 + pluginColsWidth
-    : 8 + 11 + ctxColW + 12 + 32 + 22 + 14 + (showCostCol ? costColW : 0) + pluginColsWidth + 1 + 7 + (showSparklines ? sparkColW : 0) + 7 + (showSparklines ? gitColW : 0) + 2;
+    : 8 + 11 + ctxColW + 12 + 32 + titleColW + 14 + (showCostCol ? costColW : 0) + pluginColsWidth + 1 + 7 + (showSparklines ? sparkColW : 0) + 7 + (showSparklines ? gitColW : 0) + 2;
   output += `${BOLD}${CYAN}`;
   if (isNarrow) {
     output += `  ${'PID'.padEnd(8)}${'STATUS'.padEnd(11)}${'CTX'.padEnd(ctxColW)}${'STARTED'.padEnd(12)}${'MODEL'.padEnd(14)}`;
     for (const p of pluginCols) output += `${(p.column.header || '').padEnd(p.column.width || 10)}`;
     output += `${'CPU%'.padEnd(7)}MEM%`;
   } else {
-    output += `  ${'PID'.padEnd(8)}${'STATUS'.padEnd(11)}${'CTX'.padEnd(ctxColW)}${'STARTED'.padEnd(12)}${'BRANCH'.padEnd(32)}${'TITLE'.padEnd(22)}${'MODEL'.padEnd(14)}`;
+    output += `  ${'PID'.padEnd(8)}${'STATUS'.padEnd(11)}${'CTX'.padEnd(ctxColW)}${'STARTED'.padEnd(12)}${'BRANCH'.padEnd(32)}${TITLE_COL_HEADER.padEnd(titleColW)}${'MODEL'.padEnd(14)}`;
     if (showCostCol) output += `${'COST'.padEnd(costColW)}`;
     for (const p of pluginCols) output += `${(p.column.header || '').padEnd(p.column.width || 10)}`;
     output += `${'DIRECTORY'.padEnd(Math.max(0, listWidth - fixedColsTotal))}${'CPU%'.padEnd(7)}`;
@@ -5166,13 +5182,13 @@ function renderNow() {
         output += renderProcessRow(proc, isSelected, false, {
           ctxBarMode, isNarrow, showCostCol, costColW, pluginCols,
           showSparklines, sparkColW, gitColW,
-          listWidth, fixedColsTotal, showDetailPane,
+          listWidth, fixedColsTotal, showDetailPane, titleColW,
         });
         lineRow++;
 
         if (proc.subagents && proc.subagents.length) {
           const rowOpts = { ctxBarMode, isNarrow, showCostCol, costColW, pluginCols,
-            showSparklines, sparkColW, gitColW, listWidth, fixedColsTotal };
+            showSparklines, sparkColW, gitColW, listWidth, fixedColsTotal, titleColW };
           for (const sub of proc.subagents) {
             output += renderSubagentRow(sub, rowOpts);
           }
@@ -5247,14 +5263,14 @@ function renderNow() {
     output += renderProcessRow(proc, isSelected, isPrevSelected, {
       ctxBarMode, isNarrow, showCostCol, costColW, pluginCols,
       showSparklines, sparkColW, gitColW,
-      listWidth, fixedColsTotal, showDetailPane,
+      listWidth, fixedColsTotal, showDetailPane, titleColW,
     });
     lineRow++;
 
     // Indented sub-agent (sidechain) rows under Claude parents
     if (proc.subagents && proc.subagents.length) {
       const rowOpts = { ctxBarMode, isNarrow, showCostCol, costColW, pluginCols,
-        showSparklines, sparkColW, gitColW, listWidth, fixedColsTotal };
+        showSparklines, sparkColW, gitColW, listWidth, fixedColsTotal, titleColW };
       for (const sub of proc.subagents) {
         output += renderSubagentRow(sub, rowOpts);
       }
@@ -7403,6 +7419,7 @@ module.exports = {
   openDirectory,
   renderBrailleBar,
   renderContextBarBraille,
+  getTitleColumnWidth,
   renderProcessRow,
   renderNow,
   renderPaneMode,
